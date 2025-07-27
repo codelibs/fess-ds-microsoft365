@@ -32,7 +32,6 @@ import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
-import com.microsoft.graph.options.QueryOption;
 
 /**
  * This is an abstract base class for Office 365 data stores.
@@ -52,16 +51,17 @@ public abstract class Office365DataStore extends AbstractDataStore {
 
     /**
      * Retrieves all licensed users and processes them with the provided consumer.
+     * In Microsoft Graph SDK v6, the Office365Client.getUsers() already filters for licensed users,
+     * so no additional license checking is needed here.
      *
      * @param client The Office365Client to use for the request.
      * @param consumer A consumer to process each licensed User object.
      */
     protected void getLicensedUsers(final Office365Client client, final Consumer<User> consumer) {
-        client.getUsers(Collections.emptyList(), u -> {
-            if (isLicensedUser(client, u.id)) {
-                consumer.accept(u);
-            }
-        });
+        // Office365Client.getUsers() in v6 already filters for licensed users using:
+        // filter: "assignedLicenses/$count ne 0"
+        // So no additional isLicensedUser() check is needed
+        client.getUsers(Collections.emptyList(), consumer);
     }
 
     /**
@@ -80,14 +80,16 @@ public abstract class Office365DataStore extends AbstractDataStore {
 
     /**
      * Checks if a user is licensed by their ID.
+     * Uses optimized field selection to get only assignedLicenses field.
      *
      * @param client The Office365Client to use for the request.
      * @param userId The ID of the user to check.
      * @return true if the user is licensed, false otherwise.
      */
     protected boolean isLicensedUser(final Office365Client client, final String userId) {
-        final User user = client.getUser(userId, Collections.singletonList(new QueryOption("$select", "assignedLicenses")));
-        return user.assignedLicenses.stream().anyMatch(license -> Objects.nonNull(license.skuId));
+        // Use getUserForLicenseCheck to get only assignedLicenses field for efficiency
+        final User user = client.getUserForLicenseCheck(userId);
+        return user.getAssignedLicenses().stream().anyMatch(license -> Objects.nonNull(license.getSkuId()));
     }
 
     /**
@@ -97,17 +99,22 @@ public abstract class Office365DataStore extends AbstractDataStore {
      * @return A list of role strings for the user.
      */
     protected List<String> getUserRoles(final User user) {
-        return Collections.singletonList(ComponentUtil.getSystemHelper().getSearchRoleByUser(user.id));
+        return Collections.singletonList(ComponentUtil.getSystemHelper().getSearchRoleByUser(user.getId()));
     }
 
     /**
      * Retrieves all Office 365 groups and processes them with the provided consumer.
+     * In Microsoft Graph SDK v6, the Office365Client.getOffice365Groups() already filters for Unified groups,
+     * so no additional filtering is needed here.
      *
      * @param client The Office365Client to use for the request.
      * @param consumer A consumer to process each Group object.
      */
     protected void getOffice365Groups(final Office365Client client, final Consumer<Group> consumer) {
-        client.getGroups(Collections.singletonList(new QueryOption("$filter", "groupTypes/any(c:c eq 'Unified')")), consumer);
+        // Office365Client.getOffice365Groups() in v6 already filters for Unified groups using:
+        // filter: "groupTypes/any(c:c eq 'Unified')"
+        // So no additional client-side filtering is needed
+        client.getOffice365Groups(consumer);
     }
 
     /**
@@ -117,7 +124,7 @@ public abstract class Office365DataStore extends AbstractDataStore {
      * @return A list of role strings for the group.
      */
     protected List<String> getGroupRoles(final Group group) {
-        return Collections.singletonList(ComponentUtil.getSystemHelper().getSearchRoleByGroup(group.id));
+        return Collections.singletonList(ComponentUtil.getSystemHelper().getSearchRoleByGroup(group.getId()));
     }
 
 }

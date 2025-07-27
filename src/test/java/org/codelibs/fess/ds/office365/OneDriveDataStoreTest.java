@@ -69,15 +69,16 @@ public class OneDriveDataStoreTest extends LastaFluteTestCase {
         assertNull(dataStore.getUrl(configMap, paramMap, item));
 
         configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_SHARED);
-        item.webUrl =
-                "https://n2sm.sharepoint.com/sites/test-site/_layouts/15/Doc.aspx?sourcedoc=%X-X-X-X-X%7D&file=test.doc&action=default&mobileredirect=true";
-        item.parentReference = new ItemReference();
-        item.parentReference.path = "/drive/root:/fess-testdata-master/msoffice";
-        item.name = "test.doc";
+        item.setWebUrl(
+                "https://n2sm.sharepoint.com/sites/test-site/_layouts/15/Doc.aspx?sourcedoc=%X-X-X-X-X%7D&file=test.doc&action=default&mobileredirect=true");
+        ItemReference parentRef = new ItemReference();
+        parentRef.setPath("/drive/root:/fess-testdata-master/msoffice");
+        item.setParentReference(parentRef);
+        item.setName("test.doc");
         assertEquals("https://n2sm.sharepoint.com/sites/test-site/Shared%20Documents/fess-testdata-master/msoffice/test.doc",
                 dataStore.getUrl(configMap, paramMap, item));
 
-        item.webUrl = "https://n2sm.sharepoint.com/sites/test-site/Shared%20Documents/fess-testdata-master/msoffice/test.doc";
+        item.setWebUrl("https://n2sm.sharepoint.com/sites/test-site/Shared%20Documents/fess-testdata-master/msoffice/test.doc");
         assertEquals("https://n2sm.sharepoint.com/sites/test-site/Shared%20Documents/fess-testdata-master/msoffice/test.doc",
                 dataStore.getUrl(configMap, paramMap, item));
     }

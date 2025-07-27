@@ -77,11 +77,11 @@ public class Office365ClientTest extends LastaFluteTestCase {
 
         client.getUsers(Collections.emptyList(), u -> {
             logger.info(ToStringBuilder.reflectionToString(u));
-            User user = client.getUser(u.id, Collections.emptyList());
+            User user = client.getUser(u.getId(), Collections.emptyList());
             logger.info(ToStringBuilder.reflectionToString(user));
-            assertEquals(u.id, user.id);
+            assertEquals(u.getId(), user.getId());
 
-            client.getNotebookPage(c -> c.users(user.id).onenote()).getCurrentPage().forEach(n -> {
+            client.getNotebookPage(user.getId()).getValue().forEach(n -> {
                 logger.info(ToStringBuilder.reflectionToString(n));
             });
         });
@@ -95,7 +95,7 @@ public class Office365ClientTest extends LastaFluteTestCase {
 
         client.getGroups(Collections.emptyList(), g -> {
             logger.info(ToStringBuilder.reflectionToString(g));
-            assertNotNull(g.id);
+            assertNotNull(g.getId());
         });
     }
 
@@ -107,7 +107,7 @@ public class Office365ClientTest extends LastaFluteTestCase {
 
         client.getDrives(d -> {
             logger.info(ToStringBuilder.reflectionToString(d));
-            Drive drive = client.getDrive(d.id);
+            Drive drive = client.getDrive(d.getId());
             logger.info(ToStringBuilder.reflectionToString(drive));
         });
     }
@@ -120,25 +120,25 @@ public class Office365ClientTest extends LastaFluteTestCase {
 
         client.geTeams(Collections.emptyList(), g -> {
             logger.info(ToStringBuilder.reflectionToString(g));
-            assertNotNull(g.id);
-            Group g2 = client.getGroupById(g.id);
-            assertEquals(g.id, g2.id);
+            assertNotNull(g.getId());
+            Group g2 = client.getGroupById(g.getId());
+            assertEquals(g.getId(), g2.getId());
             client.getChannels(Collections.emptyList(), c -> {
                 logger.info(ToStringBuilder.reflectionToString(c));
-                assertNotNull(c.id);
-                Channel c2 = client.getChannelById(g.id, c.id);
-                assertEquals(c.id, c2.id);
+                assertNotNull(c.getId());
+                Channel c2 = client.getChannelById(g.getId(), c.getId());
+                assertEquals(c.getId(), c2.getId());
                 client.getTeamMessages(Collections.emptyList(), m -> {
                     logger.info(ToStringBuilder.reflectionToString(m));
-                    logger.info(m.body.contentType.toString());
-                    logger.info(m.body.content);
+                    logger.info(m.getBody().getContentType().toString());
+                    logger.info(m.getBody().getContent());
                     client.getTeamReplyMessages(Collections.emptyList(), r -> {
                         logger.info(ToStringBuilder.reflectionToString(r));
-                        logger.info(r.body.contentType.toString());
-                        logger.info(r.body.content);
-                    }, g.id, c.id, m.id);
-                }, g.id, c.id);
-            }, g.id);
+                        logger.info(r.getBody().getContentType().toString());
+                        logger.info(r.getBody().getContent());
+                    }, g.getId(), c.getId(), m.getId());
+                }, g.getId(), c.getId());
+            }, g.getId());
         });
     }
 
@@ -151,8 +151,8 @@ public class Office365ClientTest extends LastaFluteTestCase {
         final String chatId = "chat id";
         client.getChatMessages(Collections.emptyList(), m -> {
             logger.info(ToStringBuilder.reflectionToString(m));
-            logger.info(m.body.contentType.toString());
-            logger.info(m.body.content);
+            logger.info(m.getBody().getContentType().toString());
+            logger.info(m.getBody().getContent());
         }, chatId);
     }
 }
