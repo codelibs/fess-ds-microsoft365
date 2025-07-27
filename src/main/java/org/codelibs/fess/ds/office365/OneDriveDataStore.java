@@ -87,6 +87,11 @@ public class OneDriveDataStore extends Office365DataStore {
     /** Default maximum size of a file to be crawled. */
     protected static final long DEFAULT_MAX_SIZE = -1L;
 
+    /** Cache for the current user's drive ID to avoid repeated expensive API calls */
+    protected volatile String cachedUserDriveId = null;
+    /** Lock object for thread-safe cache initialization */
+    protected final Object driveIdCacheLock = new Object();
+
     /** Key for the current crawler type in the configuration map. */
     protected static final String CURRENT_CRAWLER = "current_crawler";
     /** Crawler type for group drives. */
@@ -398,7 +403,7 @@ public class OneDriveDataStore extends Office365DataStore {
             final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
             final Map<String, Object> defaultDataMap, final ExecutorService executorService, final Office365Client client,
             final String driveId) {
-        final String actualDriveId = driveId != null ? driveId : client.getDrive("me").getId();
+        final String actualDriveId = driveId != null ? driveId : getCachedUserDriveId(client);
         getDriveItemsInDrive(client, actualDriveId, item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap,
                 paramMap, scriptMap, defaultDataMap, client, actualDriveId, item, Collections.emptyList())));
     }
@@ -927,6 +932,35 @@ public class OneDriveDataStore extends Office365DataStore {
                 logger.warn("Failed to access a drive item.", e);
             }
         }
+    }
+
+    /**
+     * Gets the current user's drive ID with caching to avoid expensive repeated API calls.
+     * Thread-safe implementation using double-checked locking pattern.
+     *
+     * @param client The Office365Client to use for API calls.
+     * @return The cached user drive ID.
+     */
+    protected String getCachedUserDriveId(final Office365Client client) {
+        // Double-checked locking pattern for thread-safe lazy initialization
+        if (cachedUserDriveId == null) {
+            synchronized (driveIdCacheLock) {
+                if (cachedUserDriveId == null) {
+                    try {
+                        // Make the expensive API call only once
+                        cachedUserDriveId = client.getDrive("me").getId();
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Cached user drive ID: {}", cachedUserDriveId);
+                        }
+                    } catch (final Exception e) {
+                        logger.warn("Failed to get user drive ID, using 'me' as fallback", e);
+                        // Fallback to 'me' which works directly with most Graph API endpoints
+                        cachedUserDriveId = "me";
+                    }
+                }
+            }
+        }
+        return cachedUserDriveId;
     }
 
     /**

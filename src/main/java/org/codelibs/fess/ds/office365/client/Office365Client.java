@@ -625,16 +625,27 @@ public class Office365Client implements Closeable {
 
     /**
      * Retrieves all drives, processing each drive with the provided consumer.
+     * Implements pagination to handle large tenant environments with many SharePoint drives.
      *
      * @param consumer A consumer to process each Drive object.
      */
     // for testing
     protected void getDrives(final Consumer<Drive> consumer) {
         DriveCollectionResponse response = client.drives().get();
-        if (response.getValue() != null) {
+
+        // Handle pagination with odata.nextLink
+        while (response != null && response.getValue() != null) {
             response.getValue().forEach(consumer::accept);
+
+            // Check if there's a next page
+            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                // Request the next page using the nextLink URL
+                response = client.drives().withUrl(response.getOdataNextLink()).get();
+            } else {
+                // No more pages, exit loop
+                break;
+            }
         }
-        // Pagination is not implemented for drives - typically small collections
     }
 
     /**
@@ -660,10 +671,27 @@ public class Office365Client implements Closeable {
             final Map<String, Object> additionalDataManager = g.getAdditionalData();
             if (additionalDataManager != null) {
                 final Object jsonObj = additionalDataManager.get("resourceProvisioningOptions");
+                // Handle both JsonElement (SDK v5 style) and native List/Collection (SDK v6 style)
                 if (jsonObj instanceof JsonElement jsonElement && jsonElement.isJsonArray()) {
                     final JsonArray array = jsonElement.getAsJsonArray();
                     for (int i = 0; i < array.size(); i++) {
                         if ("Team".equals(array.get(i).getAsString())) {
+                            consumer.accept(g);
+                            return;
+                        }
+                    }
+                } else if (jsonObj instanceof java.util.Collection<?> collection) {
+                    // Handle native collection objects (SDK v6 may provide List<String> directly)
+                    for (Object item : collection) {
+                        if ("Team".equals(String.valueOf(item))) {
+                            consumer.accept(g);
+                            return;
+                        }
+                    }
+                } else if (jsonObj instanceof Object[] array) {
+                    // Handle object arrays (another possible format)
+                    for (Object item : array) {
+                        if ("Team".equals(String.valueOf(item))) {
                             consumer.accept(g);
                             return;
                         }
@@ -791,10 +819,21 @@ public class Office365Client implements Closeable {
             final String channelId, final String messageId) {
         ChatMessageCollectionResponse response =
                 client.teams().byTeamId(teamId).channels().byChannelId(channelId).messages().byChatMessageId(messageId).replies().get();
-        if (response.getValue() != null) {
+
+        // Handle pagination with odata.nextLink
+        while (response != null && response.getValue() != null) {
             response.getValue().forEach(consumer::accept);
+
+            // Check if there's a next page
+            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                // Request the next page using the nextLink URL
+                response = client.teams().byTeamId(teamId).channels().byChannelId(channelId).messages().byChatMessageId(messageId).replies()
+                        .withUrl(response.getOdataNextLink()).get();
+            } else {
+                // No more pages, exit loop
+                break;
+            }
         }
-        // Pagination is not implemented for drives - typically small collections
     }
 
     /**
@@ -833,10 +872,20 @@ public class Office365Client implements Closeable {
      */
     public void getChats(final List<Object> options, final Consumer<Chat> consumer) {
         ChatCollectionResponse response = client.chats().get();
-        if (response.getValue() != null) {
+
+        // Handle pagination with odata.nextLink
+        while (response != null && response.getValue() != null) {
             response.getValue().forEach(consumer::accept);
+
+            // Check if there's a next page
+            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                // Request the next page using the nextLink URL
+                response = client.chats().withUrl(response.getOdataNextLink()).get();
+            } else {
+                // No more pages, exit loop
+                break;
+            }
         }
-        // Pagination is not implemented for drives - typically small collections
     }
 
     /**
@@ -883,10 +932,21 @@ public class Office365Client implements Closeable {
     public void getChatReplyMessages(final List<Object> options, final Consumer<ChatMessage> consumer, final String chatId,
             final String messageId) {
         ChatMessageCollectionResponse response = client.chats().byChatId(chatId).messages().byChatMessageId(messageId).replies().get();
-        if (response.getValue() != null) {
+
+        // Handle pagination with odata.nextLink
+        while (response != null && response.getValue() != null) {
             response.getValue().forEach(consumer::accept);
+
+            // Check if there's a next page
+            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                // Request the next page using the nextLink URL
+                response = client.chats().byChatId(chatId).messages().byChatMessageId(messageId).replies()
+                        .withUrl(response.getOdataNextLink()).get();
+            } else {
+                // No more pages, exit loop
+                break;
+            }
         }
-        // Pagination is not implemented for drives - typically small collections
     }
 
     /**
