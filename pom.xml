@@ -61,6 +61,7 @@
 									<include>com.microsoft.kiota:microsoft-kiota-abstractions</include>
 									<include>com.microsoft.kiota:microsoft-kiota-authentication-azure</include>
 									<include>com.microsoft.kiota:microsoft-kiota-http-okHttp</include>
+									<include>com.microsoft.kiota:microsoft-kiota-serialization-json</include>
 									<include>io.projectreactor.netty:reactor-netty</include>
 									<include>io.projectreactor.netty:reactor-netty-http</include>
 									<include>io.projectreactor.netty:reactor-netty-core</include>
@@ -217,6 +218,11 @@
 		<dependency>
 			<groupId>com.microsoft.kiota</groupId>
 			<artifactId>microsoft-kiota-http-okHttp</artifactId>
+			<version>${microsoft.kiota.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>com.microsoft.kiota</groupId>
+			<artifactId>microsoft-kiota-serialization-json</artifactId>
 			<version>${microsoft.kiota.version}</version>
 		</dependency>
 		<dependency>
