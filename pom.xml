@@ -61,6 +61,10 @@
 									<include>com.microsoft.kiota:microsoft-kiota-abstractions</include>
 									<include>com.microsoft.kiota:microsoft-kiota-authentication-azure</include>
 									<include>com.microsoft.kiota:microsoft-kiota-http-okHttp</include>
+									<include>com.microsoft.kiota:microsoft-kiota-serialization-json</include>
+									<include>com.microsoft.kiota:microsoft-kiota-serialization-text</include>
+									<include>com.microsoft.kiota:microsoft-kiota-serialization-form</include>
+									<include>com.microsoft.kiota:microsoft-kiota-serialization-multipart</include>
 									<include>io.projectreactor.netty:reactor-netty</include>
 									<include>io.projectreactor.netty:reactor-netty-http</include>
 									<include>io.projectreactor.netty:reactor-netty-core</include>
