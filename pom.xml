@@ -54,6 +54,8 @@
 									<include>com.microsoft.azure:msal4j</include>
 									<include>com.microsoft.graph:microsoft-graph</include>
 									<include>com.microsoft.graph:microsoft-graph-core</include>
+									<include>com.microsoft.kiota:microsoft-kiota-abstractions</include>
+									<include>com.microsoft.kiota:microsoft-kiota-authentication-azure</include>
 									<include>io.projectreactor.netty:reactor-netty</include>
 									<include>io.projectreactor.netty:reactor-netty-http</include>
 									<include>io.projectreactor.netty:reactor-netty-core</include>
