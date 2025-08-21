@@ -22,3 +22,5 @@
 .DS_Store
 /plugins/
 /tomcat.8080/
+.serena/
+

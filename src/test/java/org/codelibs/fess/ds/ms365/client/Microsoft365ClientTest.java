@@ -13,7 +13,7 @@
  * either express or implied. See the License for the specific language
  * governing permissions and limitations under the License.
  */
-package org.codelibs.fess.ds.office365.client;
+package org.codelibs.fess.ds.ms365.client;
 
 import java.util.Collections;
 
@@ -29,11 +29,11 @@ import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
 
-public class Office365ClientTest extends LastaFluteTestCase {
+public class Microsoft365ClientTest extends LastaFluteTestCase {
 
-    private static final Logger logger = LogManager.getLogger(Office365ClientTest.class);
+    private static final Logger logger = LogManager.getLogger(Microsoft365ClientTest.class);
 
-    Office365Client client = null;
+    Microsoft365Client client = null;
 
     @Override
     protected String prepareConfigFile() {
@@ -48,15 +48,15 @@ public class Office365ClientTest extends LastaFluteTestCase {
     @Override
     public void setUp() throws Exception {
         super.setUp();
-        String tenant = System.getenv(Office365Client.TENANT_PARAM);
-        String clientId = System.getenv(Office365Client.CLIENT_ID_PARAM);
-        String clientSecret = System.getenv(Office365Client.CLIENT_SECRET_PARAM);
+        String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
+        String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
+        String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
         if (tenant != null && clientId != null && clientSecret != null) {
             DataStoreParams params = new DataStoreParams();
-            params.put(Office365Client.TENANT_PARAM, tenant);
-            params.put(Office365Client.CLIENT_ID_PARAM, clientId);
-            params.put(Office365Client.CLIENT_SECRET_PARAM, clientSecret);
-            client = new Office365Client(params);
+            params.put(Microsoft365Client.TENANT_PARAM, tenant);
+            params.put(Microsoft365Client.CLIENT_ID_PARAM, clientId);
+            params.put(Microsoft365Client.CLIENT_SECRET_PARAM, clientSecret);
+            client = new Microsoft365Client(params);
         }
     }
 

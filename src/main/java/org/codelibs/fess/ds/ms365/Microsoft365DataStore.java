@@ -13,7 +13,7 @@
  * either express or implied. See the License for the specific language
  * governing permissions and limitations under the License.
  */
-package org.codelibs.fess.ds.office365;
+package org.codelibs.fess.ds.ms365;
 
 import java.util.Collections;
 import java.util.List;
@@ -27,38 +27,38 @@ import java.util.function.Consumer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.ds.AbstractDataStore;
-import org.codelibs.fess.ds.office365.client.Office365Client;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
 
 /**
- * This is an abstract base class for Office 365 data stores.
- * It provides common functionality for accessing Office 365 services,
+ * This is an abstract base class for Microsoft 365 data stores.
+ * It provides common functionality for accessing Microsoft 365 services,
  * such as user and group management, and thread pool creation.
  */
-public abstract class Office365DataStore extends AbstractDataStore {
+public abstract class Microsoft365DataStore extends AbstractDataStore {
 
     /**
      * Default constructor.
      */
-    public Office365DataStore() {
+    public Microsoft365DataStore() {
         super();
     }
 
-    private static final Logger logger = LogManager.getLogger(Office365DataStore.class);
+    private static final Logger logger = LogManager.getLogger(Microsoft365DataStore.class);
 
     /**
      * Retrieves all licensed users and processes them with the provided consumer.
-     * In Microsoft Graph SDK v6, the Office365Client.getUsers() already filters for licensed users,
+     * In Microsoft Graph SDK v6, the Microsoft365Client.getUsers() already filters for licensed users,
      * so no additional license checking is needed here.
      *
-     * @param client The Office365Client to use for the request.
+     * @param client The Microsoft365Client to use for the request.
      * @param consumer A consumer to process each licensed User object.
      */
-    protected void getLicensedUsers(final Office365Client client, final Consumer<User> consumer) {
-        // Office365Client.getUsers() in v6 already filters for licensed users using:
+    protected void getLicensedUsers(final Microsoft365Client client, final Consumer<User> consumer) {
+        // Microsoft365Client.getUsers() in v6 already filters for licensed users using:
         // filter: "assignedLicenses/$count ne 0"
         // So no additional isLicensedUser() check is needed
         client.getUsers(Collections.emptyList(), consumer);
@@ -82,11 +82,11 @@ public abstract class Office365DataStore extends AbstractDataStore {
      * Checks if a user is licensed by their ID.
      * Uses optimized field selection to get only assignedLicenses field.
      *
-     * @param client The Office365Client to use for the request.
+     * @param client The Microsoft365Client to use for the request.
      * @param userId The ID of the user to check.
      * @return true if the user is licensed, false otherwise.
      */
-    protected boolean isLicensedUser(final Office365Client client, final String userId) {
+    protected boolean isLicensedUser(final Microsoft365Client client, final String userId) {
         // Use getUserForLicenseCheck to get only assignedLicenses field for efficiency
         final User user = client.getUserForLicenseCheck(userId);
         return user.getAssignedLicenses().stream().anyMatch(license -> Objects.nonNull(license.getSkuId()));
@@ -103,18 +103,18 @@ public abstract class Office365DataStore extends AbstractDataStore {
     }
 
     /**
-     * Retrieves all Office 365 groups and processes them with the provided consumer.
-     * In Microsoft Graph SDK v6, the Office365Client.getOffice365Groups() already filters for Unified groups,
+     * Retrieves all Microsoft 365 groups and processes them with the provided consumer.
+     * In Microsoft Graph SDK v6, the Microsoft365Client.getMicrosoft365Groups() already filters for Unified groups,
      * so no additional filtering is needed here.
      *
-     * @param client The Office365Client to use for the request.
+     * @param client The Microsoft365Client to use for the request.
      * @param consumer A consumer to process each Group object.
      */
-    protected void getOffice365Groups(final Office365Client client, final Consumer<Group> consumer) {
-        // Office365Client.getOffice365Groups() in v6 already filters for Unified groups using:
+    protected void getMicrosoft365Groups(final Microsoft365Client client, final Consumer<Group> consumer) {
+        // Microsoft365Client.getMicrosoft365Groups() in v6 already filters for Unified groups using:
         // filter: "groupTypes/any(c:c eq 'Unified')"
         // So no additional client-side filtering is needed
-        client.getOffice365Groups(consumer);
+        client.getMicrosoft365Groups(consumer);
     }
 
     /**

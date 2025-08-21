@@ -13,7 +13,7 @@
  * either express or implied. See the License for the specific language
  * governing permissions and limitations under the License.
  */
-package org.codelibs.fess.ds.office365.client;
+package org.codelibs.fess.ds.ms365.client;
 
 import java.io.Closeable;
 import java.io.InputStream;
@@ -21,9 +21,9 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.builder.ToStringBuilder;
@@ -44,43 +44,44 @@ import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.microsoft.kiota.ApiException;
 import com.microsoft.graph.models.Channel;
+import com.microsoft.graph.models.ChannelCollectionResponse;
 import com.microsoft.graph.models.Chat;
+import com.microsoft.graph.models.ChatCollectionResponse;
 import com.microsoft.graph.models.ChatMessage;
 import com.microsoft.graph.models.ChatMessageAttachment;
-import com.microsoft.graph.models.ConversationMember;
-import com.microsoft.graph.models.Drive;
-import com.microsoft.graph.models.Group;
-import com.microsoft.graph.models.OnenotePage;
-import com.microsoft.graph.models.OnenoteSection;
-import com.microsoft.graph.models.Site;
-import com.microsoft.graph.models.User;
-import com.microsoft.graph.serviceclient.GraphServiceClient;
-import com.microsoft.graph.models.ChannelCollectionResponse;
-import com.microsoft.graph.models.ChatCollectionResponse;
 import com.microsoft.graph.models.ChatMessageCollectionResponse;
+import com.microsoft.graph.models.ConversationMember;
 import com.microsoft.graph.models.ConversationMemberCollectionResponse;
+import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.DriveCollectionResponse;
 import com.microsoft.graph.models.DriveItemCollectionResponse;
+import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.GroupCollectionResponse;
+import com.microsoft.graph.models.ListCollectionResponse;
+import com.microsoft.graph.models.ListItem;
+import com.microsoft.graph.models.ListItemCollectionResponse;
 import com.microsoft.graph.models.NotebookCollectionResponse;
+import com.microsoft.graph.models.OnenotePage;
 import com.microsoft.graph.models.OnenotePageCollectionResponse;
+import com.microsoft.graph.models.OnenoteSection;
 import com.microsoft.graph.models.OnenoteSectionCollectionResponse;
 import com.microsoft.graph.models.PermissionCollectionResponse;
+import com.microsoft.graph.models.Site;
+import com.microsoft.graph.models.SiteCollectionResponse;
+import com.microsoft.graph.models.User;
 import com.microsoft.graph.models.UserCollectionResponse;
-import java.util.Map;
-
-import okhttp3.Request;
+import com.microsoft.graph.serviceclient.GraphServiceClient;
+import com.microsoft.kiota.ApiException;
 
 /**
- * This class provides a client for accessing Microsoft Office 365 services using the Microsoft Graph API.
+ * This class provides a client for accessing Microsoft Microsoft 365 services using the Microsoft Graph API.
  * It handles authentication, and provides methods for interacting with services like OneDrive, OneNote, and Teams.
  * This client is designed to be used within the Fess data store framework.
  */
-public class Office365Client implements Closeable {
+public class Microsoft365Client implements Closeable {
 
-    private static final Logger logger = LogManager.getLogger(Office365Client.class);
+    private static final Logger logger = LogManager.getLogger(Microsoft365Client.class);
 
     /** The parameter name for the Azure AD tenant ID. */
     protected static final String TENANT_PARAM = "tenant";
@@ -115,11 +116,11 @@ public class Office365Client implements Closeable {
     protected int maxContentLength = -1;
 
     /**
-     * Constructs a new Office365Client with the specified data store parameters.
+     * Constructs a new Microsoft365Client with the specified data store parameters.
      *
      * @param params The data store parameters for configuration.
      */
-    public Office365Client(final DataStoreParams params) {
+    public Microsoft365Client(final DataStoreParams params) {
         this.params = params;
 
         final String tenant = params.getAsString(TENANT_PARAM, StringUtil.EMPTY);
@@ -140,7 +141,9 @@ public class Office365Client implements Closeable {
         try {
             // Add multi-tenant authentication support for Azure Identity v1.16.3
             final ClientSecretCredential clientSecretCredential = new ClientSecretCredentialBuilder().clientId(clientId)
-                    .clientSecret(clientSecret).tenantId(tenant).additionallyAllowedTenants("*") // Allow all tenants for backward compatibility
+                    .clientSecret(clientSecret)
+                    .tenantId(tenant)
+                    .additionallyAllowedTenants("*") // Allow all tenants for backward compatibility
                     .build();
 
             // Initialize GraphServiceClient with new v6 API
@@ -149,7 +152,8 @@ public class Office365Client implements Closeable {
             throw new DataStoreException("Failed to create a client.", e);
         }
 
-        userTypeCache = CacheBuilder.newBuilder().maximumSize(Integer.parseInt(params.getAsString(USER_TYPE_CACHE_SIZE, "10000")))
+        userTypeCache = CacheBuilder.newBuilder()
+                .maximumSize(Integer.parseInt(params.getAsString(USER_TYPE_CACHE_SIZE, "10000")))
                 .build(new CacheLoader<String, UserType>() {
                     @Override
                     public UserType load(final String key) {
@@ -168,7 +172,8 @@ public class Office365Client implements Closeable {
                     }
                 });
 
-        groupIdCache = CacheBuilder.newBuilder().maximumSize(Integer.parseInt(params.getAsString(GROUP_ID_CACHE_SIZE, "10000")))
+        groupIdCache = CacheBuilder.newBuilder()
+                .maximumSize(Integer.parseInt(params.getAsString(GROUP_ID_CACHE_SIZE, "10000")))
                 .build(new CacheLoader<String, String[]>() {
                     @Override
                     public String[] load(final String email) {
@@ -190,7 +195,7 @@ public class Office365Client implements Closeable {
     }
 
     /**
-     * An enumeration of user types in Office 365.
+     * An enumeration of user types in Microsoft 365.
      */
     public enum UserType {
         /** Represents a regular user. */
@@ -391,15 +396,15 @@ public class Office365Client implements Closeable {
     }
 
     /**
-     * Retrieves Office 365 groups (Unified groups) only, processing each group with the provided consumer.
+     * Retrieves Microsoft 365 groups (Unified groups) only, processing each group with the provided consumer.
      * This method filters for groups with groupTypes containing 'Unified' at the server level for efficiency.
      *
      * @param consumer A consumer to process each Group object.
      */
-    public void getOffice365Groups(final Consumer<Group> consumer) {
+    public void getMicrosoft365Groups(final Consumer<Group> consumer) {
         // Microsoft Graph SDK v6 uses requestConfiguration instead of QueryOption
         GroupCollectionResponse response = client.groups().get(requestConfiguration -> {
-            // Filter for Office 365 groups (Unified groups) only at server level
+            // Filter for Microsoft 365 groups (Unified groups) only at server level
             requestConfiguration.queryParameters.filter = "groupTypes/any(c:c eq 'Unified')";
             // Select only essential fields to improve performance
             requestConfiguration.queryParameters.select =
@@ -483,10 +488,21 @@ public class Office365Client implements Closeable {
             if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
                 // Request the next page using the nextLink URL
                 if (userId != null) {
-                    response = client.users().byUserId(userId).onenote().notebooks().byNotebookId(notebookId).sections()
-                            .withUrl(response.getOdataNextLink()).get();
+                    response = client.users()
+                            .byUserId(userId)
+                            .onenote()
+                            .notebooks()
+                            .byNotebookId(notebookId)
+                            .sections()
+                            .withUrl(response.getOdataNextLink())
+                            .get();
                 } else {
-                    response = client.me().onenote().notebooks().byNotebookId(notebookId).sections().withUrl(response.getOdataNextLink())
+                    response = client.me()
+                            .onenote()
+                            .notebooks()
+                            .byNotebookId(notebookId)
+                            .sections()
+                            .withUrl(response.getOdataNextLink())
                             .get();
                 }
             } else {
@@ -521,10 +537,21 @@ public class Office365Client implements Closeable {
             if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
                 // Request the next page using the nextLink URL
                 if (userId != null) {
-                    response = client.users().byUserId(userId).onenote().sections().byOnenoteSectionId(sectionId).pages()
-                            .withUrl(response.getOdataNextLink()).get();
+                    response = client.users()
+                            .byUserId(userId)
+                            .onenote()
+                            .sections()
+                            .byOnenoteSectionId(sectionId)
+                            .pages()
+                            .withUrl(response.getOdataNextLink())
+                            .get();
                 } else {
-                    response = client.me().onenote().sections().byOnenoteSectionId(sectionId).pages().withUrl(response.getOdataNextLink())
+                    response = client.me()
+                            .onenote()
+                            .sections()
+                            .byOnenoteSectionId(sectionId)
+                            .pages()
+                            .withUrl(response.getOdataNextLink())
                             .get();
                 }
             } else {
@@ -564,7 +591,10 @@ public class Office365Client implements Closeable {
         try (final InputStream in =
                 (userId != null ? client.users().byUserId(userId).onenote().pages().byOnenotePageId(page.getId()).content().get()
                         : client.me().onenote().pages().byOnenotePageId(page.getId()).content().get())) {
-            sb.append(ComponentUtil.getExtractorFactory().builder(in, Collections.emptyMap()).maxContentLength(maxContentLength).extract()
+            sb.append(ComponentUtil.getExtractorFactory()
+                    .builder(in, Collections.emptyMap())
+                    .maxContentLength(maxContentLength)
+                    .extract()
                     .getContent());
         } catch (final Exception e) {
             if (!ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
@@ -602,6 +632,163 @@ public class Office365Client implements Closeable {
         return client.sites().bySiteId(StringUtil.isNotBlank(id) ? id : "root").get();
     }
 
+    /**
+     * Retrieves all sites with pagination support.
+     *
+     * @param consumer A consumer to process each Site object.
+     */
+    public void getSites(final Consumer<Site> consumer) {
+        SiteCollectionResponse response = client.sites().get();
+
+        // Handle pagination with odata.nextLink
+        while (response != null && response.getValue() != null) {
+            response.getValue().forEach(consumer::accept);
+
+            // Check if there's a next page
+            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                // Request the next page using the nextLink URL
+                response = client.sites().withUrl(response.getOdataNextLink()).get();
+            } else {
+                // No more pages, exit loop
+                break;
+            }
+        }
+    }
+
+    /**
+     * Retrieves lists from a specific site.
+     *
+     * @param siteId The ID of the site.
+     * @param consumer A consumer to process each List object.
+     */
+    public void getSiteLists(final String siteId, final Consumer<com.microsoft.graph.models.List> consumer) {
+        ListCollectionResponse response = client.sites().bySiteId(siteId).lists().get();
+
+        // Handle pagination with odata.nextLink
+        while (response != null && response.getValue() != null) {
+            response.getValue().forEach(consumer::accept);
+
+            // Check if there's a next page
+            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                // Request the next page using the nextLink URL
+                response = client.sites().bySiteId(siteId).lists().withUrl(response.getOdataNextLink()).get();
+            } else {
+                // No more pages, exit loop
+                break;
+            }
+        }
+    }
+
+    /**
+     * Retrieves a specific list from a site.
+     *
+     * @param siteId The ID of the site.
+     * @param listId The ID of the list.
+     * @return The List object.
+     */
+    public com.microsoft.graph.models.List getList(final String siteId, final String listId) {
+        return client.sites().bySiteId(siteId).lists().byListId(listId).get();
+    }
+
+    /**
+     * Retrieves all items from a specific list with pagination support.
+     *
+     * @param siteId The ID of the site.
+     * @param listId The ID of the list.
+     * @param consumer A consumer to process each ListItem object.
+     */
+    public void getListItems(final String siteId, final String listId, final Consumer<ListItem> consumer) {
+        ListItemCollectionResponse response = client.sites().bySiteId(siteId).lists().byListId(listId).items().get();
+
+        // Handle pagination with odata.nextLink
+        while (response != null && response.getValue() != null) {
+            response.getValue().forEach(consumer::accept);
+
+            // Check if there's a next page
+            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                // Request the next page using the nextLink URL
+                response = client.sites().bySiteId(siteId).lists().byListId(listId).items().withUrl(response.getOdataNextLink()).get();
+            } else {
+                // No more pages, exit loop
+                break;
+            }
+        }
+    }
+
+    /**
+     * Retrieves a specific list item.
+     *
+     * @param siteId The ID of the site.
+     * @param listId The ID of the list.
+     * @param itemId The ID of the list item.
+     * @return The ListItem object.
+     */
+    public ListItem getListItem(final String siteId, final String listId, final String itemId) {
+        return client.sites().bySiteId(siteId).lists().byListId(listId).items().byListItemId(itemId).get();
+    }
+
+    /**
+     * Retrieves all items in a drive with recursive traversal and pagination support.
+     *
+     * @param driveId The ID of the drive.
+     * @param consumer A consumer to process each DriveItem object.
+     */
+    public void getDriveItemsInDrive(final String driveId, final Consumer<com.microsoft.graph.models.DriveItem> consumer) {
+        getDriveItemChildren(driveId, consumer, null);
+    }
+
+    /**
+     * Recursively retrieves children of a drive item with pagination support.
+     *
+     * @param driveId The ID of the drive.
+     * @param consumer A consumer to process each DriveItem object.
+     * @param item The parent drive item (null for root).
+     */
+    protected void getDriveItemChildren(final String driveId, final Consumer<com.microsoft.graph.models.DriveItem> consumer,
+            final com.microsoft.graph.models.DriveItem item) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Current item: {}", item != null ? item.getName() + " -> " + item.getWebUrl() : "root");
+        }
+
+        com.microsoft.graph.models.DriveItemCollectionResponse response;
+        try {
+            if (item != null) {
+                consumer.accept(item);
+                if (item.getFolder() == null) {
+                    return;
+                }
+            }
+
+            response = getDriveItemPage(driveId, item != null ? item.getId() : null);
+
+            // Handle pagination with odata.nextLink
+            while (response != null && response.getValue() != null) {
+                response.getValue().forEach(child -> getDriveItemChildren(driveId, consumer, child));
+
+                // Check if there's a next page
+                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                    // Request the next page using the nextLink URL
+                    try {
+                        final String itemIdToUse = item != null ? item.getId() : "root";
+                        response = getDriveItemsByNextLink(driveId, itemIdToUse, response.getOdataNextLink());
+                    } catch (final Exception e) {
+                        logger.warn("Failed to get next page of drive items: {}", e.getMessage());
+                        break;
+                    }
+                } else {
+                    // No more pages, exit loop
+                    break;
+                }
+            }
+        } catch (final com.microsoft.kiota.ApiException e) {
+            if (e.getResponseStatusCode() == 404) {
+                logger.debug("Drive item is not found.", e);
+            } else {
+                logger.warn("Failed to access a drive item.", e);
+            }
+        }
+    }
+
     //    public SiteCollectionPage getSites() {
     //        return client.sites().buildRequest().get();
     //    }
@@ -630,7 +817,7 @@ public class Office365Client implements Closeable {
      * @param consumer A consumer to process each Drive object.
      */
     // for testing
-    protected void getDrives(final Consumer<Drive> consumer) {
+    public void getDrives(final Consumer<Drive> consumer) {
         DriveCollectionResponse response = client.drives().get();
 
         // Handle pagination with odata.nextLink
@@ -796,7 +983,12 @@ public class Office365Client implements Closeable {
             // Check if there's a next page
             if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
                 // Request the next page using the nextLink URL
-                response = client.teams().byTeamId(teamId).channels().byChannelId(channelId).messages().withUrl(response.getOdataNextLink())
+                response = client.teams()
+                        .byTeamId(teamId)
+                        .channels()
+                        .byChannelId(channelId)
+                        .messages()
+                        .withUrl(response.getOdataNextLink())
                         .get();
             } else {
                 // No more pages, exit loop
@@ -827,8 +1019,15 @@ public class Office365Client implements Closeable {
             // Check if there's a next page
             if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
                 // Request the next page using the nextLink URL
-                response = client.teams().byTeamId(teamId).channels().byChannelId(channelId).messages().byChatMessageId(messageId).replies()
-                        .withUrl(response.getOdataNextLink()).get();
+                response = client.teams()
+                        .byTeamId(teamId)
+                        .channels()
+                        .byChannelId(channelId)
+                        .messages()
+                        .byChatMessageId(messageId)
+                        .replies()
+                        .withUrl(response.getOdataNextLink())
+                        .get();
             } else {
                 // No more pages, exit loop
                 break;
@@ -855,7 +1054,12 @@ public class Office365Client implements Closeable {
             // Check if there's a next page
             if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
                 // Request the next page using the nextLink URL
-                response = client.teams().byTeamId(teamId).channels().byChannelId(channelId).members().withUrl(response.getOdataNextLink())
+                response = client.teams()
+                        .byTeamId(teamId)
+                        .channels()
+                        .byChannelId(channelId)
+                        .members()
+                        .withUrl(response.getOdataNextLink())
                         .get();
             } else {
                 // No more pages, exit loop
@@ -940,8 +1144,13 @@ public class Office365Client implements Closeable {
             // Check if there's a next page
             if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
                 // Request the next page using the nextLink URL
-                response = client.chats().byChatId(chatId).messages().byChatMessageId(messageId).replies()
-                        .withUrl(response.getOdataNextLink()).get();
+                response = client.chats()
+                        .byChatId(chatId)
+                        .messages()
+                        .byChatMessageId(messageId)
+                        .replies()
+                        .withUrl(response.getOdataNextLink())
+                        .get();
             } else {
                 // No more pages, exit loop
                 break;
@@ -1007,11 +1216,18 @@ public class Office365Client implements Closeable {
             return StringUtil.EMPTY;
         }
         // https://learn.microsoft.com/en-us/answers/questions/1072289/download-directly-chat-attachment-using-contenturl
-        final String id = "u!" + Base64.getUrlEncoder().encodeToString(attachment.getContentUrl().getBytes(Constants.CHARSET_UTF_8))
-                .replaceFirst("=+$", StringUtil.EMPTY).replace('/', '_').replace('+', '-');
+        final String id = "u!" + Base64.getUrlEncoder()
+                .encodeToString(attachment.getContentUrl().getBytes(Constants.CHARSET_UTF_8))
+                .replaceFirst("=+$", StringUtil.EMPTY)
+                .replace('/', '_')
+                .replace('+', '-');
         try (InputStream in = client.shares().bySharedDriveItemId(id).driveItem().content().get()) {
-            return ComponentUtil.getExtractorFactory().builder(in, null).filename(attachment.getName()).maxContentLength(maxContentLength)
-                    .extract().getContent();
+            return ComponentUtil.getExtractorFactory()
+                    .builder(in, null)
+                    .filename(attachment.getName())
+                    .maxContentLength(maxContentLength)
+                    .extract()
+                    .getContent();
         } catch (final Exception e) {
             if (!ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
                 throw new CrawlingAccessException(e);

@@ -13,7 +13,7 @@
  * either express or implied. See the License for the specific language
  * governing permissions and limitations under the License.
  */
-package org.codelibs.fess.ds.office365;
+package org.codelibs.fess.ds.ms365;
 
 import java.io.IOException;
 import java.io.StringReader;
@@ -43,8 +43,8 @@ import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
-import org.codelibs.fess.ds.office365.client.Office365Client;
-import org.codelibs.fess.ds.office365.client.Office365Client.UserType;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client.UserType;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.exception.FessSystemException;
@@ -70,7 +70,7 @@ import com.microsoft.graph.models.ItemBody;
  * It supports crawling messages from teams, channels, and chats.
  * It extracts message content, metadata, attachments, and permissions for indexing.
  */
-public class TeamsDataStore extends Office365DataStore {
+public class TeamsDataStore extends Microsoft365DataStore {
 
     /**
      * Default constructor.
@@ -190,7 +190,7 @@ public class TeamsDataStore extends Office365DataStore {
         }
 
         final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
-        try (final Office365Client client = createClient(paramMap)) {
+        try (final Microsoft365Client client = createClient(paramMap)) {
             processTeamMessages(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, client);
             processChatMessages(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, client);
 
@@ -215,11 +215,11 @@ public class TeamsDataStore extends Office365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param configMap The configuration map.
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      */
     protected void processChatMessages(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Map<String, Object> configMap,
-            final Office365Client client) {
+            final Microsoft365Client client) {
         final String chatId = (String) configMap.get(CHAT_ID);
         if (StringUtil.isNotBlank(chatId)) {
             final List<ChatMessage> msgList = new ArrayList<>();
@@ -236,10 +236,10 @@ public class TeamsDataStore extends Office365DataStore {
      * Creates a chat message from a list of messages.
      *
      * @param msgList The list of chat messages.
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      * @return A new chat message.
      */
-    protected ChatMessage createChatMessage(final List<ChatMessage> msgList, final Office365Client client) {
+    protected ChatMessage createChatMessage(final List<ChatMessage> msgList, final Microsoft365Client client) {
         final ChatMessage msg = new ChatMessage();
         final ChatMessage defaultMsg = msgList.get(0);
         msg.setAttachments(new ArrayList<>());
@@ -285,11 +285,11 @@ public class TeamsDataStore extends Office365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param configMap The configuration map.
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      */
     protected void processTeamMessages(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Map<String, Object> configMap,
-            final Office365Client client) {
+            final Microsoft365Client client) {
         final String teamId = (String) configMap.get(TEAM_ID);
         if (StringUtil.isNotBlank(teamId)) {
             final Group g = client.getGroupById(teamId);
@@ -396,10 +396,10 @@ public class TeamsDataStore extends Office365DataStore {
      * Gets the set of excluded group IDs based on configured exclude team IDs.
      *
      * @param configMap The configuration map containing exclude team ID settings.
-     * @param client The Office365Client for group lookups.
+     * @param client The Microsoft365Client for group lookups.
      * @return A set of group IDs to exclude from processing.
      */
-    protected Set<String> getExcludeGroupIdSet(final Map<String, Object> configMap, final Office365Client client) {
+    protected Set<String> getExcludeGroupIdSet(final Map<String, Object> configMap, final Microsoft365Client client) {
         final String[] teamIds = (String[]) configMap.get(EXCLUDE_TEAM_ID);
         return StreamUtil.stream(teamIds).get(stream -> stream.map(teamId -> {
             final Group g = client.getGroupById(teamId);
@@ -544,24 +544,24 @@ public class TeamsDataStore extends Office365DataStore {
     }
 
     /**
-     * Creates a new Office365Client instance for API communication.
+     * Creates a new Microsoft365Client instance for API communication.
      *
      * @param params The data store parameters containing authentication settings.
-     * @return A new Office365Client instance.
+     * @return A new Microsoft365Client instance.
      */
-    protected Office365Client createClient(final DataStoreParams params) {
-        return new Office365Client(params);
+    protected Microsoft365Client createClient(final DataStoreParams params) {
+        return new Microsoft365Client(params);
     }
 
     /**
      * Gets the group roles for members of a specific team channel.
      *
-     * @param client The Office365Client for API communication.
+     * @param client The Microsoft365Client for API communication.
      * @param teamId The team ID.
      * @param channelId The channel ID.
      * @return A list of group role permissions.
      */
-    protected List<String> getGroupRoles(final Office365Client client, final String teamId, final String channelId) {
+    protected List<String> getGroupRoles(final Microsoft365Client client, final String teamId, final String channelId) {
         final List<String> permissions = new ArrayList<>();
         client.getChannelMembers(Collections.emptyList(), m -> getGroupRoles(client, permissions, m), teamId, channelId);
         return permissions;
@@ -570,11 +570,11 @@ public class TeamsDataStore extends Office365DataStore {
     /**
      * Gets the group roles for members of a specific chat.
      *
-     * @param client The Office365Client for API communication.
+     * @param client The Microsoft365Client for API communication.
      * @param chatId The chat ID.
      * @return A list of group role permissions.
      */
-    protected List<String> getGroupRoles(final Office365Client client, final String chatId) {
+    protected List<String> getGroupRoles(final Microsoft365Client client, final String chatId) {
         final List<String> permissions = new ArrayList<>();
         client.getChatMembers(Collections.emptyList(), m -> getGroupRoles(client, permissions, m), chatId);
         return permissions;
@@ -583,11 +583,11 @@ public class TeamsDataStore extends Office365DataStore {
     /**
      * Extracts and adds group roles from a conversation member to the permissions list.
      *
-     * @param client The Office365Client for API communication.
+     * @param client The Microsoft365Client for API communication.
      * @param permissions The list to add permissions to.
      * @param m The conversation member to process.
      */
-    protected void getGroupRoles(final Office365Client client, final List<String> permissions, final ConversationMember m) {
+    protected void getGroupRoles(final Microsoft365Client client, final List<String> permissions, final ConversationMember m) {
         final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
         if (logger.isDebugEnabled()) {
             logger.debug("Member: {} : {}", m.getId(), ToStringBuilder.reflectionToString(m));
@@ -678,13 +678,13 @@ public class TeamsDataStore extends Office365DataStore {
      * @param permissions The list of permissions for the message.
      * @param message The chat message to process.
      * @param resultAppender Consumer to append additional result data.
-     * @param client The Office365Client for API communication.
+     * @param client The Microsoft365Client for API communication.
      * @return A map containing the processed message data, or null if the message was filtered.
      */
     protected Map<String, Object> processChatMessage(final DataConfig dataConfig, final IndexUpdateCallback callback,
             final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
             final Map<String, Object> defaultDataMap, final List<String> permissions, final ChatMessage message,
-            final Consumer<Map<String, Object>> resultAppender, final Office365Client client) {
+            final Consumer<Map<String, Object>> resultAppender, final Microsoft365Client client) {
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
         if (logger.isDebugEnabled()) {
             logger.debug("Message: {} : {}", message.getId(), ToStringBuilder.reflectionToString(message));
@@ -834,10 +834,10 @@ public class TeamsDataStore extends Office365DataStore {
      *
      * @param configMap The configuration map containing content extraction settings.
      * @param message The chat message.
-     * @param client The Office365Client for API communication.
+     * @param client The Microsoft365Client for API communication.
      * @return The formatted message content.
      */
-    protected String getContent(final Map<String, Object> configMap, final ChatMessage message, final Office365Client client) {
+    protected String getContent(final Map<String, Object> configMap, final ChatMessage message, final Microsoft365Client client) {
         final StringBuilder bodyBuf = new StringBuilder(1000);
         if (message.getBody() != null) {
             switch (message.getBody().getContentType()) {

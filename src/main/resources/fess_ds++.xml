@@ -2,13 +2,19 @@
 <!DOCTYPE components PUBLIC "-//DBFLUTE//DTD LastaDi 1.0//EN"
 	"http://dbflute.org/meta/lastadi10.dtd">
 <components>
-    <component name="oneDriveDataStore" class="org.codelibs.fess.ds.office365.OneDriveDataStore">
+    <component name="oneDriveDataStore" class="org.codelibs.fess.ds.ms365.OneDriveDataStore">
         <postConstruct name="register"></postConstruct>
     </component>
-    <component name="oneNoteDataStore" class="org.codelibs.fess.ds.office365.OneNoteDataStore">
+    <component name="oneNoteDataStore" class="org.codelibs.fess.ds.ms365.OneNoteDataStore">
         <postConstruct name="register"></postConstruct>
     </component>
-    <component name="teamsDataStore" class="org.codelibs.fess.ds.office365.TeamsDataStore">
+    <component name="teamsDataStore" class="org.codelibs.fess.ds.ms365.TeamsDataStore">
+        <postConstruct name="register"></postConstruct>
+    </component>
+    <component name="sharePointSiteDataStore" class="org.codelibs.fess.ds.ms365.SharePointSiteDataStore">
+        <postConstruct name="register"></postConstruct>
+    </component>
+    <component name="sharePointListDataStore" class="org.codelibs.fess.ds.ms365.SharePointListDataStore">
         <postConstruct name="register"></postConstruct>
     </component>
 </components>

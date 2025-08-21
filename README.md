@@ -1,29 +1,50 @@
-Office365 Data Store for Fess
+Microsoft365 Data Store for Fess
 [![Java CI with Maven](https://github.com/codelibs/fess-ds-office365/actions/workflows/maven.yml/badge.svg)](https://github.com/codelibs/fess-ds-office365/actions/workflows/maven.yml)
 ==========================
 
 ## Overview
 
-Office365 Data Store is an extension for Fess Data Store Crawling.
+Microsoft365 Data Store is an extension for Fess Data Store Crawling that enables comprehensive crawling of Microsoft 365 services including OneDrive, OneNote, Teams, SharePoint Sites, and SharePoint Lists via Microsoft Graph API v6.
+
+## Features
+
+- **OneDrive**: Crawl user and group OneDrive files and folders
+- **OneNote**: Crawl notebooks, sections, and pages
+- **Teams**: Crawl team channels, messages, and chats
+- **SharePoint Sites**: Crawl SharePoint sites and document libraries
+- **SharePoint Lists**: Crawl SharePoint lists and list items
+- **Microsoft Graph SDK v6**: Latest SDK with pagination and caching support
+- **Role-based Access Control**: Integrated with Fess security model
+- **Configurable Filtering**: Include/exclude patterns and system content filtering
 
 ## Download
 
-See [Maven Repository](https://repo1.maven.org/maven2/org/codelibs/fess/fess-ds-office365/).
+See [Maven Repository](https://repo1.maven.org/maven2/org/codelibs/fess/fess-ds-microsoft365/).
 
 ## Installation
 
-1. Download fess-ds-office365-X.X.X.jar
-2. Copy fess-ds-office365-X.X.X.jar to $FESS\_HOME/app/WEB-INF/lib or /usr/share/fess/app/WEB-INF/lib
+1. Download fess-ds-microsoft365-X.X.X.jar
+2. Copy fess-ds-microsoft365-X.X.X.jar to $FESS\_HOME/app/WEB-INF/lib or /usr/share/fess/app/WEB-INF/lib
 
 ## Getting Started
 
-### Parameters
+### Authentication Parameters
 
 ```
 tenant=********-****-****-****-************
 client_id=********-****-****-****-************
 client_secret=***********************
 ```
+
+### Data Store Types
+
+The plugin provides five different data store types for crawling different Microsoft 365 services:
+
+1. **oneDriveDataStore** - OneDrive files and folders
+2. **oneNoteDataStore** - OneNote notebooks and pages
+3. **teamsDataStore** - Teams channels and messages
+4. **sharePointSiteDataStore** - SharePoint sites and document libraries
+5. **sharePointListDataStore** - SharePoint lists and list items
 
 ### Scripts
 
@@ -69,3 +90,144 @@ role=notebooks.roles
 | notebooks.last_modified | The last time the notebook was modified by anyone. |
 | notebooks.web_url | A link for opening the notebook in an editor in a browser. |
 | notebooks.roles | A users/groups who can access the notebook. |
+
+#### Teams
+
+```
+title=teams.name
+content=teams.contents
+created=teams.created
+last_modified=teams.last_modified
+url=teams.web_url
+role=teams.roles
+```
+
+| Key | Value |
+| --- | --- |
+| teams.name | The name of the team/channel/message. |
+| teams.contents | The text contents of the message |
+| teams.created | The time at which the message was created. |
+| teams.last_modified | The last time the message was modified. |
+| teams.web_url | A link for opening the message in Teams. |
+| teams.roles | A users/groups who can access the team. |
+
+#### SharePoint Sites
+
+```
+title=site.name
+content=site.description + "\n" + site.contents
+mimetype=site.mimetype
+created=site.created
+last_modified=site.last_modified
+url=site.web_url
+role=site.roles
+```
+
+| Key | Value |
+| --- | --- |
+| site.name | The name of the site or document. |
+| site.description | A description of the site or document. |
+| site.contents | The text contents of the document |
+| site.mimetype | The MIME type of the document. |
+| site.created | The time at which the document was created. |
+| site.last_modified | The last time the document was modified. |
+| site.web_url | A link for opening the document in a browser. |
+| site.roles | A users/groups who can access the document. |
+
+#### SharePoint Lists
+
+```
+title=list_item.title
+content=list_item.content
+created=list_item.created
+last_modified=list_item.modified
+url=list_item.url
+role=list_item.roles
+```
+
+| Key | Value |
+| --- | --- |
+| list_item.title | The title of the list item. |
+| list_item.content | The text contents of the list item |
+| list_item.fields | All fields and values from the SharePoint list item |
+| list_item.created | The time at which the list item was created. |
+| list_item.modified | The last time the list item was modified. |
+| list_item.url | A link for opening the list item in SharePoint. |
+| list_item.roles | A users/groups who can access the list item. |
+
+### Configuration Parameters
+
+#### Common Parameters
+
+| Parameter | Description | Default |
+| --- | --- | --- |
+| tenant | Azure AD tenant ID | Required |
+| client_id | App registration client ID | Required |
+| client_secret | App registration client secret | Required |
+| number_of_threads | Number of crawling threads | 1 |
+| ignore_error | Continue crawling on errors | false |
+| include_pattern | Include files/items matching pattern | - |
+| exclude_pattern | Exclude files/items matching pattern | - |
+
+#### SharePoint Site Parameters
+
+| Parameter | Description | Default |
+| --- | --- | --- |
+| site_id | Specific SharePoint site ID to crawl | All sites |
+| exclude_site_id | Comma-separated site IDs to exclude | - |
+| ignore_system_libraries | Skip system document libraries | true |
+| max_content_length | Maximum content length to extract | 10485760 |
+
+#### SharePoint List Parameters
+
+| Parameter | Description | Default |
+| --- | --- | --- |
+| site_id | SharePoint site ID containing lists | Required |
+| list_id | Specific list ID to crawl | All lists |
+| exclude_list_id | Comma-separated list IDs to exclude | - |
+| list_template_filter | Filter by list template types | - |
+| ignore_system_lists | Skip system lists | true |
+
+## Azure App Registration
+
+To use this plugin, you need to create an Azure App registration with the following permissions:
+
+### Required API Permissions
+
+- **Microsoft Graph**:
+  - Files.Read.All
+  - Sites.Read.All
+  - Notes.Read.All
+  - Chat.Read.All
+  - ChannelMessage.Read.All
+  - Team.ReadBasic.All
+  - User.Read.All
+  - Group.Read.All
+
+### Authentication
+
+The plugin uses Client Credentials flow with client secret authentication.
+
+## Development
+
+### Build
+
+```bash
+mvn clean package
+```
+
+### Code Formatting
+
+```bash
+mvn formatter:format
+```
+
+### Test
+
+```bash
+mvn test
+```
+
+## License
+
+[ASL 2.0](https://github.com/codelibs/fess-ds-office365/blob/master/LICENSE)

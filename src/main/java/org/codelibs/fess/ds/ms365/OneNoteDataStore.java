@@ -13,7 +13,7 @@
  * either express or implied. See the License for the specific language
  * governing permissions and limitations under the License.
  */
-package org.codelibs.fess.ds.office365;
+package org.codelibs.fess.ds.ms365;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -23,7 +23,6 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
-import java.util.function.Function;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -33,7 +32,7 @@ import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
-import org.codelibs.fess.ds.office365.client.Office365Client;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
@@ -41,20 +40,17 @@ import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
-import com.microsoft.kiota.ApiException;
 import com.microsoft.graph.models.Notebook;
-import com.microsoft.graph.models.Site;
-import com.microsoft.graph.serviceclient.GraphServiceClient;
 import com.microsoft.graph.models.NotebookCollectionResponse;
-
-import okhttp3.Request;
+import com.microsoft.graph.models.Site;
+import com.microsoft.kiota.ApiException;
 
 /**
  * This class is a data store for crawling and indexing content from Microsoft OneNote.
  * It supports crawling notebooks from user accounts, groups, and SharePoint sites.
  * It extracts notebook content, metadata, and permissions for indexing.
  */
-public class OneNoteDataStore extends Office365DataStore {
+public class OneNoteDataStore extends Microsoft365DataStore {
 
     /**
      * Default constructor.
@@ -101,7 +97,7 @@ public class OneNoteDataStore extends Office365DataStore {
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap) {
 
         final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
-        try (final Office365Client client = createClient(paramMap)) {
+        try (final Microsoft365Client client = createClient(paramMap)) {
             if (isSiteNoteCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("crawling site notes.");
@@ -133,13 +129,13 @@ public class OneNoteDataStore extends Office365DataStore {
     }
 
     /**
-     * Creates a new Office365Client.
+     * Creates a new Microsoft365Client.
      *
      * @param params The data store parameters.
-     * @return A new Office365Client.
+     * @return A new Microsoft365Client.
      */
-    protected Office365Client createClient(final DataStoreParams params) {
-        return new Office365Client(params);
+    protected Microsoft365Client createClient(final DataStoreParams params) {
+        return new Microsoft365Client(params);
     }
 
     /**
@@ -181,11 +177,11 @@ public class OneNoteDataStore extends Office365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param executorService The executor service.
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      */
     protected void storeSiteNotes(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
-            final Office365Client client) {
+            final Microsoft365Client client) {
         final Site root = client.getSite("root");
         final List<String> roles = Collections.emptyList();
         getNotebooks(client, "sites/" + root.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig, callback,
@@ -201,11 +197,11 @@ public class OneNoteDataStore extends Office365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param executorService The executor service.
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      */
     protected void storeUsersNotes(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
-            final Office365Client client) {
+            final Microsoft365Client client) {
         getLicensedUsers(client, user -> {
             final List<String> roles = getUserRoles(user);
             try {
@@ -226,12 +222,12 @@ public class OneNoteDataStore extends Office365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param executorService The executor service.
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      */
     protected void storeGroupsNotes(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
-            final Office365Client client) {
-        getOffice365Groups(client, group -> {
+            final Microsoft365Client client) {
+        getMicrosoft365Groups(client, group -> {
             final List<String> roles = getGroupRoles(group);
             getNotebooks(client, "groups/" + group.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig, callback,
                     paramMap, scriptMap, defaultDataMap, client, "groups/" + group.getId(), notebook, roles)));
@@ -246,13 +242,13 @@ public class OneNoteDataStore extends Office365DataStore {
      * @param paramMap The data store parameters.
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      * @param userId The user ID.
      * @param notebook The notebook.
      * @param roles The roles.
      */
     protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
-            final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Office365Client client,
+            final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
             final String userId, final Notebook notebook, final List<String> roles) {
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
         final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
@@ -338,17 +334,17 @@ public class OneNoteDataStore extends Office365DataStore {
     /**
      * Gets the notebooks.
      *
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      * @param userId The user ID.
      * @param consumer The consumer to process each notebook.
      */
-    protected void getNotebooks(final Office365Client client, final String userId, final Consumer<Notebook> consumer) {
+    protected void getNotebooks(final Microsoft365Client client, final String userId, final Consumer<Notebook> consumer) {
         try {
             NotebookCollectionResponse response = client.getNotebookPage(userId);
             if (response.getValue() != null) {
                 response.getValue().forEach(consumer);
             }
-            // Pagination handling is implemented in the Office365Client methods
+            // Pagination handling is implemented in the Microsoft365Client methods
         } catch (final ApiException e) {
             if (e.getResponseStatusCode() == 404) {
                 logger.debug("Notebook is not found.", e);

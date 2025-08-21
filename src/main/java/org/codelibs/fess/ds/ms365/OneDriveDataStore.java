@@ -13,7 +13,7 @@
  * either express or implied. See the License for the specific language
  * governing permissions and limitations under the License.
  */
-package org.codelibs.fess.ds.office365;
+package org.codelibs.fess.ds.ms365;
 
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
@@ -27,7 +27,6 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -44,8 +43,8 @@ import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.crawler.helper.ContentLengthHelper;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
-import org.codelibs.fess.ds.office365.client.Office365Client;
-import org.codelibs.fess.ds.office365.client.Office365Client.UserType;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client.UserType;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
@@ -57,23 +56,20 @@ import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
-import com.microsoft.kiota.ApiException;
 import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.DriveItem;
+import com.microsoft.graph.models.DriveItemCollectionResponse;
 import com.microsoft.graph.models.Hashes;
 import com.microsoft.graph.models.Permission;
-import com.microsoft.graph.serviceclient.GraphServiceClient;
-import com.microsoft.graph.models.DriveItemCollectionResponse;
 import com.microsoft.graph.models.PermissionCollectionResponse;
-
-import okhttp3.Request;
+import com.microsoft.kiota.ApiException;
 
 /**
  * This class is a data store for crawling and indexing files in Microsoft OneDrive.
  * It supports crawling user drives, group drives, and shared document libraries.
  * It also handles file metadata, permissions, and content extraction.
  */
-public class OneDriveDataStore extends Office365DataStore {
+public class OneDriveDataStore extends Microsoft365DataStore {
 
     /**
      * Default constructor.
@@ -228,7 +224,7 @@ public class OneDriveDataStore extends Office365DataStore {
         }
 
         final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
-        try (final Office365Client client = createClient(paramMap)) {
+        try (final Microsoft365Client client = createClient(paramMap)) {
             if (isSharedDocumentsDriveCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("crawling shared documents drive.");
@@ -278,13 +274,13 @@ public class OneDriveDataStore extends Office365DataStore {
     }
 
     /**
-     * Creates a new Office365Client.
+     * Creates a new Microsoft365Client.
      *
      * @param params The data store parameters.
-     * @return A new Office365Client.
+     * @return A new Microsoft365Client.
      */
-    protected Office365Client createClient(final DataStoreParams params) {
-        return new Office365Client(params);
+    protected Microsoft365Client createClient(final DataStoreParams params) {
+        return new Microsoft365Client(params);
     }
 
     /**
@@ -396,12 +392,12 @@ public class OneDriveDataStore extends Office365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param executorService The executor service.
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      * @param driveId The drive ID.
      */
     protected void storeSharedDocumentsDrive(final DataConfig dataConfig, final IndexUpdateCallback callback,
             final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
-            final Map<String, Object> defaultDataMap, final ExecutorService executorService, final Office365Client client,
+            final Map<String, Object> defaultDataMap, final ExecutorService executorService, final Microsoft365Client client,
             final String driveId) {
         final String actualDriveId = driveId != null ? driveId : getCachedUserDriveId(client);
         getDriveItemsInDrive(client, actualDriveId, item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap,
@@ -418,11 +414,11 @@ public class OneDriveDataStore extends Office365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param executorService The executor service.
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      */
     protected void storeUsersDrive(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
-            final ExecutorService executorService, final Office365Client client) {
+            final ExecutorService executorService, final Microsoft365Client client) {
         getLicensedUsers(client, user -> {
             try {
                 final Drive userDrive = client.getDrive(user.getId());
@@ -455,12 +451,12 @@ public class OneDriveDataStore extends Office365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param executorService The executor service.
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      */
     protected void storeGroupsDrive(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
-            final ExecutorService executorService, final Office365Client client) {
-        getOffice365Groups(client, group -> {
+            final ExecutorService executorService, final Microsoft365Client client) {
+        getMicrosoft365Groups(client, group -> {
             try {
                 final Drive groupDrive = client.getDrive(group.getId());
                 getDriveItemsInDrive(client, groupDrive.getId(), //
@@ -481,14 +477,14 @@ public class OneDriveDataStore extends Office365DataStore {
      * @param paramMap The data store parameters.
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      * @param driveId The drive ID.
      * @param item The drive item.
      * @param roles The roles.
      */
     protected void processDriveItem(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
-            final Office365Client client, final String driveId, final DriveItem item, final List<String> roles) {
+            final Microsoft365Client client, final String driveId, final DriveItem item, final List<String> roles) {
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
         final FessConfig fessConfig = ComponentUtil.getFessConfig();
         final String mimetype;
@@ -662,12 +658,12 @@ public class OneDriveDataStore extends Office365DataStore {
     /**
      * Gets the permissions for a drive item.
      *
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      * @param driveId The drive ID.
      * @param item The drive item.
      * @return A list of permissions.
      */
-    protected List<String> getDriveItemPermissions(final Office365Client client, final String driveId, final DriveItem item) {
+    protected List<String> getDriveItemPermissions(final Microsoft365Client client, final String driveId, final DriveItem item) {
         final List<String> permissions = new ArrayList<>();
         PermissionCollectionResponse response = client.getDrivePermissions(driveId, item.getId());
         final Consumer<Permission> consumer = p -> {
@@ -682,7 +678,7 @@ public class OneDriveDataStore extends Office365DataStore {
 
             // Check if there's a next page
             if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using a helper method in Office365Client
+                // Request the next page using a helper method in Microsoft365Client
                 try {
                     response = client.getDrivePermissionsByNextLink(driveId, item.getId(), response.getOdataNextLink());
                 } catch (final Exception e) {
@@ -700,11 +696,11 @@ public class OneDriveDataStore extends Office365DataStore {
     /**
      * Assigns a permission to a user or group.
      *
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      * @param permissions The list of permissions.
      * @param permission The permission to assign.
      */
-    protected void assignPermission(final Office365Client client, final List<String> permissions, final Permission permission) {
+    protected void assignPermission(final Microsoft365Client client, final List<String> permissions, final Permission permission) {
         final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
         final String id = permission.getGrantedToV2().getUser().getId();
         final String email = getUserEmail(permission);
@@ -844,19 +840,24 @@ public class OneDriveDataStore extends Office365DataStore {
     /**
      * Gets the contents of a drive item.
      *
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      * @param driveId The drive ID.
      * @param item The drive item.
      * @param maxContentLength The maximum content length.
      * @param ignoreError true to ignore errors.
      * @return The contents of the drive item.
      */
-    protected String getDriveItemContents(final Office365Client client, final String driveId, final DriveItem item,
+    protected String getDriveItemContents(final Microsoft365Client client, final String driveId, final DriveItem item,
             final long maxContentLength, final boolean ignoreError) {
         if (item.getFile() != null) {
             try (final InputStream in = client.getDriveContent(driveId, item.getId())) {
-                return ComponentUtil.getExtractorFactory().builder(in, Collections.emptyMap()).filename(item.getName())
-                        .maxContentLength(maxContentLength).extractorName(extractorName).extract().getContent();
+                return ComponentUtil.getExtractorFactory()
+                        .builder(in, Collections.emptyMap())
+                        .filename(item.getName())
+                        .maxContentLength(maxContentLength)
+                        .extractorName(extractorName)
+                        .extract()
+                        .getContent();
             } catch (final Exception e) {
                 if (!ignoreError && !ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
                     throw new DataStoreCrawlingException(item.getWebUrl(), "Failed to get contents: " + item.getName(), e);
@@ -875,23 +876,23 @@ public class OneDriveDataStore extends Office365DataStore {
     /**
      * Gets the drive items in a drive.
      *
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      * @param driveId The drive ID.
      * @param consumer The consumer to process each drive item.
      */
-    protected void getDriveItemsInDrive(final Office365Client client, final String driveId, final Consumer<DriveItem> consumer) {
+    protected void getDriveItemsInDrive(final Microsoft365Client client, final String driveId, final Consumer<DriveItem> consumer) {
         getDriveItemChildren(client, driveId, consumer, null);
     }
 
     /**
      * Gets the children of a drive item.
      *
-     * @param client The Office365Client.
+     * @param client The Microsoft365Client.
      * @param driveId The drive ID.
      * @param consumer The consumer to process each drive item.
      * @param item The drive item.
      */
-    protected void getDriveItemChildren(final Office365Client client, final String driveId, final Consumer<DriveItem> consumer,
+    protected void getDriveItemChildren(final Microsoft365Client client, final String driveId, final Consumer<DriveItem> consumer,
             final DriveItem item) {
         if (logger.isDebugEnabled()) {
             logger.debug("Current item: {}", item != null ? item.getName() + " -> " + item.getWebUrl() : "root");
@@ -912,7 +913,7 @@ public class OneDriveDataStore extends Office365DataStore {
 
                 // Check if there's a next page
                 if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                    // Request the next page using a helper method in Office365Client
+                    // Request the next page using a helper method in Microsoft365Client
                     try {
                         final String itemIdToUse = item != null ? item.getId() : "root";
                         response = client.getDriveItemsByNextLink(driveId, itemIdToUse, response.getOdataNextLink());
@@ -938,10 +939,10 @@ public class OneDriveDataStore extends Office365DataStore {
      * Gets the current user's drive ID with caching to avoid expensive repeated API calls.
      * Thread-safe implementation using double-checked locking pattern.
      *
-     * @param client The Office365Client to use for API calls.
+     * @param client The Microsoft365Client to use for API calls.
      * @return The cached user drive ID.
      */
-    protected String getCachedUserDriveId(final Office365Client client) {
+    protected String getCachedUserDriveId(final Microsoft365Client client) {
         // Double-checked locking pattern for thread-safe lazy initialization
         if (cachedUserDriveId == null) {
             synchronized (driveIdCacheLock) {
