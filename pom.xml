@@ -17,6 +17,9 @@
 		<version>15.2.0-SNAPSHOT</version>
 		<relativePath />
 	</parent>
+	<properties>
+		<opentelemetry.context.version>1.31.0</opentelemetry.context.version>
+	</properties>
 	<build>
 		<plugins>
 			<plugin>
@@ -60,6 +63,7 @@
 									<include>io.projectreactor.netty:reactor-netty-http</include>
 									<include>io.projectreactor.netty:reactor-netty-core</include>
 									<include>io.projectreactor:reactor-core</include>
+									<include>io.opentelemetry:opentelemetry-context</include>
 									<include>io.netty:netty-buffer</include>
 									<include>io.netty:netty-codec</include>
 									<include>io.netty:netty-codec-dns</include>
@@ -227,6 +231,11 @@
 			<groupId>com.microsoft.azure</groupId>
 			<artifactId>adal4j</artifactId>
 			<version>${adal4j.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>io.opentelemetry</groupId>
+			<artifactId>opentelemetry-context</artifactId>
+			<version>${opentelemetry.context.version}</version>
 		</dependency>
 	</dependencies>
 </project>
