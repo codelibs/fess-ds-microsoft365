@@ -698,7 +698,11 @@ public class Microsoft365Client implements Closeable {
      * @param consumer A consumer to process each ListItem object.
      */
     public void getListItems(final String siteId, final String listId, final Consumer<ListItem> consumer) {
-        ListItemCollectionResponse response = client.sites().bySiteId(siteId).lists().byListId(listId).items().get();
+        // Get list items with expanded fields to ensure content is available
+        ListItemCollectionResponse response = client.sites().bySiteId(siteId).lists().byListId(listId).items().get(config -> {
+            config.queryParameters.expand = new String[] { "fields" };
+            config.queryParameters.select = new String[] { "id", "createdDateTime", "lastModifiedDateTime", "webUrl", "fields" };
+        });
 
         // Handle pagination with odata.nextLink
         while (response != null && response.getValue() != null) {
@@ -725,6 +729,26 @@ public class Microsoft365Client implements Closeable {
      */
     public ListItem getListItem(final String siteId, final String listId, final String itemId) {
         return client.sites().bySiteId(siteId).lists().byListId(listId).items().byListItemId(itemId).get();
+    }
+
+    /**
+     * Retrieves a specific list item with expanded fields.
+     *
+     * @param siteId The ID of the site.
+     * @param listId The ID of the list.
+     * @param itemId The ID of the list item.
+     * @param expandFields Whether to expand the fields property.
+     * @return The ListItem object with expanded fields.
+     */
+    public ListItem getListItem(final String siteId, final String listId, final String itemId, final boolean expandFields) {
+        if (expandFields) {
+            return client.sites().bySiteId(siteId).lists().byListId(listId).items().byListItemId(itemId).get(config -> {
+                config.queryParameters.expand = new String[] { "fields" };
+                config.queryParameters.select = new String[] { "id", "createdDateTime", "lastModifiedDateTime", "webUrl", "fields" };
+            });
+        } else {
+            return getListItem(siteId, listId, itemId);
+        }
     }
 
     /**

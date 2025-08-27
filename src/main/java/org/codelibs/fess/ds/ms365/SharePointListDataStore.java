@@ -18,8 +18,11 @@ package org.codelibs.fess.ds.ms365;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 import org.apache.logging.log4j.LogManager;
@@ -138,6 +141,22 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             }
         } finally {
             executorService.shutdown();
+            try {
+                // Wait for all tasks to complete
+                if (!executorService.awaitTermination(30, TimeUnit.MINUTES)) {
+                    logger.warn("Executor did not terminate in the specified time. Forcing shutdownNow()");
+                    executorService.shutdownNow();
+                }
+            } catch (final InterruptedException ie) {
+                executorService.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            try {
+                // Commit remaining documents in buffer
+                callback.commit();
+            } catch (final Exception e) {
+                logger.warn("Failed to commit index update callback.", e);
+            }
         }
     }
 
@@ -156,9 +175,10 @@ public class SharePointListDataStore extends Microsoft365DataStore {
 
         try {
             // Get list items and process them
+            final List<Future<?>> futures = new CopyOnWriteArrayList<>();
             client.getListItems(site.getId(), list.getId(), item -> {
                 if (isTargetItem(paramMap, item)) {
-                    executorService.execute(() -> {
+                    futures.add(executorService.submit(() -> {
                         try {
                             processListItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site, list, item);
                         } catch (final Exception e) {
@@ -168,9 +188,21 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                                         e);
                             }
                         }
-                    });
+                    }));
                 }
             });
+
+            // Wait for all item processing tasks to complete
+            for (final Future<?> future : futures) {
+                try {
+                    future.get();
+                } catch (final Exception e) {
+                    logger.warn("A task for list {} was interrupted/failed.", list.getDisplayName(), e);
+                    if (!isIgnoreError(paramMap)) {
+                        throw new DataStoreCrawlingException(list.getDisplayName(), "A task failed for list: " + list.getDisplayName(), e);
+                    }
+                }
+            }
         } catch (final Exception e) {
             logger.warn("Failed to get list items for list: {} in site: {}", list.getDisplayName(), site.getDisplayName(), e);
             if (!isIgnoreError(paramMap)) {
@@ -207,7 +239,20 @@ public class SharePointListDataStore extends Microsoft365DataStore {
 
             // Get item fields (this is where SharePoint list data is stored)
             final com.microsoft.graph.models.FieldValueSet fieldValueSet = item.getFields();
-            final Map<String, Object> fields = fieldValueSet != null ? fieldValueSet.getAdditionalData() : null;
+            Map<String, Object> fields = fieldValueSet != null ? fieldValueSet.getAdditionalData() : null;
+
+            // If fields are null or empty, try to fetch the item individually with expanded fields
+            if (fields == null || fields.isEmpty()) {
+                try {
+                    final ListItem refreshedItem = client.getListItem(site.getId(), list.getId(), item.getId(), true);
+                    if (refreshedItem != null && refreshedItem.getFields() != null) {
+                        fields = refreshedItem.getFields().getAdditionalData();
+                    }
+                } catch (final Exception re) {
+                    logger.debug("Failed to refresh list item fields for item {}: {}", item.getId(), re.getMessage());
+                }
+            }
+
             if (fields != null) {
                 dataMap.put(LIST_ITEM_FIELDS, fields);
 
