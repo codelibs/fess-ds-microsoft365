@@ -147,13 +147,15 @@ role=list_item.roles
 
 | Key | Value |
 | --- | --- |
-| list_item.title | The title of the list item. |
-| list_item.content | The text contents of the list item |
+| list_item.title | The title of the list item (extracted from Title, LinkTitle, or FileLeafRef fields). |
+| list_item.content | The text contents of the list item (extracted from Body, Description, Comments, or Notes fields) |
 | list_item.fields | All fields and values from the SharePoint list item |
 | list_item.created | The time at which the list item was created. |
 | list_item.modified | The last time the list item was modified. |
 | list_item.url | A link for opening the list item in SharePoint. |
 | list_item.roles | A users/groups who can access the list item. |
+
+**Note**: The plugin automatically expands SharePoint list item fields to ensure content extraction. If fields are not initially available, it performs an individual API call with `$expand=fields` to retrieve the complete field data.
 
 ### Configuration Parameters
 
