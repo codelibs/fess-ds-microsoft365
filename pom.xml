@@ -55,11 +55,19 @@
 									<include>com.microsoft.graph:microsoft-graph</include>
 									<include>com.microsoft.graph:microsoft-graph-core</include>
 									<include>com.microsoft.kiota:microsoft-kiota-abstractions</include>
+									<include>com.microsoft.kiota:microsoft-kiota-authentication-azure</include>
+									<include>com.microsoft.kiota:microsoft-kiota-http-okHttp</include>
 									<include>com.microsoft.kiota:microsoft-kiota-serialization-json</include>
+									<include>com.microsoft.kiota:microsoft-kiota-serialization-text</include>
+									<include>com.microsoft.kiota:microsoft-kiota-serialization-form</include>
+									<include>com.microsoft.kiota:microsoft-kiota-serialization-multipart</include>
+									<include>io.github.std-uritemplate:std-uritemplate</include>
 									<include>io.projectreactor.netty:reactor-netty</include>
 									<include>io.projectreactor.netty:reactor-netty-http</include>
 									<include>io.projectreactor.netty:reactor-netty-core</include>
 									<include>io.projectreactor:reactor-core</include>
+									<include>io.opentelemetry:opentelemetry-api</include>
+									<include>io.opentelemetry:opentelemetry-context</include>
 									<include>io.netty:netty-buffer</include>
 									<include>io.netty:netty-codec</include>
 									<include>io.netty:netty-codec-dns</include>
