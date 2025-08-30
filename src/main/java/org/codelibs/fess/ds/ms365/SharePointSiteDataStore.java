@@ -20,6 +20,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 import org.apache.logging.log4j.LogManager;
@@ -113,9 +115,15 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
         try (final Microsoft365Client client = createClient(paramMap)) {
             final String siteId = getSiteId(paramMap);
             if (StringUtil.isNotBlank(siteId)) {
-                // Crawl specific site
+                // Crawl specific site, but check if it should be excluded
                 final Site site = client.getSite(siteId);
-                storeSite(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site);
+                if (!isExcludedSite(paramMap, site)) {
+                    storeSite(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site);
+                } else {
+                    if (logger.isInfoEnabled()) {
+                        logger.info("Skipping excluded site: {} ({})", site.getDisplayName(), site.getId());
+                    }
+                }
             } else {
                 // Crawl all sites
                 client.getSites(site -> {
@@ -137,6 +145,22 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
             }
         } finally {
             executorService.shutdown();
+            try {
+                // Wait for all tasks to complete
+                if (!executorService.awaitTermination(30, TimeUnit.MINUTES)) {
+                    logger.warn("Executor did not terminate in the specified time. Forcing shutdownNow()");
+                    executorService.shutdownNow();
+                }
+            } catch (final InterruptedException ie) {
+                executorService.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            try {
+                // Commit remaining documents in buffer
+                callback.commit();
+            } catch (final Exception e) {
+                logger.warn("Failed to commit index update callback.", e);
+            }
         }
     }
 
@@ -157,10 +181,11 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
 
         // Crawl document libraries in the site
         try {
+            final List<Future<?>> driveProcessingFutures = new java.util.concurrent.CopyOnWriteArrayList<>();
             client.getDrives(drive -> {
                 if (drive.getDriveType() != null && "documentLibrary".equals(drive.getDriveType()) && !isSystemLibrary(drive)) {
                     if (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive)) {
-                        executorService.execute(() -> {
+                        driveProcessingFutures.add(executorService.submit(() -> {
                             try {
                                 storeDriveItems(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site, drive);
                             } catch (final Exception e) {
@@ -170,10 +195,23 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
                                             "Failed to process drive: " + drive.getName(), e);
                                 }
                             }
-                        });
+                        }));
                     }
                 }
             });
+
+            // Wait for all drive processing tasks to complete
+            for (final Future<?> future : driveProcessingFutures) {
+                try {
+                    future.get();
+                } catch (final Exception e) {
+                    logger.warn("A drive processing task for site {} was interrupted/failed.", site.getDisplayName(), e);
+                    if (!isIgnoreError(paramMap)) {
+                        throw new DataStoreCrawlingException(site.getDisplayName(),
+                                "A drive processing task failed for site: " + site.getDisplayName(), e);
+                    }
+                }
+            }
         } catch (final Exception e) {
             logger.warn("Failed to get drives for site: {}", site.getDisplayName(), e);
             if (!isIgnoreError(paramMap)) {
@@ -305,14 +343,36 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
 
             // Get file content if it's not a folder
             if (item.getFile() != null) {
-                try {
-                    final long maxSize = getMaxSize(paramMap);
-                    final String content = getDriveItemContents(client, drive.getId(), item, maxSize, isIgnoreError(paramMap));
-                    dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(), content);
-                    dataMap.put(FILE_CONTENTS, content);
-                } catch (final Exception e) {
-                    logger.warn("Failed to get content for item: {}", item.getName(), e);
+                final long maxSize = getMaxSize(paramMap);
+
+                // Check file size before attempting to download and extract content
+                if (item.getSize() != null && item.getSize() > maxSize) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Skipping content extraction for file {} (size: {} bytes) - exceeds max_content_length: {} bytes",
+                                item.getName(), item.getSize(), maxSize);
+                    }
                     dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(), "");
+                    dataMap.put(FILE_CONTENTS, "");
+                } else {
+                    // Check supported MIME types
+                    if (isSupportedMimeType(paramMap, item)) {
+                        try {
+                            final String content = getDriveItemContents(client, drive.getId(), item, maxSize, isIgnoreError(paramMap));
+                            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(), content);
+                            dataMap.put(FILE_CONTENTS, content);
+                        } catch (final Exception e) {
+                            logger.warn("Failed to get content for item: {}", item.getName(), e);
+                            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(), "");
+                            dataMap.put(FILE_CONTENTS, "");
+                        }
+                    } else {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Skipping content extraction for file {} - unsupported MIME type: {}", item.getName(),
+                                    item.getFile() != null ? item.getFile().getMimeType() : "unknown");
+                        }
+                        dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(), "");
+                        dataMap.put(FILE_CONTENTS, "");
+                    }
                 }
 
                 if (item.getFile().getMimeType() != null) {
@@ -405,6 +465,33 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
             logger.warn("Invalid max content length: {}", value);
             return 10485760L;
         }
+    }
+
+    protected boolean isSupportedMimeType(final DataStoreParams paramMap, final DriveItem item) {
+        final String supportedMimetypes = paramMap.getAsString(SUPPORTED_MIMETYPES, null);
+
+        // If no supported mime types are specified, allow all
+        if (StringUtil.isBlank(supportedMimetypes)) {
+            return true;
+        }
+
+        // If item doesn't have a file or mime type, skip content extraction
+        if (item.getFile() == null || item.getFile().getMimeType() == null) {
+            return false;
+        }
+
+        final String itemMimeType = item.getFile().getMimeType().toLowerCase();
+        final String[] supportedTypes = supportedMimetypes.toLowerCase().split(",");
+
+        for (final String supportedType : supportedTypes) {
+            final String trimmedType = supportedType.trim();
+            if (trimmedType.equals("*") || itemMimeType.equals(trimmedType)
+                    || (trimmedType.endsWith("/*") && itemMimeType.startsWith(trimmedType.substring(0, trimmedType.length() - 1)))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected boolean isIgnoreError(final DataStoreParams paramMap) {

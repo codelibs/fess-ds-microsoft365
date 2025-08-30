@@ -119,12 +119,20 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             if (StringUtil.isNotBlank(listId)) {
                 // Crawl specific list
                 final com.microsoft.graph.models.List list = client.getList(siteId, listId);
-                storeList(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site, list);
+                // Check ignore_system_lists setting even for specific list ID
+                if (!isIgnoreSystemLists(paramMap) || !isSystemList(list)) {
+                    storeList(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site, list);
+                } else {
+                    logger.info("Skipping system list {} (ID: {}) because ignore_system_lists is enabled", list.getDisplayName(),
+                            list.getId());
+                }
             } else {
                 // Crawl all lists in the site
+                final List<Future<?>> listProcessingFutures = new java.util.concurrent.CopyOnWriteArrayList<>();
                 client.getSiteLists(siteId, list -> {
-                    if (!isExcludedList(paramMap, list) && isTargetListType(paramMap, list) && !isSystemList(list)) {
-                        executorService.execute(() -> {
+                    if (!isExcludedList(paramMap, list) && isTargetListType(paramMap, list)
+                            && (!isIgnoreSystemLists(paramMap) || !isSystemList(list))) {
+                        listProcessingFutures.add(executorService.submit(() -> {
                             try {
                                 storeList(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client,
                                         site, list);
@@ -135,9 +143,22 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                                             "Failed to process list: " + list.getDisplayName(), e);
                                 }
                             }
-                        });
+                        }));
                     }
                 });
+
+                // Wait for all list processing tasks to complete
+                for (final Future<?> future : listProcessingFutures) {
+                    try {
+                        future.get();
+                    } catch (final Exception e) {
+                        logger.warn("A list processing task for site {} was interrupted/failed.", site.getDisplayName(), e);
+                        if (!isIgnoreError(paramMap)) {
+                            throw new DataStoreCrawlingException(site.getDisplayName(),
+                                    "A list processing task failed for site: " + site.getDisplayName(), e);
+                        }
+                    }
+                }
             }
         } finally {
             executorService.shutdown();
