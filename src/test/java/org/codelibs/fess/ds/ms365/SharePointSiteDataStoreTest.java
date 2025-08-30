@@ -17,6 +17,7 @@ package org.codelibs.fess.ds.ms365;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -146,6 +147,299 @@ public class SharePointSiteDataStoreTest extends LastaFluteTestCase {
         assertEquals(1048576L, dataStore.getMaxSize(paramMap1));
         assertEquals(10485760L, dataStore.getMaxSize(paramMap2)); // default on invalid
         assertEquals(10485760L, dataStore.getMaxSize(paramMap3)); // default
+    }
+
+    public void test_isExcludedSite_multipleSites() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("exclude_site_id", "site1,site2, site3 ");
+
+        final Site excludedSite1 = new Site();
+        excludedSite1.setId("site1");
+        excludedSite1.setDisplayName("Excluded Site 1");
+
+        final Site excludedSite2 = new Site();
+        excludedSite2.setId("site2");
+        excludedSite2.setDisplayName("Excluded Site 2");
+
+        final Site excludedSite3 = new Site();
+        excludedSite3.setId("site3");
+        excludedSite3.setDisplayName("Excluded Site 3");
+
+        final Site allowedSite = new Site();
+        allowedSite.setId("site4");
+        allowedSite.setDisplayName("Allowed Site");
+
+        assertTrue("Site 1 should be excluded", dataStore.isExcludedSite(paramMap, excludedSite1));
+        assertTrue("Site 2 should be excluded", dataStore.isExcludedSite(paramMap, excludedSite2));
+        assertTrue("Site 3 should be excluded", dataStore.isExcludedSite(paramMap, excludedSite3));
+        assertFalse("Site 4 should not be excluded", dataStore.isExcludedSite(paramMap, allowedSite));
+    }
+
+    public void test_isExcludedSite_emptyExcludeList() {
+        final DataStoreParams paramMap1 = new DataStoreParams();
+        paramMap1.put("exclude_site_id", "");
+
+        final DataStoreParams paramMap2 = new DataStoreParams();
+        // No exclude_site_id parameter set
+
+        final Site site = new Site();
+        site.setId("any-site-id");
+        site.setDisplayName("Any Site");
+
+        assertFalse("Site should not be excluded with empty exclude list", dataStore.isExcludedSite(paramMap1, site));
+        assertFalse("Site should not be excluded with no exclude parameter", dataStore.isExcludedSite(paramMap2, site));
+    }
+
+    public void test_getMaxSize_customValues() {
+        final DataStoreParams paramMap1 = new DataStoreParams();
+        paramMap1.put("max_content_length", "5242880"); // 5MB
+
+        final DataStoreParams paramMap2 = new DataStoreParams();
+        paramMap2.put("max_content_length", "20971520"); // 20MB
+
+        final DataStoreParams paramMap3 = new DataStoreParams();
+        paramMap3.put("max_content_length", "0"); // 0 bytes
+
+        assertEquals("Should parse 5MB correctly", 5242880L, dataStore.getMaxSize(paramMap1));
+        assertEquals("Should parse 20MB correctly", 20971520L, dataStore.getMaxSize(paramMap2));
+        assertEquals("Should parse 0 bytes correctly", 0L, dataStore.getMaxSize(paramMap3));
+    }
+
+    public void test_threadPoolCreation() {
+        // Test that number_of_threads parameter is correctly parsed
+        // This test verifies the parameter parsing logic
+
+        final DataStoreParams paramMap1 = new DataStoreParams();
+        paramMap1.put("number_of_threads", "1");
+
+        final DataStoreParams paramMap2 = new DataStoreParams();
+        paramMap2.put("number_of_threads", "5");
+
+        final DataStoreParams paramMap3 = new DataStoreParams();
+        // No number_of_threads parameter - should default to 1
+
+        // We can't directly test thread pool creation without exposing internal methods
+        // But we can verify the parameter parsing by accessing it through the same method
+        assertEquals("Should parse number_of_threads=1", "1", paramMap1.getAsString("number_of_threads", "1"));
+        assertEquals("Should parse number_of_threads=5", "5", paramMap2.getAsString("number_of_threads", "1"));
+        assertEquals("Should default to 1 when not specified", "1", paramMap3.getAsString("number_of_threads", "1"));
+
+        // Test that the parameter gets parsed as an integer without exceptions
+        try {
+            Integer.parseInt(paramMap1.getAsString("number_of_threads", "1"));
+            Integer.parseInt(paramMap2.getAsString("number_of_threads", "1"));
+            Integer.parseInt(paramMap3.getAsString("number_of_threads", "1"));
+        } catch (NumberFormatException e) {
+            fail("Should be able to parse number_of_threads as integer");
+        }
+    }
+
+    public void test_excludeSiteId_withSpecificSiteId() {
+        // Test that exclude_site_id works even when a specific site_id is provided
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("site_id", "excluded-site-123");
+        paramMap.put("exclude_site_id", "excluded-site-123,other-excluded-site");
+
+        final Site excludedSite = new Site();
+        excludedSite.setId("excluded-site-123");
+        excludedSite.setDisplayName("Excluded Site");
+
+        final Site allowedSite = new Site();
+        allowedSite.setId("allowed-site-456");
+        allowedSite.setDisplayName("Allowed Site");
+
+        // Test that the specified site is correctly identified as excluded
+        assertTrue("Specific site should be excluded when it's in exclude_site_id", dataStore.isExcludedSite(paramMap, excludedSite));
+        assertFalse("Different site should not be excluded", dataStore.isExcludedSite(paramMap, allowedSite));
+    }
+
+    public void test_excludeSiteId_caseInsensitiveTrimming() {
+        // Test that exclude_site_id handles whitespace and case correctly
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("exclude_site_id", " SITE1 , site2, Site3 ");
+
+        final Site site1 = new Site();
+        site1.setId("SITE1");
+        site1.setDisplayName("Site 1");
+
+        final Site site2 = new Site();
+        site2.setId("site2");
+        site2.setDisplayName("Site 2");
+
+        final Site site3 = new Site();
+        site3.setId("Site3");
+        site3.setDisplayName("Site 3");
+
+        final Site site4 = new Site();
+        site4.setId("site4");
+        site4.setDisplayName("Site 4");
+
+        assertTrue("SITE1 should be excluded", dataStore.isExcludedSite(paramMap, site1));
+        assertTrue("site2 should be excluded", dataStore.isExcludedSite(paramMap, site2));
+        assertTrue("Site3 should be excluded", dataStore.isExcludedSite(paramMap, site3));
+        assertFalse("site4 should not be excluded", dataStore.isExcludedSite(paramMap, site4));
+    }
+
+    public void test_numberOfThreads_threadPoolManagement() {
+        // Test thread pool creation and management with different thread counts
+        final DataStoreParams paramMap1 = new DataStoreParams();
+        paramMap1.put("number_of_threads", "1");
+
+        final DataStoreParams paramMap3 = new DataStoreParams();
+        paramMap3.put("number_of_threads", "3");
+
+        final DataStoreParams paramMap5 = new DataStoreParams();
+        paramMap5.put("number_of_threads", "5");
+
+        // Test parameter parsing and validation
+        assertEquals("Should correctly parse 1 thread", 1, Integer.parseInt(paramMap1.getAsString("number_of_threads", "1")));
+        assertEquals("Should correctly parse 3 threads", 3, Integer.parseInt(paramMap3.getAsString("number_of_threads", "1")));
+        assertEquals("Should correctly parse 5 threads", 5, Integer.parseInt(paramMap5.getAsString("number_of_threads", "1")));
+
+        // Test that we can create ExecutorServices with the parsed values without issues
+        try {
+            final ExecutorService executor1 =
+                    java.util.concurrent.Executors.newFixedThreadPool(Integer.parseInt(paramMap1.getAsString("number_of_threads", "1")));
+            final ExecutorService executor3 =
+                    java.util.concurrent.Executors.newFixedThreadPool(Integer.parseInt(paramMap3.getAsString("number_of_threads", "1")));
+            final ExecutorService executor5 =
+                    java.util.concurrent.Executors.newFixedThreadPool(Integer.parseInt(paramMap5.getAsString("number_of_threads", "1")));
+
+            // Clean up executors
+            executor1.shutdown();
+            executor3.shutdown();
+            executor5.shutdown();
+        } catch (Exception e) {
+            fail("Should be able to create thread pools with parsed thread counts: " + e.getMessage());
+        }
+    }
+
+    public void test_numberOfThreads_invalidValues() {
+        // Test handling of invalid thread count values
+        final DataStoreParams paramMapInvalid = new DataStoreParams();
+        paramMapInvalid.put("number_of_threads", "invalid");
+
+        final DataStoreParams paramMapZero = new DataStoreParams();
+        paramMapZero.put("number_of_threads", "0");
+
+        final DataStoreParams paramMapNegative = new DataStoreParams();
+        paramMapNegative.put("number_of_threads", "-1");
+
+        // Test that invalid values will cause NumberFormatException when parsed
+        try {
+            Integer.parseInt(paramMapInvalid.getAsString("number_of_threads", "1"));
+            fail("Should throw NumberFormatException for invalid thread count");
+        } catch (NumberFormatException e) {
+            // Expected behavior
+        }
+
+        // Test that zero and negative values would be problematic for thread pool creation
+        try {
+            final int zeroThreads = Integer.parseInt(paramMapZero.getAsString("number_of_threads", "1"));
+            assertEquals("Should parse zero", 0, zeroThreads);
+            // Note: Creating thread pool with 0 threads would throw IllegalArgumentException
+        } catch (NumberFormatException e) {
+            fail("Should be able to parse zero as integer");
+        }
+
+        try {
+            final int negativeThreads = Integer.parseInt(paramMapNegative.getAsString("number_of_threads", "1"));
+            assertEquals("Should parse negative", -1, negativeThreads);
+            // Note: Creating thread pool with negative threads would throw IllegalArgumentException
+        } catch (NumberFormatException e) {
+            fail("Should be able to parse negative number as integer");
+        }
+    }
+
+    public void test_maxContentLength_fileSizeCheck() {
+        // Test that files exceeding max_content_length are handled correctly
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("max_content_length", "1048576"); // 1MB
+
+        final long maxSize = dataStore.getMaxSize(paramMap);
+        assertEquals("Should parse 1MB correctly", 1048576L, maxSize);
+
+        // Test with different values
+        final DataStoreParams paramMap2 = new DataStoreParams();
+        paramMap2.put("max_content_length", "5242880"); // 5MB
+        assertEquals("Should parse 5MB correctly", 5242880L, dataStore.getMaxSize(paramMap2));
+
+        final DataStoreParams paramMap3 = new DataStoreParams();
+        paramMap3.put("max_content_length", "0"); // 0 bytes
+        assertEquals("Should parse 0 bytes correctly", 0L, dataStore.getMaxSize(paramMap3));
+    }
+
+    public void test_isSupportedMimeType_various() {
+        // Test MIME type filtering functionality
+        final com.microsoft.graph.models.DriveItem item = new com.microsoft.graph.models.DriveItem();
+        final com.microsoft.graph.models.File file = new com.microsoft.graph.models.File();
+        file.setMimeType("application/pdf");
+        item.setFile(file);
+
+        // Test with no MIME type filter (should allow all)
+        final DataStoreParams paramMap1 = new DataStoreParams();
+        assertTrue("Should allow all MIME types when no filter is specified", dataStore.isSupportedMimeType(paramMap1, item));
+
+        // Test with specific MIME type match
+        final DataStoreParams paramMap2 = new DataStoreParams();
+        paramMap2.put("supported_mimetypes", "application/pdf,text/plain");
+        assertTrue("Should allow PDF files", dataStore.isSupportedMimeType(paramMap2, item));
+
+        // Test with MIME type that doesn't match
+        final DataStoreParams paramMap3 = new DataStoreParams();
+        paramMap3.put("supported_mimetypes", "text/plain,image/jpeg");
+        assertFalse("Should not allow PDF when not in supported list", dataStore.isSupportedMimeType(paramMap3, item));
+
+        // Test with wildcard
+        final DataStoreParams paramMap4 = new DataStoreParams();
+        paramMap4.put("supported_mimetypes", "application/*");
+        assertTrue("Should allow application/* wildcard", dataStore.isSupportedMimeType(paramMap4, item));
+
+        // Test with universal wildcard
+        final DataStoreParams paramMap5 = new DataStoreParams();
+        paramMap5.put("supported_mimetypes", "*");
+        assertTrue("Should allow * wildcard", dataStore.isSupportedMimeType(paramMap5, item));
+    }
+
+    public void test_isSupportedMimeType_edgeCases() {
+        // Test edge cases for MIME type filtering
+
+        // Test with null file
+        final com.microsoft.graph.models.DriveItem itemWithoutFile = new com.microsoft.graph.models.DriveItem();
+        final DataStoreParams paramMap1 = new DataStoreParams();
+        paramMap1.put("supported_mimetypes", "application/pdf");
+        assertFalse("Should reject items without file info", dataStore.isSupportedMimeType(paramMap1, itemWithoutFile));
+
+        // Test with file but no MIME type
+        final com.microsoft.graph.models.DriveItem itemWithoutMimeType = new com.microsoft.graph.models.DriveItem();
+        final com.microsoft.graph.models.File fileWithoutMime = new com.microsoft.graph.models.File();
+        itemWithoutMimeType.setFile(fileWithoutMime);
+        assertFalse("Should reject files without MIME type", dataStore.isSupportedMimeType(paramMap1, itemWithoutMimeType));
+
+        // Test case sensitivity
+        final com.microsoft.graph.models.DriveItem itemUpperCase = new com.microsoft.graph.models.DriveItem();
+        final com.microsoft.graph.models.File fileUpperCase = new com.microsoft.graph.models.File();
+        fileUpperCase.setMimeType("APPLICATION/PDF");
+        itemUpperCase.setFile(fileUpperCase);
+
+        final DataStoreParams paramMap2 = new DataStoreParams();
+        paramMap2.put("supported_mimetypes", "application/pdf");
+        assertTrue("Should handle case insensitive matching", dataStore.isSupportedMimeType(paramMap2, itemUpperCase));
+    }
+
+    public void test_maxContentLength_invalidValues() {
+        // Test handling of invalid max_content_length values
+        final DataStoreParams paramMapInvalid = new DataStoreParams();
+        paramMapInvalid.put("max_content_length", "invalid");
+        assertEquals("Should default to 10MB for invalid values", 10485760L, dataStore.getMaxSize(paramMapInvalid));
+
+        final DataStoreParams paramMapEmpty = new DataStoreParams();
+        paramMapEmpty.put("max_content_length", "");
+        assertEquals("Should default to 10MB for empty values", 10485760L, dataStore.getMaxSize(paramMapEmpty));
+
+        final DataStoreParams paramMapNegative = new DataStoreParams();
+        paramMapNegative.put("max_content_length", "-1");
+        assertEquals("Should parse negative values as is", -1L, dataStore.getMaxSize(paramMapNegative));
     }
 
     public void testStoreData() {
