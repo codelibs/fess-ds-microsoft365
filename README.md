@@ -176,9 +176,28 @@ role=list_item.roles
 | Parameter | Description | Default |
 | --- | --- | --- |
 | site_id | Specific SharePoint site ID to crawl | All sites |
-| exclude_site_id | Comma-separated site IDs to exclude | - |
+| exclude_site_id | Site IDs to exclude (see format below) | - |
 | ignore_system_libraries | Skip system document libraries | true |
 | max_content_length | Maximum content length to extract | 10485760 |
+
+##### exclude_site_id Format
+
+SharePoint site IDs contain commas as part of their format (`hostname,siteCollectionId,siteId`). To properly exclude sites:
+
+- **Single SharePoint site**: Use the full site ID as-is
+  ```
+  exclude_site_id=site1.sharepoint.com,686d3f1a-a383-4367-b5f5-93b99baabcf3,12048306-4e53-420e-bd7c-31af611f6d8a
+  ```
+
+- **Multiple SharePoint sites**: Separate with semicolons (`;`)
+  ```
+  exclude_site_id=site1.sharepoint.com,guid1,guid1;site2.sharepoint.com,guid2,guid2
+  ```
+
+- **Legacy simple IDs**: Comma-separated (for backward compatibility)
+  ```
+  exclude_site_id=site1,site2,site3
+  ```
 
 #### SharePoint List Parameters
 

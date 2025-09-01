@@ -280,6 +280,54 @@ public class SharePointSiteDataStoreTest extends LastaFluteTestCase {
         assertFalse("site4 should not be excluded", dataStore.isExcludedSite(paramMap, site4));
     }
 
+    public void test_isExcludedSite_sharePointSiteIdWithCommas() {
+        // Test the bug: SharePoint site IDs contain commas as part of the ID format
+        // Current implementation incorrectly splits by comma, breaking the ID matching
+        final DataStoreParams paramMap = new DataStoreParams();
+        // This is the problematic scenario: a real SharePoint site ID contains commas
+        paramMap.put("exclude_site_id",
+                "n2smdev6.sharepoint.com,684d3f1a-a382-4368-b4f5-94b98baabcf3,12048305-5e53-421e-bd6c-32af610f6d8a");
+
+        final Site excludedSite = new Site();
+        excludedSite.setId("n2smdev6.sharepoint.com,684d3f1a-a382-4368-b4f5-94b98baabcf3,12048305-5e53-421e-bd6c-32af610f6d8a");
+        excludedSite.setDisplayName("Test1 Site");
+
+        final Site allowedSite = new Site();
+        allowedSite.setId("anotherdomain.sharepoint.com,123e4567-e89b-12d3-a456-426614174000,98765432-1234-5678-9abc-def012345678");
+        allowedSite.setDisplayName("Allowed Site");
+
+        // This test will FAIL with current implementation due to comma splitting bug
+        // The site ID gets split into parts: ["n2smdev6.sharepoint.com", "684d3f1a-a382-4368-b4f5-94b98baabcf3", "12048305-5e53-421e-bd6c-32af610f6d8a"]
+        // None of these parts matches the full site ID, so exclusion fails
+        assertTrue("SharePoint site with comma-containing ID should be excluded", dataStore.isExcludedSite(paramMap, excludedSite));
+        assertFalse("Different SharePoint site should not be excluded", dataStore.isExcludedSite(paramMap, allowedSite));
+    }
+
+    public void test_isExcludedSite_multipleSharePointSiteIdsWithSemicolon() {
+        // Test the solution: use semicolon as delimiter for multiple SharePoint site IDs
+        final DataStoreParams paramMap = new DataStoreParams();
+        // Multiple SharePoint site IDs separated by semicolon (not comma)
+        paramMap.put("exclude_site_id",
+                "n2smdev6.sharepoint.com,684d3f1a-a382-4368-b4f5-94b98baabcf3,12048305-5e53-421e-bd6c-32af610f6d8a;otherdomain.sharepoint.com,123e4567-e89b-12d3-a456-426614174000,98765432-1234-5678-9abc-def012345678");
+
+        final Site excludedSite1 = new Site();
+        excludedSite1.setId("n2smdev6.sharepoint.com,684d3f1a-a382-4368-b4f5-94b98baabcf3,12048305-5e53-421e-bd6c-32af610f6d8a");
+        excludedSite1.setDisplayName("Test1 Site");
+
+        final Site excludedSite2 = new Site();
+        excludedSite2.setId("otherdomain.sharepoint.com,123e4567-e89b-12d3-a456-426614174000,98765432-1234-5678-9abc-def012345678");
+        excludedSite2.setDisplayName("Test2 Site");
+
+        final Site allowedSite = new Site();
+        allowedSite.setId("alloweddomain.sharepoint.com,aaa4567-e89b-12d3-a456-426614174000,11111111-1234-5678-9abc-def012345678");
+        allowedSite.setDisplayName("Allowed Site");
+
+        // This should work with the fixed implementation using semicolon delimiter
+        assertTrue("First SharePoint site should be excluded", dataStore.isExcludedSite(paramMap, excludedSite1));
+        assertTrue("Second SharePoint site should be excluded", dataStore.isExcludedSite(paramMap, excludedSite2));
+        assertFalse("Different SharePoint site should not be excluded", dataStore.isExcludedSite(paramMap, allowedSite));
+    }
+
     public void test_numberOfThreads_threadPoolManagement() {
         // Test thread pool creation and management with different thread counts
         final DataStoreParams paramMap1 = new DataStoreParams();

@@ -125,10 +125,11 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
                     }
                 }
             } else {
-                // Crawl all sites
+                // Crawl all sites using parallel processing
+                final List<Future<?>> siteProcessingFutures = new java.util.concurrent.CopyOnWriteArrayList<>();
                 client.getSites(site -> {
                     if (!isExcludedSite(paramMap, site) && isTargetSiteType(paramMap, site)) {
-                        executorService.execute(() -> {
+                        final Future<?> future = executorService.submit(() -> {
                             try {
                                 storeSite(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client,
                                         site);
@@ -140,8 +141,21 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
                                 }
                             }
                         });
+                        siteProcessingFutures.add(future);
                     }
                 });
+
+                // Wait for all site processing tasks to complete
+                for (final Future<?> future : siteProcessingFutures) {
+                    try {
+                        future.get();
+                    } catch (final Exception e) {
+                        logger.warn("A site processing task was interrupted/failed.", e);
+                        if (!isIgnoreError(paramMap)) {
+                            throw new DataStoreCrawlingException("site processing", "A site processing task failed", e);
+                        }
+                    }
+                }
             }
         } finally {
             executorService.shutdown();
@@ -405,7 +419,22 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
         if (StringUtil.isBlank(excludeIds)) {
             return false;
         }
-        final String[] ids = excludeIds.split(",");
+
+        // Handle different delimiter scenarios for SharePoint site IDs
+        final String[] ids;
+        if (excludeIds.contains(";")) {
+            // Multiple SharePoint site IDs separated by semicolon
+            ids = excludeIds.split(";");
+        } else if (excludeIds.contains(".sharepoint.com,")
+                && excludeIds.matches(".*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}.*")) {
+            // Single SharePoint site ID containing commas (format: hostname,siteCollectionId,siteId)
+            // Don't split - treat entire string as one ID
+            ids = new String[] { excludeIds };
+        } else {
+            // Legacy format: comma-separated simple site IDs (for backward compatibility)
+            ids = excludeIds.split(",");
+        }
+
         for (final String id : ids) {
             if (site.getId().equals(id.trim())) {
                 return true;
