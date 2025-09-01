@@ -18,8 +18,8 @@ package org.codelibs.fess.ds.ms365;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -420,6 +420,13 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     }
 
     protected boolean isSystemList(final com.microsoft.graph.models.List list) {
+        // Check for system facet according to Microsoft Graph API documentation
+        // https://learn.microsoft.com/en-us/graph/api/resources/systemfacet?view=graph-rest-1.0
+        if (list.getSystem() != null) {
+            return true;
+        }
+
+        // Fallback to name-based detection for compatibility
         if (list.getDisplayName() == null) {
             return false;
         }

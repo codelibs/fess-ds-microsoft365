@@ -119,6 +119,38 @@ public class SharePointListDataStoreTest extends LastaFluteTestCase {
         assertTrue(dataStore.isSystemList(list5));
     }
 
+    public void test_isSystemList_withSystemFacet() {
+        // Test system list detection using Microsoft Graph API system facet
+        // According to https://learn.microsoft.com/en-us/graph/api/resources/systemfacet?view=graph-rest-1.0
+
+        // Create list with system facet
+        final com.microsoft.graph.models.List systemListWithFacet = new com.microsoft.graph.models.List();
+        systemListWithFacet.setDisplayName("User Information List");
+        systemListWithFacet.setId("system-facet-list-id");
+        // Simulate system facet presence
+        systemListWithFacet.setSystem(new com.microsoft.graph.models.SystemFacet());
+
+        // Create regular list without system facet
+        final com.microsoft.graph.models.List regularList = new com.microsoft.graph.models.List();
+        regularList.setDisplayName("Custom List");
+        regularList.setId("regular-list-id");
+        regularList.setSystem(null);
+
+        // Create list that would be detected by name but has no system facet
+        final com.microsoft.graph.models.List nameBasedSystemList = new com.microsoft.graph.models.List();
+        nameBasedSystemList.setDisplayName("Master Page Gallery");
+        nameBasedSystemList.setId("name-based-system-list-id");
+        nameBasedSystemList.setSystem(null);
+
+        // Test system facet detection takes priority
+        assertTrue("List with system facet should be detected as system list", dataStore.isSystemList(systemListWithFacet));
+
+        assertFalse("Regular list without system facet should not be detected as system list", dataStore.isSystemList(regularList));
+
+        // Test fallback to name-based detection when no system facet
+        assertTrue("Name-based system list should still be detected via fallback", dataStore.isSystemList(nameBasedSystemList));
+    }
+
     public void test_extractFieldValue() {
         final Map<String, Object> fields = new HashMap<>();
         fields.put("Title", "Test Title");

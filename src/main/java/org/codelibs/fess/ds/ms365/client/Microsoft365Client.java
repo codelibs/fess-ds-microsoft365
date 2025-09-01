@@ -662,7 +662,13 @@ public class Microsoft365Client implements Closeable {
      * @param consumer A consumer to process each List object.
      */
     public void getSiteLists(final String siteId, final Consumer<com.microsoft.graph.models.List> consumer) {
-        ListCollectionResponse response = client.sites().bySiteId(siteId).lists().get();
+        // Get lists with system facet information
+        // Note: system facet is not included by default, so we use $select to explicitly request it
+        // along with commonly used fields to ensure compatibility
+        ListCollectionResponse response = client.sites().bySiteId(siteId).lists().get(requestConfiguration -> {
+            requestConfiguration.queryParameters.select = new String[] { "id", "name", "displayName", "description", "webUrl", "list",
+                    "system", "createdDateTime", "lastModifiedDateTime", "createdBy", "lastModifiedBy" };
+        });
 
         // Handle pagination with odata.nextLink
         while (response != null && response.getValue() != null) {
@@ -687,7 +693,10 @@ public class Microsoft365Client implements Closeable {
      * @return The List object.
      */
     public com.microsoft.graph.models.List getList(final String siteId, final String listId) {
-        return client.sites().bySiteId(siteId).lists().byListId(listId).get();
+        return client.sites().bySiteId(siteId).lists().byListId(listId).get(requestConfiguration -> {
+            requestConfiguration.queryParameters.select = new String[] { "id", "name", "displayName", "description", "webUrl", "list",
+                    "system", "createdDateTime", "lastModifiedDateTime", "createdBy", "lastModifiedBy" };
+        });
     }
 
     /**
