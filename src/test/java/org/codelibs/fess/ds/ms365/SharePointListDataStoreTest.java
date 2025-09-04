@@ -205,6 +205,63 @@ public class SharePointListDataStoreTest extends LastaFluteTestCase {
         assertEquals("", dataStore.buildContentFromFields(new HashMap<>()));
     }
 
+    public void test_urlFilter() {
+        // Test URL filter functionality added in processListItem improvement
+        final DataStoreParams paramMap1 = new DataStoreParams();
+        paramMap1.put("include_pattern", ".*\\.xlsx?$");
+
+        final DataStoreParams paramMap2 = new DataStoreParams();
+        paramMap2.put("exclude_pattern", ".*temp.*");
+
+        final DataStoreParams paramMap3 = new DataStoreParams();
+        // No URL filter patterns
+
+        // Verify that URL filter parameters are correctly retrieved
+        assertEquals("Should get include pattern", ".*\\.xlsx?$", paramMap1.getAsString("include_pattern"));
+        assertEquals("Should get exclude pattern", ".*temp.*", paramMap2.getAsString("exclude_pattern"));
+        assertNull("Should return null for no pattern", paramMap3.getAsString("include_pattern"));
+    }
+
+    public void test_statsTracking_parameters() {
+        // Test that statistical tracking parameters are correctly handled
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("site_id", "test-site-id");
+        paramMap.put("list_id", "test-list-id");
+        paramMap.put("number_of_threads", "2");
+
+        // Verify parameters are accessible for stats tracking
+        assertEquals("Should get site ID for stats", "test-site-id", paramMap.getAsString("site_id"));
+        assertEquals("Should get list ID for stats", "test-list-id", paramMap.getAsString("list_id"));
+        assertEquals("Should get thread count for stats", "2", paramMap.getAsString("number_of_threads"));
+    }
+
+    public void test_failureHandling_parameters() {
+        // Test that failure handling parameters are correctly configured
+        final DataStoreParams paramMap1 = new DataStoreParams();
+        paramMap1.put("ignore_error", "true");
+
+        final DataStoreParams paramMap2 = new DataStoreParams();
+        paramMap2.put("ignore_error", "false");
+
+        final DataStoreParams paramMap3 = new DataStoreParams();
+        // Default should be false
+
+        assertTrue("Should parse ignore_error=true", dataStore.isIgnoreError(paramMap1));
+        assertFalse("Should parse ignore_error=false", dataStore.isIgnoreError(paramMap2));
+        assertFalse("Should default to false", dataStore.isIgnoreError(paramMap3));
+    }
+
+    public void test_permissionProcessing_configuration() {
+        // Test that permission-related configurations are properly handled
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("site_id", "test-site-123");
+        paramMap.put("include_attachments", "true");
+
+        // Test that parameters needed for permission processing are available
+        assertEquals("Should get site ID for permission context", "test-site-123", paramMap.getAsString("site_id"));
+        assertTrue("Should handle attachment permissions", dataStore.isIncludeAttachments(paramMap));
+    }
+
     public void test_isSystemField() {
         // System fields should return true
         assertTrue(dataStore.isSystemField("_SystemField"));

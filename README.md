@@ -11,11 +11,13 @@ Microsoft365 Data Store is an extension for Fess Data Store Crawling that enable
 - **OneDrive**: Crawl user and group OneDrive files and folders
 - **OneNote**: Crawl notebooks, sections, and pages
 - **Teams**: Crawl team channels, messages, and chats
-- **SharePoint Sites**: Crawl SharePoint sites and document libraries
-- **SharePoint Lists**: Crawl SharePoint lists and list items
+- **SharePoint Sites**: Crawl SharePoint sites and document libraries with enhanced content aggregation
+- **SharePoint Lists**: Crawl SharePoint lists and list items with improved processing and statistical tracking
 - **Microsoft Graph SDK v6**: Latest SDK with pagination and caching support
 - **Role-based Access Control**: Integrated with Fess security model
 - **Configurable Filtering**: Include/exclude patterns and system content filtering
+- **Enhanced Content Fields**: Rich content aggregation for better search results
+- **Robust Error Handling**: Comprehensive error tracking and failure recovery
 
 ## Download
 
@@ -115,7 +117,7 @@ role=teams.roles
 
 ```
 title=site.name
-content=site.description + "\n" + site.contents
+content=site.content
 mimetype=site.mimetype
 created=site.created
 last_modified=site.last_modified
@@ -126,7 +128,7 @@ role=site.roles
 | Key | Value |
 | --- | --- |
 | site.name | The name of the site or document. |
-| site.description | A description of the site or document. |
+| site.content | Rich content including site information and document library metadata for enhanced search. |
 | site.contents | The text contents of the document |
 | site.mimetype | The MIME type of the document. |
 | site.created | The time at which the document was created. |
@@ -134,26 +136,28 @@ role=site.roles
 | site.web_url | A link for opening the document in a browser. |
 | site.roles | A users/groups who can access the document. |
 
+**Note**: The `site.content` field now includes comprehensive site information (name, description, URL) combined with document library metadata to provide richer search content for SharePoint sites.
+
 #### SharePoint Lists
 
 ```
-title=list_item.title
-content=list_item.content
-created=list_item.created
-last_modified=list_item.modified
-url=list_item.url
-role=list_item.roles
+title=item.title
+content=item.content
+created=item.created
+last_modified=item.modified
+url=item.url
+role=item.roles
 ```
 
 | Key | Value |
 | --- | --- |
-| list_item.title | The title of the list item (extracted from Title, LinkTitle, or FileLeafRef fields). |
-| list_item.content | The text contents of the list item (extracted from Body, Description, Comments, or Notes fields) |
-| list_item.fields | All fields and values from the SharePoint list item |
-| list_item.created | The time at which the list item was created. |
-| list_item.modified | The last time the list item was modified. |
-| list_item.url | A link for opening the list item in SharePoint. |
-| list_item.roles | A users/groups who can access the list item. |
+| item.title | The title of the list item (extracted from Title, LinkTitle, or FileLeafRef fields). |
+| item.content | The text contents of the list item (extracted from Body, Description, Comments, or Notes fields) |
+| item.fields | All fields and values from the SharePoint list item |
+| item.created | The time at which the list item was created. |
+| item.modified | The last time the list item was modified. |
+| item.url | A link for opening the list item in SharePoint. |
+| item.roles | A users/groups who can access the list item. |
 
 **Note**: The plugin automatically expands SharePoint list item fields to ensure content extraction. If fields are not initially available, it performs an individual API call with `$expand=fields` to retrieve the complete field data.
 
@@ -208,6 +212,9 @@ SharePoint site IDs contain commas as part of their format (`hostname,siteCollec
 | exclude_list_id | Comma-separated list IDs to exclude | - |
 | list_template_filter | Filter by list template types | - |
 | ignore_system_lists | Skip system lists | true |
+| include_attachments | Include list item attachments | false |
+
+**Recent Improvements**: SharePoint List crawling now includes enhanced statistical tracking, improved error handling with configurable failure recording, comprehensive URL filtering support, and robust permission processing to ensure secure and efficient list item indexing.
 
 ## Azure App Registration
 
