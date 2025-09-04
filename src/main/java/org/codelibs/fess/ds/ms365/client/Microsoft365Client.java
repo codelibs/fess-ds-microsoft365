@@ -331,7 +331,7 @@ public class Microsoft365Client implements Closeable {
                     new String[] { "id", "displayName", "mail", "userPrincipalName", "assignedLicenses" };
             // Filter for licensed users only to reduce data transfer
             requestConfiguration.queryParameters.filter = "assignedLicenses/$count ne 0";
-            requestConfiguration.queryParameters.orderby = new String[] { "displayName" };
+            // Removed orderby as it's not supported with $count filter and ConsistencyLevel:eventual
             // Required for advanced queries
             requestConfiguration.headers.add("ConsistencyLevel", "eventual");
         });
@@ -409,7 +409,7 @@ public class Microsoft365Client implements Closeable {
             // Select only essential fields to improve performance
             requestConfiguration.queryParameters.select =
                     new String[] { "id", "displayName", "mail", "groupTypes", "resourceProvisioningOptions" };
-            requestConfiguration.queryParameters.orderby = new String[] { "displayName" };
+            // Removed orderby as it's not supported with advanced filters and ConsistencyLevel:eventual
             // Required for advanced queries
             requestConfiguration.headers.add("ConsistencyLevel", "eventual");
         });
@@ -883,7 +883,7 @@ public class Microsoft365Client implements Closeable {
             // Select only essential fields to improve performance
             requestConfiguration.queryParameters.select =
                     new String[] { "id", "displayName", "mail", "description", "resourceProvisioningOptions" };
-            requestConfiguration.queryParameters.orderby = new String[] { "displayName" };
+            // Removed orderby as it's not supported with advanced filters and ConsistencyLevel:eventual
             // Required for advanced queries
             requestConfiguration.headers.add("ConsistencyLevel", "eventual");
         });
