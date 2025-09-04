@@ -15,7 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
-import java.util.Collections;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,15 +25,26 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.lang.StringUtil;
+import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
+import org.codelibs.fess.app.service.FailureUrlService;
+import org.codelibs.fess.crawler.exception.CrawlingAccessException;
+import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
+import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
+import org.codelibs.fess.helper.CrawlerStatsHelper;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
+import org.codelibs.fess.helper.PermissionHelper;
+import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -62,28 +74,31 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     protected static final String EXCLUDE_PATTERN = "exclude_pattern";
 
     // Field mappings for list items
-    protected static final String LIST_ITEM = "list_item";
-    protected static final String LIST_ITEM_TITLE = "list_item_title";
-    protected static final String LIST_ITEM_CONTENT = "list_item_content";
-    protected static final String LIST_ITEM_CREATED = "list_item_created";
-    protected static final String LIST_ITEM_MODIFIED = "list_item_modified";
-    protected static final String LIST_ITEM_ID = "list_item_id";
-    protected static final String LIST_ITEM_URL = "list_item_url";
-    protected static final String LIST_ITEM_FIELDS = "list_item_fields";
-    protected static final String LIST_ITEM_ATTACHMENTS = "list_item_attachments";
-    protected static final String LIST_ITEM_ROLES = "list_item_roles";
+    protected static final String LIST_ITEM = "item";
+    protected static final String LIST_ITEM_TITLE = "title";
+    protected static final String LIST_ITEM_CONTENT = "content";
+    protected static final String LIST_ITEM_CREATED = "created";
+    protected static final String LIST_ITEM_MODIFIED = "modified";
+    protected static final String LIST_ITEM_ID = "id";
+    protected static final String LIST_ITEM_URL = "url";
+    protected static final String LIST_ITEM_FIELDS = "fields";
+    protected static final String LIST_ITEM_ATTACHMENTS = "attachments";
+    protected static final String LIST_ITEM_ROLES = "roles";
 
     // Field mappings for list metadata
-    protected static final String LIST_NAME = "list_name";
-    protected static final String LIST_DESCRIPTION = "list_description";
-    protected static final String LIST_URL = "list_url";
-    protected static final String LIST_TEMPLATE_TYPE = "list_template_type";
-    protected static final String LIST_ITEM_COUNT = "list_item_count";
+    protected static final String LIST_NAME = "name";
+    protected static final String LIST_DESCRIPTION = "description";
+    protected static final String LIST_URL = "url";
+    protected static final String LIST_TEMPLATE_TYPE = "template_type";
+    protected static final String LIST_ITEM_COUNT = "item_count";
 
     // Site field mappings
-    protected static final String SITE_ID_FIELD = "site_id";
-    protected static final String SITE_NAME = "site_name";
-    protected static final String SITE_URL = "site_url";
+    protected static final String SITE_ID_FIELD = "id";
+    protected static final String SITE_NAME = "name";
+    protected static final String SITE_URL = "url";
+
+    // Configuration constants
+    protected static final String URL_FILTER = "url_filter";
 
     protected String extractorName = "sharePointListExtractor";
 
@@ -101,6 +116,8 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap) {
 
         final Map<String, Object> configMap = new LinkedHashMap<>();
+        configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
+        configMap.put(URL_FILTER, getUrlFilter(paramMap));
         if (logger.isDebugEnabled()) {
             logger.debug("configMap: {}", configMap);
         }
@@ -237,29 +254,80 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
             final Microsoft365Client client, final Site site, final com.microsoft.graph.models.List list, final ListItem item) {
 
-        final Map<String, Object> dataMap = new LinkedHashMap<>(defaultDataMap);
+        final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
+        final FessConfig fessConfig = ComponentUtil.getFessConfig();
+        final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
+
+        // Create URL for the item first for stats tracking
+        String itemUrl = item.getWebUrl();
+        if (StringUtil.isBlank(itemUrl) && list.getWebUrl() != null) {
+            itemUrl = list.getWebUrl() + "/DispForm.aspx?ID=" + item.getId();
+        }
+
+        final StatsKeyObject statsKey = new StatsKeyObject(itemUrl);
+        paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
+
+        // Extract roles from site permissions for SharePoint context
+        final List<String> roles = new ArrayList<>();
+        try {
+            if (site.getPermissions() != null) {
+                site.getPermissions().stream().forEach(x -> {
+                    if (x.getRoles() != null) {
+                        roles.addAll(x.getRoles());
+                    }
+                });
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to get site permissions, continuing with empty roles", e);
+        }
 
         try {
-            // Add site-specific fields
-            dataMap.put(SITE_ID_FIELD, site.getId());
-            dataMap.put(SITE_NAME, site.getDisplayName());
-            dataMap.put(SITE_URL, site.getWebUrl());
+            crawlerStatsHelper.begin(statsKey);
 
-            // Add list-specific fields
-            dataMap.put(LIST_NAME, list.getDisplayName());
-            dataMap.put(LIST_DESCRIPTION, list.getDescription());
-            dataMap.put(LIST_URL, list.getWebUrl());
-            if (list.getList() != null && list.getList().getTemplate() != null) {
-                dataMap.put(LIST_TEMPLATE_TYPE, list.getList().getTemplate());
+            // Apply URL filter if configured
+            final String url = itemUrl;
+            final UrlFilter urlFilter = (UrlFilter) configMap.get(URL_FILTER);
+            if (urlFilter != null && !urlFilter.match(url)) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Not matched: {}", url);
+                }
+                crawlerStatsHelper.discard(statsKey);
+                return;
             }
 
+            logger.info("Crawling URL: {}", url);
+
+            final boolean ignoreError = ((Boolean) configMap.get(IGNORE_ERROR));
+            final Map<String, Object> resultMap = new LinkedHashMap<>(paramMap.asMap());
+            final Map<String, Object> listItemMap = new HashMap<>();
+            final Map<String, Object> listMap = new HashMap<>();
+            final Map<String, Object> siteMap = new HashMap<>();
+
+            // Add site-specific fields
+            siteMap.put(SITE_ID_FIELD, site.getId());
+            siteMap.put(SITE_NAME, site.getDisplayName());
+            siteMap.put(SITE_URL, site.getWebUrl());
+
+            listItemMap.put("site", siteMap);
+
+            // Add list-specific fields
+            listMap.put(LIST_NAME, list.getDisplayName());
+            listMap.put(LIST_DESCRIPTION, list.getDescription() != null ? list.getDescription() : StringUtil.EMPTY);
+            listMap.put(LIST_URL, list.getWebUrl());
+            if (list.getList() != null && list.getList().getTemplate() != null) {
+                listMap.put(LIST_TEMPLATE_TYPE, list.getList().getTemplate());
+            }
+
+            listItemMap.put("list", listMap);
+
             // Add list item fields
-            dataMap.put(LIST_ITEM_ID, item.getId());
-            dataMap.put(LIST_ITEM_CREATED, item.getCreatedDateTime());
-            dataMap.put(LIST_ITEM_MODIFIED, item.getLastModifiedDateTime());
+            listItemMap.put(LIST_ITEM_ID, item.getId());
+            listItemMap.put(LIST_ITEM_CREATED, item.getCreatedDateTime());
+            listItemMap.put(LIST_ITEM_MODIFIED, item.getLastModifiedDateTime());
+            listItemMap.put(LIST_ITEM_URL, url);
 
             // Get item fields (this is where SharePoint list data is stored)
-            final com.microsoft.graph.models.FieldValueSet fieldValueSet = item.getFields();
+            com.microsoft.graph.models.FieldValueSet fieldValueSet = item.getFields();
             Map<String, Object> fields = fieldValueSet != null ? fieldValueSet.getAdditionalData() : null;
 
             // If fields are null or empty, try to fetch the item individually with expanded fields
@@ -271,53 +339,98 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                     }
                 } catch (final Exception re) {
                     logger.debug("Failed to refresh list item fields for item {}: {}", item.getId(), re.getMessage());
+                    if (!ignoreError) {
+                        throw new DataStoreCrawlingException(list.getDisplayName(),
+                                "Failed to refresh list item fields for item: " + item.getId(), re);
+                    }
                 }
             }
 
             if (fields != null) {
-                dataMap.put(LIST_ITEM_FIELDS, fields);
+                listItemMap.put(LIST_ITEM_FIELDS, fields);
 
                 // Extract common fields
                 final String title = extractFieldValue(fields, "Title", "LinkTitle", "FileLeafRef");
                 if (StringUtil.isNotBlank(title)) {
-                    dataMap.put(LIST_ITEM_TITLE, title);
+                    listItemMap.put(LIST_ITEM_TITLE, title);
                 }
 
                 // Try to extract content from various content fields
                 final String content = extractFieldValue(fields, "Body", "Description", "Comments", "Notes");
                 if (StringUtil.isNotBlank(content)) {
-                    dataMap.put(LIST_ITEM_CONTENT, content);
+                    listItemMap.put(LIST_ITEM_CONTENT, content);
                 }
             }
 
-            // Create URL for the item
-            String itemUrl = item.getWebUrl();
-            if (StringUtil.isBlank(itemUrl) && list.getWebUrl() != null) {
-                itemUrl = list.getWebUrl() + "/DispForm.aspx?ID=" + item.getId();
+            // Handle permissions properly
+            final List<String> permissions = new ArrayList<>(roles);
+            final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+            StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
+                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(permissions::add));
+            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof List<?> roleTypeList) {
+                roleTypeList.stream().map(s -> (String) s).forEach(permissions::add);
+            }
+            listItemMap.put(LIST_ITEM_ROLES, permissions.stream().distinct().collect(Collectors.toList()));
+
+            resultMap.put(LIST_ITEM, listItemMap);
+
+            crawlerStatsHelper.record(statsKey, StatsAction.PREPARED);
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("listItemMap: {}", listItemMap);
             }
 
-            // Set roles/permissions (simplified)
-            final List<String> roles = Collections.emptyList();
-            dataMap.put(LIST_ITEM_ROLES, roles);
+            // Apply script processing for field mapping
+            final String scriptType = getScriptType(paramMap);
+            for (final Map.Entry<String, String> entry : scriptMap.entrySet()) {
+                final Object convertValue = convertValue(scriptType, entry.getValue(), resultMap);
+                if (convertValue != null) {
+                    dataMap.put(entry.getKey(), convertValue);
+                }
+            }
 
-            // Set standard Fess fields
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldUrl(), itemUrl);
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldTitle(),
-                    StringUtil.isNotBlank((String) dataMap.get(LIST_ITEM_TITLE)) ? dataMap.get(LIST_ITEM_TITLE)
-                            : list.getDisplayName() + " - Item " + item.getId());
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(),
-                    StringUtil.isNotBlank((String) dataMap.get(LIST_ITEM_CONTENT)) ? dataMap.get(LIST_ITEM_CONTENT)
-                            : buildContentFromFields(fields));
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldLastModified(), item.getLastModifiedDateTime());
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldMimetype(), "text/html");
+            crawlerStatsHelper.record(statsKey, StatsAction.EVALUATED);
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("dataMap: {}", dataMap);
+            }
+
+            if (dataMap.get("url") instanceof final String statsUrl) {
+                statsKey.setUrl(statsUrl);
+            }
 
             callback.store(paramMap, dataMap);
+            crawlerStatsHelper.record(statsKey, StatsAction.FINISHED);
 
-        } catch (final Exception e) {
-            logger.warn("Failed to process list item: {} in list: {}", item.getId(), list.getDisplayName(), e);
-            if (!isIgnoreError(paramMap)) {
-                throw new DataStoreCrawlingException(list.getDisplayName(), "Failed to process list item: " + item.getId(), e);
+        } catch (final CrawlingAccessException e) {
+            logger.warn("Crawling Access Exception at : {} in list: {}", dataMap, list.getDisplayName(), e);
+
+            Throwable target = e;
+            if (target instanceof final MultipleCrawlingAccessException ex) {
+                final Throwable[] causes = ex.getCauses();
+                if (causes.length > 0) {
+                    target = causes[causes.length - 1];
+                }
             }
+
+            String errorName;
+            final Throwable cause = target.getCause();
+            if (cause != null) {
+                errorName = cause.getClass().getCanonicalName();
+            } else {
+                errorName = target.getClass().getCanonicalName();
+            }
+
+            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
+            failureUrlService.store(dataConfig, errorName, itemUrl, target);
+            crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
+        } catch (final Throwable t) {
+            logger.warn("Crawling Access Exception at : {} in list: {}", dataMap, list.getDisplayName(), t);
+            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
+            failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), itemUrl, t);
+            crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
+        } finally {
+            crawlerStatsHelper.done(statsKey);
         }
     }
 
@@ -475,6 +588,23 @@ public class SharePointListDataStore extends Microsoft365DataStore {
 
     protected boolean isIncludeAttachments(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(INCLUDE_ATTACHMENTS, Constants.FALSE));
+    }
+
+    protected UrlFilter getUrlFilter(final DataStoreParams paramMap) {
+        final UrlFilter urlFilter = ComponentUtil.getComponent(UrlFilter.class);
+        final String include = paramMap.getAsString(INCLUDE_PATTERN);
+        if (StringUtil.isNotBlank(include)) {
+            urlFilter.addInclude(include);
+        }
+        final String exclude = paramMap.getAsString(EXCLUDE_PATTERN);
+        if (StringUtil.isNotBlank(exclude)) {
+            urlFilter.addExclude(exclude);
+        }
+        urlFilter.init(paramMap.getAsString(Constants.CRAWLING_INFO_ID));
+        if (logger.isDebugEnabled()) {
+            logger.debug("urlFilter: {}", urlFilter);
+        }
+        return urlFilter;
     }
 
     public void setExtractorName(final String extractorName) {

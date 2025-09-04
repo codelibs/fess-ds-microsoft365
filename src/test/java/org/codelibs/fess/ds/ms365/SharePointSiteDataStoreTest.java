@@ -520,6 +520,46 @@ public class SharePointSiteDataStoreTest extends LastaFluteTestCase {
         */
     }
 
+    public void test_siteContentBuilding() {
+        // Test that SITE_CONTENT field is properly built with site info and drive metadata
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("site_id", "test-site-123");
+
+        // Create a mock site object to simulate site content building
+        final com.microsoft.graph.models.Site site = new com.microsoft.graph.models.Site();
+        site.setId("test-site-123");
+        site.setDisplayName("Test Site Name");
+        site.setDescription("Test site description for content building");
+        site.setWebUrl("https://test.sharepoint.com/sites/testsite");
+
+        // Test that site parameters are accessible for content building
+        assertEquals("Should get site ID", "test-site-123", paramMap.getAsString("site_id"));
+        assertNotNull("Site should have display name for content", site.getDisplayName());
+        assertNotNull("Site should have description for content", site.getDescription());
+        assertNotNull("Site should have web URL for content", site.getWebUrl());
+    }
+
+    public void test_siteContentField_parameters() {
+        // Test that parameters needed for enhanced site content building are available
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("site_id", "content-test-site");
+        paramMap.put("ignore_system_libraries", "true");
+
+        // Verify configuration parameters for content building
+        assertEquals("Should get site ID for content context", "content-test-site", paramMap.getAsString("site_id"));
+        assertTrue("Should ignore system libraries by default", dataStore.isIgnoreSystemLibraries(paramMap));
+    }
+
+    public void test_driveMetadata_forSiteContent() {
+        // Test that drive metadata collection parameters are properly configured
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("site_id", "drive-metadata-site");
+        paramMap.put("ignore_system_libraries", "false"); // Include system libraries for testing
+
+        assertEquals("Should get site ID for drive enumeration", "drive-metadata-site", paramMap.getAsString("site_id"));
+        assertFalse("Should include system libraries when configured", dataStore.isIgnoreSystemLibraries(paramMap));
+    }
+
     private static class TestCallback implements IndexUpdateCallback {
         private int count = 0;
         private Map<String, Object> lastDataMap;

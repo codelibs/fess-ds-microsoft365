@@ -400,6 +400,10 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             final Map<String, Object> defaultDataMap, final ExecutorService executorService, final Microsoft365Client client,
             final String driveId) {
         final String actualDriveId = driveId != null ? driveId : getCachedUserDriveId(client);
+        if (actualDriveId == null) {
+            logger.warn("Unable to get user drive ID, skipping OneDrive crawling");
+            return;
+        }
         getDriveItemsInDrive(client, actualDriveId, item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap,
                 paramMap, scriptMap, defaultDataMap, client, actualDriveId, item, Collections.emptyList())));
     }
@@ -498,7 +502,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 mimetype = item.getFile().getMimeType();
                 hashes = item.getFile().getHashes();
             } else {
-                mimetype = null;
+                mimetype = "application/octet-stream";
                 hashes = null;
             }
             if (((Boolean) configMap.get(IGNORE_FOLDER)).booleanValue() && mimetype == null) {
@@ -940,7 +944,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      * Thread-safe implementation using double-checked locking pattern.
      *
      * @param client The Microsoft365Client to use for API calls.
-     * @return The cached user drive ID.
+     * @return The cached user drive ID, or null if unable to retrieve.
      */
     protected String getCachedUserDriveId(final Microsoft365Client client) {
         // Double-checked locking pattern for thread-safe lazy initialization
@@ -954,9 +958,9 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                             logger.debug("Cached user drive ID: {}", cachedUserDriveId);
                         }
                     } catch (final Exception e) {
-                        logger.warn("Failed to get user drive ID, using 'me' as fallback", e);
-                        // Fallback to 'me' which works directly with most Graph API endpoints
-                        cachedUserDriveId = "me";
+                        logger.warn("Failed to get user drive ID: {}", e.getMessage());
+                        // Return null instead of "me" to indicate failure
+                        return null;
                     }
                 }
             }

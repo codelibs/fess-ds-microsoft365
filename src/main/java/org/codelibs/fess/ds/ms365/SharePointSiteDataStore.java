@@ -15,7 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
-import java.util.Collections;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,15 +24,26 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.lang.StringUtil;
+import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
+import org.codelibs.fess.app.service.FailureUrlService;
+import org.codelibs.fess.crawler.exception.CrawlingAccessException;
+import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
+import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
+import org.codelibs.fess.helper.CrawlerStatsHelper;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
+import org.codelibs.fess.helper.PermissionHelper;
+import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -61,35 +73,19 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
     protected static final String INCLUDE_PATTERN = "include_pattern";
     protected static final String EXCLUDE_PATTERN = "exclude_pattern";
     protected static final String URL_FILTER = "url_filter";
-    protected static final String IGNORE_FOLDER = "ignore_folder";
     protected static final String IGNORE_ERROR = "ignore_error";
 
     // Field mappings
     protected static final String SITE = "site";
-    protected static final String SITE_NAME = "site_name";
-    protected static final String SITE_DESCRIPTION = "site_description";
-    protected static final String SITE_URL = "site_url";
-    protected static final String SITE_CREATED = "site_created";
-    protected static final String SITE_MODIFIED = "site_modified";
-    protected static final String SITE_TYPE = "site_type";
-    protected static final String SITE_ROLES = "site_roles";
-    protected static final String SITE_ID_FIELD = "site_id";
-
-    // File field mappings (reuse OneDrive patterns)
-    protected static final String FILE = "file";
-    protected static final String FILE_NAME = "file_name";
-    protected static final String FILE_DESCRIPTION = "file_description";
-    protected static final String FILE_CONTENTS = "file_contents";
-    protected static final String FILE_MIMETYPE = "file_mimetype";
-    protected static final String FILE_FILETYPE = "file_filetype";
-    protected static final String FILE_CREATED = "file_created";
-    protected static final String FILE_LAST_MODIFIED = "file_last_modified";
-    protected static final String FILE_SIZE = "file_size";
-    protected static final String FILE_WEB_URL = "file_web_url";
-    protected static final String FILE_URL = "file_url";
-    protected static final String FILE_ROLES = "file_roles";
-    protected static final String FILE_ID = "file_id";
-    protected static final String FILE_PARENT_PATH = "file_parent_path";
+    protected static final String SITE_NAME = "name";
+    protected static final String SITE_DESCRIPTION = "description";
+    protected static final String SITE_URL = "web_url";
+    protected static final String SITE_CREATED = "created";
+    protected static final String SITE_MODIFIED = "modified";
+    protected static final String SITE_TYPE = "type";
+    protected static final String SITE_ROLES = "roles";
+    protected static final String SITE_CONTENT = "content";
+    protected static final String SITE_ID_FIELD = "id";
 
     protected String extractorName = "sharePointSiteExtractor";
 
@@ -107,6 +103,10 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap) {
 
         final Map<String, Object> configMap = new LinkedHashMap<>();
+        configMap.put(MAX_CONTENT_LENGTH, getMaxSize(paramMap));
+        configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
+        configMap.put(SUPPORTED_MIMETYPES, getSupportedMimeTypes(paramMap));
+        configMap.put(URL_FILTER, getUrlFilter(paramMap));
         if (logger.isDebugEnabled()) {
             logger.debug("configMap: {}", configMap);
         }
@@ -117,6 +117,9 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
             if (StringUtil.isNotBlank(siteId)) {
                 // Crawl specific site, but check if it should be excluded
                 final Site site = client.getSite(siteId);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Crawling site: {} ({})", site.getDisplayName(), site.getId());
+                }
                 if (!isExcludedSite(paramMap, site)) {
                     storeSite(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site);
                 } else {
@@ -128,6 +131,9 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
                 // Crawl all sites using parallel processing
                 final List<Future<?>> siteProcessingFutures = new java.util.concurrent.CopyOnWriteArrayList<>();
                 client.getSites(site -> {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Crawling site: {} ({})", site.getDisplayName(), site.getId());
+                    }
                     if (!isExcludedSite(paramMap, site) && isTargetSiteType(paramMap, site)) {
                         final Future<?> future = executorService.submit(() -> {
                             try {
@@ -151,9 +157,6 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
                         future.get();
                     } catch (final Exception e) {
                         logger.warn("A site processing task was interrupted/failed.", e);
-                        if (!isIgnoreError(paramMap)) {
-                            throw new DataStoreCrawlingException("site processing", "A site processing task failed", e);
-                        }
                     }
                 }
             }
@@ -192,220 +195,151 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
 
         // Store site metadata as a document
         storeSiteDocument(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site);
-
-        // Crawl document libraries in the site
-        try {
-            final List<Future<?>> driveProcessingFutures = new java.util.concurrent.CopyOnWriteArrayList<>();
-            client.getDrives(drive -> {
-                if (drive.getDriveType() != null && "documentLibrary".equals(drive.getDriveType()) && !isSystemLibrary(drive)) {
-                    if (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive)) {
-                        driveProcessingFutures.add(executorService.submit(() -> {
-                            try {
-                                storeDriveItems(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site, drive);
-                            } catch (final Exception e) {
-                                logger.warn("Failed to process drive: {} in site: {}", drive.getName(), site.getDisplayName(), e);
-                                if (!isIgnoreError(paramMap)) {
-                                    throw new DataStoreCrawlingException(site.getDisplayName(),
-                                            "Failed to process drive: " + drive.getName(), e);
-                                }
-                            }
-                        }));
-                    }
-                }
-            });
-
-            // Wait for all drive processing tasks to complete
-            for (final Future<?> future : driveProcessingFutures) {
-                try {
-                    future.get();
-                } catch (final Exception e) {
-                    logger.warn("A drive processing task for site {} was interrupted/failed.", site.getDisplayName(), e);
-                    if (!isIgnoreError(paramMap)) {
-                        throw new DataStoreCrawlingException(site.getDisplayName(),
-                                "A drive processing task failed for site: " + site.getDisplayName(), e);
-                    }
-                }
-            }
-        } catch (final Exception e) {
-            logger.warn("Failed to get drives for site: {}", site.getDisplayName(), e);
-            if (!isIgnoreError(paramMap)) {
-                throw new DataStoreCrawlingException(site.getDisplayName(), "Failed to get drives for site: " + site.getDisplayName(), e);
-            }
-        }
     }
 
     protected void storeSiteDocument(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
             final Microsoft365Client client, final Site site) {
 
+        final String siteUrl = site.getWebUrl();
         final Map<String, Object> dataMap = new LinkedHashMap<>(defaultDataMap);
-
+        final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
+        final StatsKeyObject statsKey = new StatsKeyObject(siteUrl);
+        paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
         try {
-            final String siteUrl = site.getWebUrl();
-            dataMap.put(SITE_ID_FIELD, site.getId());
-            dataMap.put(SITE_NAME, site.getDisplayName());
-            dataMap.put(SITE_DESCRIPTION, site.getDescription());
-            dataMap.put(SITE_URL, siteUrl);
-            dataMap.put(SITE_CREATED, site.getCreatedDateTime());
-            dataMap.put(SITE_MODIFIED, site.getLastModifiedDateTime());
+            logger.info("Crawling URL: {}", siteUrl);
+            crawlerStatsHelper.begin(statsKey);
+
+            final Map<String, Object> resultMap = new LinkedHashMap<>(paramMap.asMap());
+            final Map<String, Object> siteMap = new HashMap<>();
+
+            siteMap.put(SITE_ID_FIELD, site.getId());
+            siteMap.put(SITE_NAME, site.getDisplayName());
+            siteMap.put(SITE_DESCRIPTION, site.getDescription());
+            siteMap.put(SITE_URL, siteUrl);
+            siteMap.put(SITE_CREATED, site.getCreatedDateTime());
+            siteMap.put(SITE_MODIFIED, site.getLastModifiedDateTime());
 
             if (site.getSiteCollection() != null && site.getSiteCollection().getRoot() != null) {
-                dataMap.put(SITE_TYPE, "root");
+                siteMap.put(SITE_TYPE, "root");
             } else {
-                dataMap.put(SITE_TYPE, "subsite");
+                siteMap.put(SITE_TYPE, "subsite");
             }
 
-            // Set roles/permissions (simplified - SharePoint permissions are complex)
-            final List<String> roles = Collections.emptyList();
-            dataMap.put(SITE_ROLES, roles);
+            // Build site content with basic information and drives metadata
+            final StringBuilder contentBuilder = new StringBuilder();
 
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldUrl(), siteUrl);
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldTitle(), site.getDisplayName());
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(),
-                    StringUtil.isNotBlank(site.getDescription()) ? site.getDescription() : "");
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldLastModified(), site.getLastModifiedDateTime());
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldMimetype(), "text/html");
-
-            callback.store(paramMap, dataMap);
-
-        } catch (final Exception e) {
-            logger.warn("Failed to store site document: {}", site.getDisplayName(), e);
-            if (!isIgnoreError(paramMap)) {
-                throw new DataStoreCrawlingException(site.getDisplayName(), "Failed to store site document: " + site.getDisplayName(), e);
+            // Add site basic information
+            if (StringUtil.isNotBlank(site.getDisplayName())) {
+                contentBuilder.append(site.getDisplayName()).append(" ");
             }
-        }
-    }
+            if (StringUtil.isNotBlank(site.getDescription())) {
+                contentBuilder.append(site.getDescription()).append(" ");
+            }
+            if (StringUtil.isNotBlank(site.getWebUrl())) {
+                contentBuilder.append(site.getWebUrl()).append(" ");
+            }
 
-    protected void storeDriveItems(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
-            final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
-            final Microsoft365Client client, final Site site, final Drive drive) {
-
-        if (logger.isDebugEnabled()) {
-            logger.debug("Processing drive: {} in site: {}", drive.getName(), site.getDisplayName());
-        }
-
-        try {
-            // Get items from the drive and process them (reuse OneDrive patterns)
-            getDriveItems(client, drive.getId(), item -> {
-                if (isTargetItem(paramMap, item)) {
-                    try {
-                        processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site, drive, item,
-                                Collections.emptyList());
-                    } catch (final Exception e) {
-                        logger.warn("Failed to process drive item: {} in drive: {}", item.getName(), drive.getName(), e);
-                        if (!isIgnoreError(paramMap)) {
-                            throw new DataStoreCrawlingException(drive.getName(), "Failed to process drive item: " + item.getName(), e);
+            // Add document libraries information for richer content
+            try {
+                client.getDrives(drive -> {
+                    if ("documentLibrary".equals(drive.getDriveType()) && !isSystemLibrary(drive)) {
+                        if (StringUtil.isNotBlank(drive.getName())) {
+                            contentBuilder.append(drive.getName()).append(" ");
+                        }
+                        if (StringUtil.isNotBlank(drive.getDescription())) {
+                            contentBuilder.append(drive.getDescription()).append(" ");
                         }
                     }
-                }
-            });
-        } catch (final Exception e) {
-            logger.warn("Failed to get drive items from drive: {}", drive.getName(), e);
-            if (!isIgnoreError(paramMap)) {
-                throw new DataStoreCrawlingException(drive.getName(), "Failed to get drive items from drive: " + drive.getName(), e);
-            }
-        }
-    }
-
-    protected void getDriveItems(final Microsoft365Client client, final String driveId,
-            final java.util.function.Consumer<DriveItem> consumer) {
-        client.getDriveItemsInDrive(driveId, consumer);
-    }
-
-    protected void processDriveItem(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
-            final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
-            final Microsoft365Client client, final Site site, final Drive drive, final DriveItem item, final List<String> roles) {
-
-        // Reuse OneDrive's processDriveItem logic but add site context
-        final Map<String, Object> dataMap = new LinkedHashMap<>(defaultDataMap);
-
-        try {
-            // Add site-specific fields
-            dataMap.put(SITE_ID_FIELD, site.getId());
-            dataMap.put(SITE_NAME, site.getDisplayName());
-            dataMap.put(SITE_URL, site.getWebUrl());
-
-            // Add file fields (following OneDrive patterns)
-            dataMap.put(FILE_ID, item.getId());
-            dataMap.put(FILE_NAME, item.getName());
-            dataMap.put(FILE_WEB_URL, item.getWebUrl());
-            dataMap.put(FILE_CREATED, item.getCreatedDateTime());
-            dataMap.put(FILE_LAST_MODIFIED, item.getLastModifiedDateTime());
-
-            if (item.getSize() != null) {
-                dataMap.put(FILE_SIZE, item.getSize());
+                });
+            } catch (Exception e) {
+                logger.debug("Failed to get drives for content building, using basic site info only", e);
             }
 
-            if (item.getFile() != null && item.getFile().getMimeType() != null) {
-                dataMap.put(FILE_MIMETYPE, item.getFile().getMimeType());
-            }
+            siteMap.put(SITE_CONTENT, contentBuilder.toString().trim());
 
-            // Set parent path with site context
-            if (item.getParentReference() != null && item.getParentReference().getPath() != null) {
-                dataMap.put(FILE_PARENT_PATH, site.getDisplayName() + "/" + drive.getName() + "/" + item.getParentReference().getPath());
-            } else {
-                dataMap.put(FILE_PARENT_PATH, site.getDisplayName() + "/" + drive.getName());
-            }
-
-            // Set roles
-            dataMap.put(FILE_ROLES, roles);
-
-            // Set standard Fess fields
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldUrl(), item.getWebUrl());
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldTitle(), item.getName());
-            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldLastModified(), item.getLastModifiedDateTime());
-
-            // Get file content if it's not a folder
-            if (item.getFile() != null) {
-                final long maxSize = getMaxSize(paramMap);
-
-                // Check file size before attempting to download and extract content
-                if (item.getSize() != null && item.getSize() > maxSize) {
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("Skipping content extraction for file {} (size: {} bytes) - exceeds max_content_length: {} bytes",
-                                item.getName(), item.getSize(), maxSize);
-                    }
-                    dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(), "");
-                    dataMap.put(FILE_CONTENTS, "");
-                } else {
-                    // Check supported MIME types
-                    if (isSupportedMimeType(paramMap, item)) {
-                        try {
-                            final String content = getDriveItemContents(client, drive.getId(), item, maxSize, isIgnoreError(paramMap));
-                            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(), content);
-                            dataMap.put(FILE_CONTENTS, content);
-                        } catch (final Exception e) {
-                            logger.warn("Failed to get content for item: {}", item.getName(), e);
-                            dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(), "");
-                            dataMap.put(FILE_CONTENTS, "");
+            // Improved roles/permissions handling based on processDriveItem
+            final List<String> roles = new ArrayList<>();
+            try {
+                if (site.getPermissions() != null) {
+                    site.getPermissions().stream().forEach(x -> {
+                        if (x.getRoles() != null) {
+                            roles.addAll(x.getRoles());
                         }
-                    } else {
-                        if (logger.isDebugEnabled()) {
-                            logger.debug("Skipping content extraction for file {} - unsupported MIME type: {}", item.getName(),
-                                    item.getFile() != null ? item.getFile().getMimeType() : "unknown");
-                        }
-                        dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(), "");
-                        dataMap.put(FILE_CONTENTS, "");
-                    }
+                    });
                 }
+            } catch (Exception e) {
+                logger.debug("Failed to get site permissions, continuing with empty roles", e);
+            }
 
-                if (item.getFile().getMimeType() != null) {
-                    dataMap.put(ComponentUtil.getFessConfig().getIndexFieldMimetype(), item.getFile().getMimeType());
-                } else {
-                    dataMap.put(ComponentUtil.getFessConfig().getIndexFieldMimetype(), "application/octet-stream");
+            // Add PermissionHelper usage and default permissions handling
+            final FessConfig fessConfig = ComponentUtil.getFessConfig();
+            final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+
+            // Handle default permissions from paramMap
+            StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
+                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
+
+            // Handle default permissions from defaultDataMap
+            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof List<?> roleTypeList) {
+                roleTypeList.stream().map(s -> (String) s).forEach(roles::add);
+            }
+
+            // Set deduplicated roles
+            siteMap.put(SITE_ROLES, roles.stream().distinct().collect(Collectors.toList()));
+
+            resultMap.put("site", siteMap);
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("siteMap: {}", siteMap);
+            }
+
+            crawlerStatsHelper.record(statsKey, StatsAction.PREPARED);
+
+            final String scriptType = getScriptType(paramMap);
+            for (final Map.Entry<String, String> entry : scriptMap.entrySet()) {
+                final Object convertValue = convertValue(scriptType, entry.getValue(), resultMap);
+                if (convertValue != null) {
+                    dataMap.put(entry.getKey(), convertValue);
                 }
-            } else {
-                dataMap.put(ComponentUtil.getFessConfig().getIndexFieldContent(), "");
-                dataMap.put(ComponentUtil.getFessConfig().getIndexFieldMimetype(), "text/html");
+            }
+
+            crawlerStatsHelper.record(statsKey, StatsAction.EVALUATED);
+            if (logger.isDebugEnabled()) {
+                logger.debug("dataMap: {}", dataMap);
             }
 
             callback.store(paramMap, dataMap);
+            crawlerStatsHelper.record(statsKey, StatsAction.FINISHED);
+        } catch (final CrawlingAccessException e) {
+            logger.warn("Crawling Access Exception at : {}", dataMap, e);
 
-        } catch (final Exception e) {
-            logger.warn("Failed to process drive item: {} in site: {}", item.getName(), site.getDisplayName(), e);
-            if (!isIgnoreError(paramMap)) {
-                throw new DataStoreCrawlingException(site.getDisplayName(), "Failed to process drive item: " + item.getName(), e);
+            Throwable target = e;
+            if (target instanceof final MultipleCrawlingAccessException ex) {
+                final Throwable[] causes = ex.getCauses();
+                if (causes.length > 0) {
+                    target = causes[causes.length - 1];
+                }
             }
+
+            String errorName;
+            final Throwable cause = target.getCause();
+            if (cause != null) {
+                errorName = cause.getClass().getCanonicalName();
+            } else {
+                errorName = target.getClass().getCanonicalName();
+            }
+
+            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
+            failureUrlService.store(dataConfig, errorName, siteUrl, target);
+            crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
+        } catch (final Throwable t) {
+            logger.warn("Crawling Access Exception at : {}", dataMap, t);
+            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
+            failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), siteUrl, t);
+            crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
+        } finally {
+            crawlerStatsHelper.done(statsKey);
         }
     }
 
@@ -416,6 +350,9 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
 
     protected boolean isExcludedSite(final DataStoreParams paramMap, final Site site) {
         final String excludeIds = paramMap.getAsString(EXCLUDE_SITE_ID, null);
+        if (logger.isDebugEnabled()) {
+            logger.debug("excludeIds: {}", excludeIds);
+        }
         if (StringUtil.isBlank(excludeIds)) {
             return false;
         }
@@ -427,7 +364,8 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
             ids = excludeIds.split(";");
         } else if (excludeIds.contains(".sharepoint.com,")
                 && excludeIds.matches(".*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}.*")) {
-            // Single SharePoint site ID containing commas (format: hostname,siteCollectionId,siteId)
+            // Single SharePoint site ID containing commas (format:
+            // hostname,siteCollectionId,siteId)
             // Don't split - treat entire string as one ID
             ids = new String[] { excludeIds };
         } else {
@@ -449,7 +387,14 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
             return true;
         }
         // Simple type filtering - can be enhanced based on requirements
-        return true;
+        final String siteType = (site.getSiteCollection() != null && site.getSiteCollection().getRoot() != null) ? "root" : "subsite";
+        final String[] filters = typeFilter.split(",");
+        for (final String filter : filters) {
+            if (siteType.equalsIgnoreCase(filter.trim())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     protected boolean isSystemLibrary(final Drive drive) {
@@ -457,6 +402,9 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
             return false;
         }
         final String name = drive.getName().toLowerCase();
+        if (logger.isDebugEnabled()) {
+            logger.debug("Checking if drive is a system library: {}", name);
+        }
         return name.contains("form") || name.contains("style") || name.contains("_catalogs") || name.equals("formservertemplates");
     }
 
@@ -527,37 +475,33 @@ public class SharePointSiteDataStore extends Microsoft365DataStore {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.FALSE));
     }
 
-    protected boolean isIgnoreFolder(final DataStoreParams paramMap) {
-        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_FOLDER, Constants.FALSE));
+    protected String[] getSupportedMimeTypes(final DataStoreParams paramMap) {
+        return StreamUtil.split(paramMap.getAsString(SUPPORTED_MIMETYPES, ".*"), ",")
+                .get(stream -> stream.map(String::trim).toArray(n -> new String[n]));
     }
 
-    protected String getDriveItemContents(final Microsoft365Client client, final String driveId, final DriveItem item,
-            final long maxContentLength, final boolean ignoreError) {
-        if (item.getFile() != null) {
-            try (final java.io.InputStream in = client.getDriveContent(driveId, item.getId())) {
-                return ComponentUtil.getExtractorFactory()
-                        .builder(in, Collections.emptyMap())
-                        .filename(item.getName())
-                        .maxContentLength(maxContentLength)
-                        .extractorName(extractorName)
-                        .extract()
-                        .getContent();
-            } catch (final Exception e) {
-                if (!ignoreError && !ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
-                    throw new DataStoreCrawlingException(item.getWebUrl(), "Failed to get contents: " + item.getName(), e);
-                }
-                if (logger.isDebugEnabled()) {
-                    logger.warn("Failed to get contents: {}", item.getName(), e);
-                } else {
-                    logger.warn("Failed to get contents: {}. {}", item.getName(), e.getMessage());
-                }
-                return StringUtil.EMPTY;
-            }
+    protected UrlFilter getUrlFilter(final DataStoreParams paramMap) {
+        final UrlFilter urlFilter = ComponentUtil.getComponent(UrlFilter.class);
+        final String include = paramMap.getAsString(INCLUDE_PATTERN);
+        if (StringUtil.isNotBlank(include)) {
+            urlFilter.addInclude(include);
         }
-        return StringUtil.EMPTY;
+        final String exclude = paramMap.getAsString(EXCLUDE_PATTERN);
+        if (StringUtil.isNotBlank(exclude)) {
+            urlFilter.addExclude(exclude);
+        }
+        urlFilter.init(paramMap.getAsString(Constants.CRAWLING_INFO_ID));
+        if (logger.isDebugEnabled()) {
+            logger.debug("urlFilter: {}", urlFilter);
+        }
+        return urlFilter;
     }
 
-    public void setExtractorName(final String extractorName) {
+    protected String getUrl(final Map<String, Object> configMap, final DataStoreParams paramMap, final DriveItem item) {
+        return item.getWebUrl();
+    }
+
+    void setExtractorName(final String extractorName) {
         this.extractorName = extractorName;
     }
 }
