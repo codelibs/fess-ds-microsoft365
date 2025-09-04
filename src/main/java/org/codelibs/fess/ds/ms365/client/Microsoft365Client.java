@@ -252,8 +252,14 @@ public class Microsoft365Client implements Closeable {
      * @param driveId The ID of the drive.
      * @param itemId The ID of the parent drive item, or null for the root.
      * @return A DriveItemCollectionResponse containing the drive items.
+     * @throws IllegalArgumentException if driveId is null or empty
      */
     public DriveItemCollectionResponse getDriveItemPage(final String driveId, final String itemId) {
+        // Validate driveId to prevent malformed drive ID errors
+        if (driveId == null || driveId.trim().isEmpty()) {
+            throw new IllegalArgumentException("Drive ID cannot be null or empty");
+        }
+
         if (itemId == null) {
             return client.drives().byDriveId(driveId).items().byDriveItemId("root").children().get();
         }
@@ -329,11 +335,9 @@ public class Microsoft365Client implements Closeable {
             // Select only essential fields to improve performance
             requestConfiguration.queryParameters.select =
                     new String[] { "id", "displayName", "mail", "userPrincipalName", "assignedLicenses" };
-            // Filter for licensed users only to reduce data transfer
-            requestConfiguration.queryParameters.filter = "assignedLicenses/$count ne 0";
-            // Removed orderby as it's not supported with $count filter and ConsistencyLevel:eventual
-            // Required for advanced queries
-            requestConfiguration.headers.add("ConsistencyLevel", "eventual");
+            // Simple filter for licensed users - using any() instead of $count to avoid complex type issues
+            requestConfiguration.queryParameters.filter = "assignedLicenses/any(a:a/skuId ne null)";
+            // No orderby when using complex filters - it causes "Sorting not supported" errors
         });
 
         while (response != null && response.getValue() != null) {
