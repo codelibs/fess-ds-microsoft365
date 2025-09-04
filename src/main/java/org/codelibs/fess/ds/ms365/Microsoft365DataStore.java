@@ -51,17 +51,22 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
 
     /**
      * Retrieves all licensed users and processes them with the provided consumer.
-     * In Microsoft Graph SDK v6, the Microsoft365Client.getUsers() already filters for licensed users,
-     * so no additional license checking is needed here.
+     * Since Microsoft Graph API doesn't support complex filters on assignedLicenses,
+     * we retrieve all users and filter them client-side for licenses.
      *
      * @param client The Microsoft365Client to use for the request.
      * @param consumer A consumer to process each licensed User object.
      */
     protected void getLicensedUsers(final Microsoft365Client client, final Consumer<User> consumer) {
-        // Microsoft365Client.getUsers() in v6 already filters for licensed users using:
-        // filter: "assignedLicenses/$count ne 0"
-        // So no additional isLicensedUser() check is needed
-        client.getUsers(Collections.emptyList(), consumer);
+        // Get all users without server-side filtering due to API limitations
+        client.getUsers(Collections.emptyList(), user -> {
+            // Check if user has any assigned licenses client-side
+            if (user.getAssignedLicenses() != null && !user.getAssignedLicenses().isEmpty()) {
+                // User has licenses, process them
+                consumer.accept(user);
+            }
+            // Skip users without licenses silently
+        });
     }
 
     /**

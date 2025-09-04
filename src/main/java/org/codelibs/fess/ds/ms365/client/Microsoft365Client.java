@@ -325,6 +325,7 @@ public class Microsoft365Client implements Closeable {
     /**
      * Retrieves a list of users, processing each user with the provided consumer.
      * In SDK v6, query options are applied using requestConfiguration lambda.
+     * Note: License filtering is done post-retrieval to avoid Microsoft Graph API limitations.
      *
      * @param options A list of query options for the request (deprecated - kept for API compatibility).
      * @param consumer A consumer to process each User object.
@@ -332,12 +333,11 @@ public class Microsoft365Client implements Closeable {
     public void getUsers(final List<Object> options, final Consumer<User> consumer) {
         // Microsoft Graph SDK v6 uses requestConfiguration instead of QueryOption
         UserCollectionResponse response = client.users().get(requestConfiguration -> {
-            // Select only essential fields to improve performance
+            // Select only essential fields to improve performance and include assignedLicenses for license checking
             requestConfiguration.queryParameters.select =
                     new String[] { "id", "displayName", "mail", "userPrincipalName", "assignedLicenses" };
-            // Simple filter for licensed users - using any() instead of $count to avoid complex type issues
-            requestConfiguration.queryParameters.filter = "assignedLicenses/any(a:a/skuId ne null)";
-            // No orderby when using complex filters - it causes "Sorting not supported" errors
+            // Remove complex filters - license checking will be done after retrieval
+            // This avoids "Complex query on property assignedLicenses is not supported" error
         });
 
         while (response != null && response.getValue() != null) {
