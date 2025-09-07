@@ -22,6 +22,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
@@ -73,6 +74,7 @@ import com.microsoft.graph.models.User;
 import com.microsoft.graph.models.UserCollectionResponse;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
 import com.microsoft.kiota.ApiException;
+import com.microsoft.kiota.ResponseHeaders;
 
 /**
  * This class provides a client for accessing Microsoft Microsoft 365 services using the Microsoft Graph API.
@@ -93,10 +95,8 @@ public class Microsoft365Client implements Closeable {
     protected static final String ACCESS_TIMEOUT = "access_timeout";
     /** The parameter name for the refresh token interval. */
     protected static final String REFRESH_TOKEN_INTERVAL = "refresh_token_interval";
-    /** The parameter name for the user type cache size. */
-    protected static final String USER_TYPE_CACHE_SIZE = "user_type_cache_size";
-    /** The parameter name for the group ID cache size. */
-    protected static final String GROUP_ID_CACHE_SIZE = "group_id_cache_size";
+    /** The parameter name for the cache size. */
+    protected static final String CACHE_SIZE = "cache_size";
     /** The parameter name for the maximum content length. */
     protected static final String MAX_CONTENT_LENGTH = "max_content_length";
 
@@ -111,6 +111,9 @@ public class Microsoft365Client implements Closeable {
     protected LoadingCache<String, UserType> userTypeCache;
     /** A cache for group IDs. */
     protected LoadingCache<String, String[]> groupIdCache;
+    private LoadingCache<String, String> groupNameCache;
+    /** A cache for user principal names (UPNs). */
+    protected LoadingCache<String, String> upnCache;
 
     /** The maximum content length for extracted text. */
     protected int maxContentLength = -1;
@@ -153,7 +156,7 @@ public class Microsoft365Client implements Closeable {
         }
 
         userTypeCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(USER_TYPE_CACHE_SIZE, "10000")))
+                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
                 .build(new CacheLoader<String, UserType>() {
                     @Override
                     public UserType load(final String key) {
@@ -173,7 +176,7 @@ public class Microsoft365Client implements Closeable {
                 });
 
         groupIdCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(GROUP_ID_CACHE_SIZE, "10000")))
+                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
                 .build(new CacheLoader<String, String[]>() {
                     @Override
                     public String[] load(final String email) {
@@ -186,6 +189,25 @@ public class Microsoft365Client implements Closeable {
                         return idList.toArray(new String[idList.size()]);
                     }
                 });
+
+        upnCache = CacheBuilder.newBuilder()
+                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
+                .build(new CacheLoader<String, String>() {
+                    @Override
+                    public String load(final String objectId) {
+                        return doResolveUserPrincipalName(objectId);
+                    }
+                });
+
+        groupNameCache = CacheBuilder.newBuilder()
+                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
+                .build(new CacheLoader<String, String>() {
+                    @Override
+                    public String load(final String objectId) {
+                        return doResolveGroupName(objectId);
+                    }
+                });
+
     }
 
     @Override
@@ -214,12 +236,19 @@ public class Microsoft365Client implements Closeable {
      */
     public UserType getUserType(final String id) {
         if (StringUtil.isBlank(id)) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("User ID is blank, returning UNKNOWN type");
+            }
             return UserType.UNKNOWN;
         }
         try {
-            return userTypeCache.get(id);
+            UserType userType = userTypeCache.get(id);
+            if (logger.isDebugEnabled()) {
+                logger.debug("Retrieved user type - ID: {}, Type: {}", id, userType);
+            }
+            return userType;
         } catch (final ExecutionException e) {
-            logger.warn("Failed to get an user type.", e);
+            logger.warn("Failed to get user type for ID: {}", id, e);
             return UserType.UNKNOWN;
         }
     }
@@ -232,7 +261,19 @@ public class Microsoft365Client implements Closeable {
      * @return An InputStream containing the content of the drive item.
      */
     public InputStream getDriveContent(final String driveId, final String itemId) {
-        return client.drives().byDriveId(driveId).items().byDriveItemId(itemId).content().get();
+        if (logger.isDebugEnabled()) {
+            logger.debug("Getting drive content - Drive ID: {}, Item ID: {}", driveId, itemId);
+        }
+        try {
+            InputStream content = client.drives().byDriveId(driveId).items().byDriveItemId(itemId).content().get();
+            if (logger.isDebugEnabled()) {
+                logger.debug("Successfully retrieved drive content for Drive ID: {}, Item ID: {}", driveId, itemId);
+            }
+            return content;
+        } catch (Exception e) {
+            logger.error("Failed to get drive content - Drive ID: {}, Item ID: {}", driveId, itemId, e);
+            throw e;
+        }
     }
 
     /**
@@ -243,7 +284,15 @@ public class Microsoft365Client implements Closeable {
      * @return A PermissionCollectionResponse containing the permissions.
      */
     public PermissionCollectionResponse getDrivePermissions(final String driveId, final String itemId) {
-        return client.drives().byDriveId(driveId).items().byDriveItemId(itemId).permissions().get();
+        if (logger.isDebugEnabled()) {
+            logger.debug("Getting drive permissions - Drive ID: {}, Item ID: {}", driveId, itemId);
+        }
+        PermissionCollectionResponse response = client.drives().byDriveId(driveId).items().byDriveItemId(itemId).permissions().get();
+        if (logger.isDebugEnabled()) {
+            logger.debug("Retrieved {} drive permissions for Drive ID: {}, Item ID: {}",
+                    response.getValue() != null ? response.getValue().size() : 0, driveId, itemId);
+        }
+        return response;
     }
 
     /**
@@ -260,10 +309,20 @@ public class Microsoft365Client implements Closeable {
             throw new IllegalArgumentException("Drive ID cannot be null or empty");
         }
 
-        if (itemId == null) {
-            return client.drives().byDriveId(driveId).items().byDriveItemId("root").children().get();
+        if (logger.isDebugEnabled()) {
+            logger.debug("Getting drive item page - Drive ID: {}, Parent Item ID: {}", driveId, itemId != null ? itemId : "root");
         }
-        return client.drives().byDriveId(driveId).items().byDriveItemId(itemId).children().get();
+        DriveItemCollectionResponse response;
+        if (itemId == null) {
+            response = client.drives().byDriveId(driveId).items().byDriveItemId("root").children().get();
+        } else {
+            response = client.drives().byDriveId(driveId).items().byDriveItemId(itemId).children().get();
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug("Retrieved {} drive items for Drive ID: {}, Parent Item ID: {}",
+                    response.getValue() != null ? response.getValue().size() : 0, driveId, itemId != null ? itemId : "root");
+        }
+        return response;
     }
 
     /**
@@ -275,7 +334,16 @@ public class Microsoft365Client implements Closeable {
      * @return A PermissionCollectionResponse containing the next page of permissions.
      */
     public PermissionCollectionResponse getDrivePermissionsByNextLink(final String driveId, final String itemId, final String nextLink) {
-        return client.drives().byDriveId(driveId).items().byDriveItemId(itemId).permissions().withUrl(nextLink).get();
+        if (logger.isDebugEnabled()) {
+            logger.debug("Getting drive permissions via next link - Drive ID: {}, Item ID: {}", driveId, itemId);
+        }
+        PermissionCollectionResponse response =
+                client.drives().byDriveId(driveId).items().byDriveItemId(itemId).permissions().withUrl(nextLink).get();
+        if (logger.isDebugEnabled()) {
+            logger.debug("Retrieved {} drive permissions via next link for Drive ID: {}, Item ID: {}",
+                    response.getValue() != null ? response.getValue().size() : 0, driveId, itemId);
+        }
+        return response;
     }
 
     /**
@@ -633,7 +701,21 @@ public class Microsoft365Client implements Closeable {
      * @return The Site object.
      */
     public Site getSite(final String id) {
-        return client.sites().bySiteId(StringUtil.isNotBlank(id) ? id : "root").get();
+        final String siteId = StringUtil.isNotBlank(id) ? id : "root";
+        if (logger.isDebugEnabled()) {
+            logger.debug("Getting site with ID: {} (resolved to: {})", id, siteId);
+        }
+        try {
+            Site site = client.sites().bySiteId(siteId).get();
+            if (logger.isDebugEnabled()) {
+                logger.debug("Successfully retrieved site - ID: {}, DisplayName: {}, WebUrl: {}", site.getId(), site.getDisplayName(),
+                        site.getWebUrl());
+            }
+            return site;
+        } catch (final Exception e) {
+            logger.warn("Failed to get site with ID: {}", siteId, e);
+            throw e;
+        }
     }
 
     /**
@@ -642,20 +724,45 @@ public class Microsoft365Client implements Closeable {
      * @param consumer A consumer to process each Site object.
      */
     public void getSites(final Consumer<Site> consumer) {
-        SiteCollectionResponse response = client.sites().get();
+        if (logger.isDebugEnabled()) {
+            logger.debug("Getting all sites with pagination support");
+        }
 
-        // Handle pagination with odata.nextLink
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
+        try {
+            SiteCollectionResponse response = client.sites().get();
+            int pageCount = 0;
+            int totalSites = 0;
 
-            // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.sites().withUrl(response.getOdataNextLink()).get();
-            } else {
-                // No more pages, exit loop
-                break;
+            // Handle pagination with odata.nextLink
+            while (response != null && response.getValue() != null) {
+                pageCount++;
+                final List<Site> sites = response.getValue();
+                totalSites += sites.size();
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Processing sites page {} with {} sites (total so far: {})", pageCount, sites.size(), totalSites);
+                }
+
+                sites.forEach(consumer::accept);
+
+                // Check if there's a next page
+                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Found next link, continuing to page {}", pageCount + 1);
+                    }
+                    // Request the next page using the nextLink URL
+                    response = client.sites().withUrl(response.getOdataNextLink()).get();
+                } else {
+                    // No more pages, exit loop
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Site pagination completed - processed {} pages with total {} sites", pageCount, totalSites);
+                    }
+                    break;
+                }
             }
+        } catch (final Exception e) {
+            logger.warn("Failed to get sites", e);
+            throw e;
         }
     }
 
@@ -666,26 +773,64 @@ public class Microsoft365Client implements Closeable {
      * @param consumer A consumer to process each List object.
      */
     public void getSiteLists(final String siteId, final Consumer<com.microsoft.graph.models.List> consumer) {
-        // Get lists with system facet information
-        // Note: system facet is not included by default, so we use $select to explicitly request it
-        // along with commonly used fields to ensure compatibility
-        ListCollectionResponse response = client.sites().bySiteId(siteId).lists().get(requestConfiguration -> {
-            requestConfiguration.queryParameters.select = new String[] { "id", "name", "displayName", "description", "webUrl", "list",
-                    "system", "createdDateTime", "lastModifiedDateTime", "createdBy", "lastModifiedBy" };
-        });
+        if (logger.isDebugEnabled()) {
+            logger.debug("Getting lists for site: {}", siteId);
+        }
 
-        // Handle pagination with odata.nextLink
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.sites().bySiteId(siteId).lists().withUrl(response.getOdataNextLink()).get();
-            } else {
-                // No more pages, exit loop
-                break;
+        if (StringUtil.isBlank(siteId)) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Site ID is blank, skipping list retrieval");
             }
+            return;
+        }
+
+        try {
+            // Get lists with system facet information
+            // Note: system facet is not included by default, so we use $select to explicitly request it
+            // along with commonly used fields to ensure compatibility
+            ListCollectionResponse response = client.sites().bySiteId(siteId).lists().get(requestConfiguration -> {
+                requestConfiguration.queryParameters.select = new String[] { "id", "name", "displayName", "description", "webUrl", "list",
+                        "system", "createdDateTime", "lastModifiedDateTime", "createdBy", "lastModifiedBy" };
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Request configured to select extended list properties including system facet for site: {}", siteId);
+                }
+            });
+
+            int pageCount = 0;
+            int totalLists = 0;
+
+            // Handle pagination with odata.nextLink
+            while (response != null && response.getValue() != null) {
+                pageCount++;
+                final List<com.microsoft.graph.models.List> lists = response.getValue();
+                totalLists += lists.size();
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Processing lists page {} with {} lists for site {} (total so far: {})", pageCount, lists.size(), siteId,
+                            totalLists);
+                }
+
+                lists.forEach(consumer::accept);
+
+                // Check if there's a next page
+                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Found next link for lists, continuing to page {} for site: {}", pageCount + 1, siteId);
+                    }
+                    // Request the next page using the nextLink URL
+                    response = client.sites().bySiteId(siteId).lists().withUrl(response.getOdataNextLink()).get();
+                } else {
+                    // No more pages, exit loop
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("List pagination completed for site {} - processed {} pages with total {} lists", siteId, pageCount,
+                                totalLists);
+                    }
+                    break;
+                }
+            }
+        } catch (final Exception e) {
+            logger.warn("Failed to get lists for site: {}", siteId, e);
+            throw e;
         }
     }
 
@@ -701,6 +846,45 @@ public class Microsoft365Client implements Closeable {
             requestConfiguration.queryParameters.select = new String[] { "id", "name", "displayName", "description", "webUrl", "list",
                     "system", "createdDateTime", "lastModifiedDateTime", "createdBy", "lastModifiedBy" };
         });
+    }
+
+    /**
+     * Retrieves permissions for a SharePoint site.
+     *
+     * @param siteId The ID of the SharePoint site
+     * @return PermissionCollectionResponse containing the site permissions
+     * @throws IllegalArgumentException if siteId is null or empty
+     */
+    public PermissionCollectionResponse getSitePermissions(final String siteId) {
+        if (StringUtil.isBlank(siteId)) {
+            throw new IllegalArgumentException("siteId cannot be null or empty");
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug("Getting site permissions - Site ID: {}", siteId);
+        }
+        final PermissionCollectionResponse response = client.sites().bySiteId(siteId).permissions().get();
+        if (logger.isDebugEnabled()) {
+            logger.debug("Retrieved {} site permissions for Site ID: {}", response.getValue() != null ? response.getValue().size() : 0,
+                    siteId);
+        }
+        return response;
+    }
+
+    /**
+     * Retrieves the next page of permissions for a SharePoint site using pagination.
+     *
+     * @param siteId The ID of the SharePoint site
+     * @param nextLink The next link URL for pagination
+     * @return PermissionCollectionResponse containing the next page of site permissions, or null if nextLink is blank
+     */
+    public PermissionCollectionResponse getSitePermissionsByNextLink(final String siteId, final String nextLink) {
+        if (StringUtil.isBlank(nextLink)) {
+            return null;
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug("Getting site permissions via next link - Site ID: {}", siteId);
+        }
+        return client.sites().bySiteId(siteId).permissions().withUrl(nextLink).get();
     }
 
     /**
@@ -844,6 +1028,9 @@ public class Microsoft365Client implements Closeable {
      * @return The Drive object.
      */
     public Drive getDrive(final String driveId) {
+        if (driveId == null) {
+            return client.me().drive().get();
+        }
         return client.drives().byDriveId(driveId).get();
     }
 
@@ -870,6 +1057,26 @@ public class Microsoft365Client implements Closeable {
                 break;
             }
         }
+    }
+
+    /**
+     * Retrieves the drive for a specific user.
+     *
+     * @param userId the ID of the user
+     * @return the user's drive
+     */
+    public Drive getUserDrive(final String userId) {
+        return client.users().byUserId(userId).drive().get();
+    }
+
+    /**
+     * Retrieves the drive for a specific group.
+     *
+     * @param groupId the ID of the group
+     * @return the group's drive
+     */
+    public Drive getGroupDrive(final String groupId) {
+        return client.groups().byGroupId(groupId).drive().get();
     }
 
     /**
@@ -1138,26 +1345,64 @@ public class Microsoft365Client implements Closeable {
      * @param chatId The ID of the chat.
      */
     public void getChatMessages(final List<Object> options, final Consumer<ChatMessage> consumer, final String chatId) {
-        // Microsoft Graph SDK v6 uses requestConfiguration instead of QueryOption
-        ChatMessageCollectionResponse response = client.chats().byChatId(chatId).messages().get(requestConfiguration -> {
-            // Select only essential fields to improve performance
-            requestConfiguration.queryParameters.select =
-                    new String[] { "id", "body", "from", "createdDateTime", "attachments", "messageType" };
-            requestConfiguration.queryParameters.orderby = new String[] { "createdDateTime desc" };
-        });
+        if (logger.isDebugEnabled()) {
+            logger.debug("Getting chat messages for chat: {} with options count: {}", chatId, options != null ? options.size() : 0);
+        }
 
-        // Handle pagination with odata.nextLink
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.chats().byChatId(chatId).messages().withUrl(response.getOdataNextLink()).get();
-            } else {
-                // No more pages, exit loop
-                break;
+        if (StringUtil.isBlank(chatId)) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Chat ID is blank, skipping chat message retrieval");
             }
+            return;
+        }
+
+        try {
+            // Microsoft Graph SDK v6 uses requestConfiguration instead of QueryOption
+            ChatMessageCollectionResponse response = client.chats().byChatId(chatId).messages().get(requestConfiguration -> {
+                // Select only essential fields to improve performance
+                requestConfiguration.queryParameters.select =
+                        new String[] { "id", "body", "from", "createdDateTime", "attachments", "messageType" };
+                requestConfiguration.queryParameters.orderby = new String[] { "createdDateTime desc" };
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Request configured with select fields and orderby=createdDateTime desc for chat: {}", chatId);
+                }
+            });
+
+            int pageCount = 0;
+            int totalMessages = 0;
+
+            // Handle pagination with odata.nextLink
+            while (response != null && response.getValue() != null) {
+                pageCount++;
+                final List<ChatMessage> messages = response.getValue();
+                totalMessages += messages.size();
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Processing chat messages page {} with {} messages for chat {} (total so far: {})", pageCount,
+                            messages.size(), chatId, totalMessages);
+                }
+
+                messages.forEach(consumer::accept);
+
+                // Check if there's a next page
+                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Found next link for chat messages, continuing to page {} for chat: {}", pageCount + 1, chatId);
+                    }
+                    // Request the next page using the nextLink URL
+                    response = client.chats().byChatId(chatId).messages().withUrl(response.getOdataNextLink()).get();
+                } else {
+                    // No more pages, exit loop
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Chat message pagination completed for chat {} - processed {} pages with total {} messages", chatId,
+                                pageCount, totalMessages);
+                    }
+                    break;
+                }
+            }
+        } catch (final Exception e) {
+            logger.warn("Failed to get chat messages for chat: {}", chatId, e);
+            throw e;
         }
     }
 
@@ -1275,6 +1520,164 @@ public class Microsoft365Client implements Closeable {
                 logger.warn("Could not get a text. {}", e.getMessage());
             }
             return StringUtil.EMPTY;
+        }
+    }
+
+    /**
+     * Attempts to resolve a user principal name (UPN) from a given identifier.
+     * If the identifier is already in UPN format (contains '@'), it is returned as-is.
+     * Otherwise, it tries to resolve the UPN using a cache to minimize API calls.
+     *
+     * @param id The identifier to resolve (could be UPN or object ID).
+     * @return The resolved UPN, or null if it cannot be resolved.
+     */
+    public String tryResolveUserPrincipalName(final String id) {
+        if (StringUtil.isBlank(id)) {
+            return null;
+        }
+        if (id.indexOf('@') >= 0) {
+            return id;
+        }
+        try {
+            return upnCache.get(id);
+        } catch (final ExecutionException e) {
+            logger.warn("Failed to resolve UPN for id={}", id, e);
+            return null;
+        }
+    }
+
+    /**
+     * Resolves a user principal name (UPN) from a given object ID by querying the Microsoft Graph API.
+     * Implements a simple retry mechanism for transient errors like rate limiting (HTTP 429) or service unavailability (HTTP 503).
+     *
+     * @param objectId The object ID of the user to resolve.
+     * @return The resolved UPN, or null if it cannot be resolved.
+     */
+    private String doResolveUserPrincipalName(final String objectId) {
+        int attempts = 0;
+        while (true) {
+            attempts++;
+            try {
+                final User u = client.users().byUserId(objectId).get(rc -> {
+                    rc.queryParameters.select = new String[] { "userPrincipalName", "mail", "id" };
+                });
+                if (u == null) {
+                    return null;
+                }
+                if (StringUtil.isNotBlank(u.getUserPrincipalName())) {
+                    return u.getUserPrincipalName();
+                }
+                if (StringUtil.isNotBlank(u.getMail())) {
+                    return u.getMail();
+                }
+                return null;
+            } catch (final ApiException e) {
+                final int status = e.getResponseStatusCode();
+                if ((status == 429 || status == 503) && attempts == 1) {
+                    final long waitMs = parseRetryAfterMillis(e, 2000L, 15000L); // default 2s ~ max 15s
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Retrying /users/{} after {} ms due to {}", objectId, waitMs, status, e);
+                    }
+                    sleepSilently(waitMs);
+                    continue;
+                }
+                if (status == 404) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("User not found for id={}", objectId, e);
+                    }
+                    return null;
+                }
+                logger.warn("Failed to resolve UPN for id={} (status={})", objectId, status, e);
+                return null;
+            } catch (final Exception ex) {
+                logger.warn("Failed to resolve UPN for id={}", objectId, ex);
+                return null;
+            }
+        }
+    }
+
+    /**
+       * Attempts to resolve a group name from a given identifier.
+       * If the identifier is already in email format (contains '@'), it is returned as-is.
+       * Otherwise, it tries to resolve the group name using a cache to minimize API calls.
+       *
+       * @param id The identifier to resolve (could be email or object ID).
+       * @return The resolved group name, or null if it cannot be resolved.
+       */
+    public String tryResolveGroupName(final String id) {
+        if (StringUtil.isBlank(id)) {
+            return null;
+        }
+        if (id.indexOf('@') >= 0) {
+            return id;
+        }
+        try {
+            return groupNameCache.get(id);
+        } catch (ExecutionException e) {
+            logger.warn("Failed to resolve group name for id={}", id, e);
+            return null;
+        }
+    }
+
+    private String doResolveGroupName(final String objectId) {
+        try {
+            final Group g = client.groups().byGroupId(objectId).get(rc -> {
+                rc.queryParameters.select = new String[] { "id", "displayName", "mail", "mailNickname" };
+            });
+            if (g == null) {
+                return null;
+            }
+            if (StringUtil.isNotBlank(g.getMail())) {
+                return g.getMail();
+            }
+            if (StringUtil.isNotBlank(g.getMailNickname())) {
+                return g.getMailNickname();
+            }
+            if (StringUtil.isNotBlank(g.getDisplayName())) {
+                return g.getDisplayName();
+            }
+            return null;
+        } catch (ApiException e) {
+            if (e.getResponseStatusCode() == 404) {
+                return null;
+            }
+            logger.warn("Failed to resolve group name for id={}", objectId, e);
+            return null;
+        } catch (Exception e) {
+            logger.warn("Failed to resolve group name for id={}", objectId, e);
+            return null;
+        }
+    }
+
+    private long parseRetryAfterMillis(final ApiException e, final long minMs, final long maxMs) {
+        try {
+            final ResponseHeaders headers = e.getResponseHeaders();
+            if (headers != null) {
+                final Set<String> values = headers.get("Retry-After");
+                if (values != null && !values.isEmpty()) {
+                    final String v = values.stream().findFirst().orElse(StringUtil.EMPTY).trim();
+                    if (v.matches("\\d+")) {
+                        final long ms = Long.parseLong(v) * 1000L;
+                        return Math.min(Math.max(ms, minMs), maxMs);
+                    }
+                    final long epochMs = java.time.ZonedDateTime.parse(v, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
+                            .toInstant()
+                            .toEpochMilli();
+                    final long delta = epochMs - System.currentTimeMillis();
+                    return Math.min(Math.max(delta, minMs), maxMs);
+                }
+            }
+        } catch (final Exception ignore) {
+            // ignore
+        }
+        return minMs;
+    }
+
+    private void sleepSilently(final long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (final InterruptedException ie) {
+            Thread.currentThread().interrupt();
         }
     }
 }

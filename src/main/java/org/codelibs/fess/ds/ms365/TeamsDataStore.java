@@ -186,16 +186,26 @@ public class TeamsDataStore extends Microsoft365DataStore {
         configMap.put(IGNORE_SYSTEM_EVENTS, isIgnoreSystemEvents(paramMap));
 
         if (logger.isDebugEnabled()) {
-            logger.debug("configMap: {}", configMap);
+            logger.debug(
+                    "Teams crawling started - Configuration: TeamID={}, ChannelID={}, ChatID={}, IgnoreReplies={}, AppendAttachment={}, Threads={}",
+                    configMap.get(TEAM_ID), configMap.get(CHANNEL_ID), configMap.get(CHAT_ID), configMap.get(IGNORE_REPLIES),
+                    configMap.get(APPEND_ATTACHMENT), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
         final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
         try (final Microsoft365Client client = createClient(paramMap)) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Starting Teams messages processing");
+            }
             processTeamMessages(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, client);
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("Starting Chat messages processing");
+            }
             processChatMessages(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, client);
 
             if (logger.isDebugEnabled()) {
-                logger.debug("Shutting down thread executor.");
+                logger.debug("Teams crawling completed - shutting down thread executor");
             }
             executorService.shutdown();
             executorService.awaitTermination(60, TimeUnit.SECONDS);
@@ -221,13 +231,42 @@ public class TeamsDataStore extends Microsoft365DataStore {
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Map<String, Object> configMap,
             final Microsoft365Client client) {
         final String chatId = (String) configMap.get(CHAT_ID);
+
         if (StringUtil.isNotBlank(chatId)) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Processing messages for specific chat: {}", chatId);
+            }
+
             final List<ChatMessage> msgList = new ArrayList<>();
-            client.getChatMessages(Collections.emptyList(), m -> msgList.add(m), chatId);
+
+            client.getChatMessages(Collections.emptyList(), m -> {
+                msgList.add(m);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Retrieved chat: {}", chatId);
+                }
+            }, chatId);
+
             if (!msgList.isEmpty()) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Creating consolidated chat message from {} individual messages for chat: {}", msgList.size(), chatId);
+                }
+
                 final ChatMessage m = createChatMessage(msgList, client);
                 processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, getGroupRoles(client, chatId), m,
                         map -> map.put("messages", msgList), client);
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Successfully processed consolidated chat message for chat: {} with {} individual messages", chatId,
+                            msgList.size());
+                }
+            } else {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("No messages found for chat: {}", chatId);
+                }
+            }
+        } else {
+            if (logger.isDebugEnabled()) {
+                logger.debug("No specific chat ID configured - skipping chat message processing");
             }
         }
     }
@@ -291,17 +330,36 @@ public class TeamsDataStore extends Microsoft365DataStore {
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Map<String, Object> configMap,
             final Microsoft365Client client) {
         final String teamId = (String) configMap.get(TEAM_ID);
+
         if (StringUtil.isNotBlank(teamId)) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Processing messages for specific team: {}", teamId);
+            }
+
             final Group g = client.getGroupById(teamId);
             if (g == null) {
                 throw new DataStoreException("Could not find a team: " + teamId);
             }
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("Found team: {} (Display Name: {})", g.getId(), g.getDisplayName());
+            }
+
             final String channelId = (String) configMap.get(CHANNEL_ID);
             if (StringUtil.isNotBlank(channelId)) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Processing messages for specific channel: {} in team: {}", channelId, teamId);
+                }
+
                 final Channel c = client.getChannelById(teamId, channelId);
                 if (c == null) {
                     throw new DataStoreException("Could not find a channel: " + channelId);
                 }
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Found channel: {} (Display Name: {}) in team: {}", c.getId(), c.getDisplayName(), g.getDisplayName());
+                }
+
                 client.getTeamMessages(Collections.emptyList(), m -> {
                     final Map<String, Object> message = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
                             defaultDataMap, getGroupRoles(client, g.getId(), c.getId()), m, map -> {
@@ -320,11 +378,14 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     }
                 }, teamId, channelId);
             } else {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Processing messages for all channels in team: {}", teamId);
+                }
+
                 client.getChannels(Collections.emptyList(), c -> {
                     if (logger.isDebugEnabled()) {
-                        logger.debug("Channel: {} : {}", c.getId(), ToStringBuilder.reflectionToString(c));
-                    } else {
-                        logger.info("Channel: {} : {}", c.getId(), c.getDisplayName());
+                        logger.debug("Processing channel: {} (Display Name: {}) in team: {}", c.getId(), c.getDisplayName(),
+                                g.getDisplayName());
                     }
                     client.getTeamMessages(Collections.emptyList(), m -> {
                         final Map<String, Object> message = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
@@ -346,30 +407,47 @@ public class TeamsDataStore extends Microsoft365DataStore {
                 }, teamId);
             }
         } else if (teamId == null) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Processing messages for all teams with visibility and exclusion filters");
+            }
+
             final Set<String> excludeGroupIdSet = getExcludeGroupIdSet(configMap, client);
             if (logger.isDebugEnabled()) {
                 logger.debug("Exclude Group IDs: {}", excludeGroupIdSet);
             }
+
             client.geTeams(Collections.emptyList(), g -> {
+
                 if (logger.isDebugEnabled()) {
-                    logger.debug("Team: {} : {}", g.getId(), ToStringBuilder.reflectionToString(g));
-                } else {
-                    logger.info("Team: {} : {}", g.getId(), g.getDisplayName());
+                    logger.debug("Evaluating team: {} (Display Name: {}, Visibility: {})", g.getId(), g.getDisplayName(),
+                            g.getVisibility());
                 }
+
                 if (excludeGroupIdSet.contains(g.getId())) {
-                    logger.info("Skpped Team: {} : {}", g.getId(), g.getDisplayName());
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Skipping excluded team: {} (Display Name: {})", g.getId(), g.getDisplayName());
+                    }
                     return;
                 }
                 if (!isTargetVisibility(configMap, g.getVisibility())) {
-                    logger.info("Skpped Team: {} : {} : {}", g.getId(), g.getDisplayName(), g.getVisibility());
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Skipping team due to visibility filter: {} (Display Name: {}, Visibility: {})", g.getId(),
+                                g.getDisplayName(), g.getVisibility());
+                    }
                     return;
                 }
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Processing team: {} (Display Name: {})", g.getId(), g.getDisplayName());
+                }
+
                 client.getChannels(Collections.emptyList(), c -> {
+
                     if (logger.isDebugEnabled()) {
-                        logger.debug("Channel: {} : {}", c.getId(), ToStringBuilder.reflectionToString(c));
-                    } else {
-                        logger.info("Channel: {} : {}", c.getId(), c.getDisplayName());
+                        logger.debug("Processing channel: {} (Display Name: {}) in team: {}", c.getId(), c.getDisplayName(),
+                                g.getDisplayName());
                     }
+
                     client.getTeamMessages(Collections.emptyList(), m -> {
                         final Map<String, Object> message = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
                                 defaultDataMap, getGroupRoles(client, g.getId(), c.getId()), m, map -> {
@@ -544,16 +622,6 @@ public class TeamsDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Creates a new Microsoft365Client instance for API communication.
-     *
-     * @param params The data store parameters containing authentication settings.
-     * @return A new Microsoft365Client instance.
-     */
-    protected Microsoft365Client createClient(final DataStoreParams params) {
-        return new Microsoft365Client(params);
-    }
-
-    /**
      * Gets the group roles for members of a specific team channel.
      *
      * @param client The Microsoft365Client for API communication.
@@ -686,14 +754,16 @@ public class TeamsDataStore extends Microsoft365DataStore {
             final Map<String, Object> defaultDataMap, final List<String> permissions, final ChatMessage message,
             final Consumer<Map<String, Object>> resultAppender, final Microsoft365Client client) {
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
+
         if (logger.isDebugEnabled()) {
-            logger.debug("Message: {} : {}", message.getId(), ToStringBuilder.reflectionToString(message));
-        } else {
-            logger.info("Message: {} : {}", message.getId(), message.getWebUrl());
+            logger.debug("Processing chat message - ID: {}, WebUrl: {}, From: {}, Created: {}", message.getId(), message.getWebUrl(),
+                    message.getFrom() != null ? message.getFrom().getUser() : "unknown", message.getCreatedDateTime());
         }
 
         if (isSystemEvent(configMap, message)) {
-            logger.info("Message {} is a system event.", message.getId());
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping system event message: {} (ID: {})", message.getWebUrl(), message.getId());
+            }
             return null;
         }
 
@@ -702,11 +772,19 @@ public class TeamsDataStore extends Microsoft365DataStore {
         final Map<String, Object> messageMap = new HashMap<>();
         final StatsKeyObject statsKey = new StatsKeyObject(message.getWebUrl());
         paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
+
         try {
             crawlerStatsHelper.begin(statsKey);
 
-            messageMap.put(MESSAGE_CONTENT, getContent(configMap, message, client));
-            messageMap.put(MESSAGE_TITLE, getTitle(configMap, message));
+            if (logger.isDebugEnabled()) {
+                logger.debug("Extracting content for message: {} (ID: {})", message.getWebUrl(), message.getId());
+            }
+
+            final String content = getContent(configMap, message, client);
+            final String title = getTitle(configMap, message);
+
+            messageMap.put(MESSAGE_CONTENT, content);
+            messageMap.put(MESSAGE_TITLE, title);
 
             messageMap.put(MESSAGE_ATTACHMENTS, message.getAttachments());
             messageMap.put(MESSAGE_BODY, message.getBody());
@@ -740,7 +818,9 @@ public class TeamsDataStore extends Microsoft365DataStore {
             crawlerStatsHelper.record(statsKey, StatsAction.PREPARED);
 
             if (logger.isDebugEnabled()) {
-                logger.debug("messageMap: {}", messageMap);
+                logger.debug("Prepared message data - Title: {}, Content size: {}, Permissions: {}, Attachments: {}", title,
+                        content != null ? content.length() : 0, permissions.size(),
+                        message.getAttachments() != null ? message.getAttachments().size() : 0);
             }
 
             final String scriptType = getScriptType(paramMap);
@@ -754,7 +834,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
             crawlerStatsHelper.record(statsKey, StatsAction.EVALUATED);
 
             if (logger.isDebugEnabled()) {
-                logger.debug("dataMap: {}", dataMap);
+                logger.debug("Final data map prepared for indexing - Fields: {}, URL: {}", dataMap.size(), dataMap.get("url"));
             }
 
             if (dataMap.get("url") instanceof final String statsUrl) {
@@ -763,8 +843,12 @@ public class TeamsDataStore extends Microsoft365DataStore {
 
             callback.store(paramMap, dataMap);
             crawlerStatsHelper.record(statsKey, StatsAction.FINISHED);
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("Successfully indexed chat message: {} (ID: {})", message.getWebUrl(), message.getId());
+            }
         } catch (final CrawlingAccessException e) {
-            logger.warn("Crawling Access Exception at : {}", dataMap, e);
+            logger.warn("Crawling Access Exception for message: {} (ID: {}) - Data: {}", message.getWebUrl(), message.getId(), dataMap, e);
 
             Throwable target = e;
             if (target instanceof final MultipleCrawlingAccessException ex) {
@@ -786,7 +870,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
             failureUrlService.store(dataConfig, errorName, message.getWebUrl(), target);
             crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
         } catch (final Throwable t) {
-            logger.warn("Crawling Access Exception at : {}", dataMap, t);
+            logger.warn("Processing exception for message: {} (ID: {}) - Data: {}", message.getWebUrl(), message.getId(), dataMap, t);
             final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
             failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), message.getWebUrl(), t);
             crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);

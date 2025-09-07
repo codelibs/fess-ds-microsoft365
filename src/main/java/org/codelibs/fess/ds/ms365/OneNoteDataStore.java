@@ -96,28 +96,43 @@ public class OneNoteDataStore extends Microsoft365DataStore {
     protected void storeData(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap) {
 
+        if (logger.isDebugEnabled()) {
+            logger.debug("OneNote crawling started - Threads: {}, Site: {}, User: {}, Group: {}",
+                    paramMap.getAsString(NUMBER_OF_THREADS, "1"), isSiteNoteCrawler(paramMap), isUserNoteCrawler(paramMap),
+                    isGroupNoteCrawler(paramMap));
+        }
+
         final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
         try (final Microsoft365Client client = createClient(paramMap)) {
             if (isSiteNoteCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("crawling site notes.");
+                    logger.debug("Starting site notebooks crawling");
                 }
                 storeSiteNotes(dataConfig, callback, paramMap, scriptMap, defaultDataMap, executorService, client);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Completed site notebooks crawling");
+                }
             }
             if (isUserNoteCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("crawling user notes.");
+                    logger.debug("Starting user notebooks crawling");
                 }
                 storeUsersNotes(dataConfig, callback, paramMap, scriptMap, defaultDataMap, executorService, client);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Completed user notebooks crawling");
+                }
             }
             if (isGroupNoteCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("crawling group notes.");
+                    logger.debug("Starting group notebooks crawling");
                 }
                 storeGroupsNotes(dataConfig, callback, paramMap, scriptMap, defaultDataMap, executorService, client);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Completed group notebooks crawling");
+                }
             }
             if (logger.isDebugEnabled()) {
-                logger.debug("Shutting down thread executor.");
+                logger.debug("OneNote crawling completed - shutting down thread executor");
             }
             executorService.shutdown();
             executorService.awaitTermination(60, TimeUnit.SECONDS);
@@ -126,16 +141,6 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         } finally {
             executorService.shutdownNow();
         }
-    }
-
-    /**
-     * Creates a new Microsoft365Client.
-     *
-     * @param params The data store parameters.
-     * @return A new Microsoft365Client.
-     */
-    protected Microsoft365Client createClient(final DataStoreParams params) {
-        return new Microsoft365Client(params);
     }
 
     /**
@@ -202,13 +207,28 @@ public class OneNoteDataStore extends Microsoft365DataStore {
     protected void storeUsersNotes(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
             final Microsoft365Client client) {
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Starting user notebooks processing - retrieving licensed users");
+        }
+
         getLicensedUsers(client, user -> {
             final List<String> roles = getUserRoles(user);
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("Processing notebooks for user: {} (ID: {})", user.getDisplayName(), user.getId());
+            }
+
             try {
-                getNotebooks(client, user.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig, callback, paramMap,
-                        scriptMap, defaultDataMap, client, user.getId(), notebook, roles)));
+                getNotebooks(client, user.getId(), notebook -> {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Processing notebook: {} for user: {}", notebook.getDisplayName(), user.getDisplayName());
+                    }
+                    executorService.execute(() -> processNotebook(dataConfig, callback, paramMap, scriptMap, defaultDataMap, client,
+                            user.getId(), notebook, roles));
+                });
             } catch (final ApiException e) {
-                logger.warn("Failed to store {}'s Notebooks.", user.getDisplayName(), e);
+                logger.warn("Failed to retrieve notebooks for user: {} (ID: {})", user.getDisplayName(), user.getId(), e);
             }
         });
     }
@@ -227,11 +247,32 @@ public class OneNoteDataStore extends Microsoft365DataStore {
     protected void storeGroupsNotes(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
             final Microsoft365Client client) {
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Starting group notebooks processing - retrieving Microsoft 365 groups");
+        }
+
         getMicrosoft365Groups(client, group -> {
             final List<String> roles = getGroupRoles(group);
-            getNotebooks(client, "groups/" + group.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig, callback,
-                    paramMap, scriptMap, defaultDataMap, client, "groups/" + group.getId(), notebook, roles)));
+            final String groupPath = "groups/" + group.getId();
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("Processing notebooks for group: {} (ID: {}, Path: {})", group.getDisplayName(), group.getId(), groupPath);
+            }
+
+            try {
+                getNotebooks(client, groupPath, notebook -> {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Processing notebook: {} for group: {}", notebook.getDisplayName(), group.getDisplayName());
+                    }
+                    executorService.execute(() -> processNotebook(dataConfig, callback, paramMap, scriptMap, defaultDataMap, client,
+                            groupPath, notebook, roles));
+                });
+            } catch (final Exception e) {
+                logger.warn("Failed to retrieve notebooks for group: {} (ID: {})", group.getDisplayName(), group.getId(), e);
+            }
         });
+
     }
 
     /**
@@ -256,13 +297,29 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         final Map<String, Object> notebooksMap = new HashMap<>();
         final StatsKeyObject statsKey = new StatsKeyObject(notebook.getId());
         paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Processing notebook: {} (ID: {}) for user/group: {} - Roles: {}", notebook.getDisplayName(), notebook.getId(),
+                    userId, roles.size());
+        }
+
         try {
             crawlerStatsHelper.begin(statsKey);
             final String url = notebook.getLinks().getOneNoteWebUrl().getHref();
-            logger.info("Crawling URL: {}", url);
+            logger.info("Crawling notebook URL: {} (Name: {})", url, notebook.getDisplayName());
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("Retrieving notebook content for notebook: {} (ID: {})", notebook.getDisplayName(), notebook.getId());
+            }
 
             final String contents = client.getNotebookContent(userId, notebook.getId());
             final long size = contents != null ? contents.length() : 0L;
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("Retrieved notebook content - Name: {}, Size: {} characters, Created: {}, Modified: {}",
+                        notebook.getDisplayName(), size, notebook.getCreatedDateTime(), notebook.getLastModifiedDateTime());
+            }
+
             notebooksMap.put(NOTEBOOK_NAME, notebook.getDisplayName());
             notebooksMap.put(NOTEBOOK_CONTENTS, contents);
             notebooksMap.put(NOTEBOOK_SIZE, size);
@@ -276,7 +333,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             crawlerStatsHelper.record(statsKey, StatsAction.PREPARED);
 
             if (logger.isDebugEnabled()) {
-                logger.debug("notebooksMap: {}", notebooksMap);
+                logger.debug("Prepared notebook data - Fields: {}, URL: {}", notebooksMap.size(), url);
             }
 
             final String scriptType = getScriptType(paramMap);
@@ -290,7 +347,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             crawlerStatsHelper.record(statsKey, StatsAction.EVALUATED);
 
             if (logger.isDebugEnabled()) {
-                logger.debug("dataMap: {}", dataMap);
+                logger.debug("Final data map prepared for indexing - Fields: {}, URL: {}", dataMap.size(), dataMap.get("url"));
             }
 
             if (dataMap.get("url") instanceof final String statsUrl) {
@@ -299,8 +356,13 @@ public class OneNoteDataStore extends Microsoft365DataStore {
 
             callback.store(paramMap, dataMap);
             crawlerStatsHelper.record(statsKey, StatsAction.FINISHED);
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("Successfully indexed notebook: {} (ID: {})", notebook.getDisplayName(), notebook.getId());
+            }
         } catch (final CrawlingAccessException e) {
-            logger.warn("Crawling Access Exception at : {}", dataMap, e);
+            logger.warn("Crawling Access Exception for notebook: {} (ID: {}) - Data: {}", notebook.getDisplayName(), notebook.getId(),
+                    dataMap, e);
 
             Throwable target = e;
             if (target instanceof final MultipleCrawlingAccessException ex) {
@@ -322,7 +384,8 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             failureUrlService.store(dataConfig, errorName, notebook.getDisplayName(), target);
             crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
         } catch (final Throwable t) {
-            logger.warn("Crawling Access Exception at : {}", dataMap, t);
+            logger.warn("Processing exception for notebook: {} (ID: {}) - Data: {}", notebook.getDisplayName(), notebook.getId(), dataMap,
+                    t);
             final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
             failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), notebook.getDisplayName(), t);
             crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
@@ -339,17 +402,36 @@ public class OneNoteDataStore extends Microsoft365DataStore {
      * @param consumer The consumer to process each notebook.
      */
     protected void getNotebooks(final Microsoft365Client client, final String userId, final Consumer<Notebook> consumer) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Retrieving notebooks for user/group: {}", userId);
+        }
+
         try {
             NotebookCollectionResponse response = client.getNotebookPage(userId);
             if (response.getValue() != null) {
-                response.getValue().forEach(consumer);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Retrieved {} notebooks for user/group: {}", response.getValue().size(), userId);
+                }
+                response.getValue().forEach(notebook -> {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Processing notebook: {} (ID: {}) for user/group: {}", notebook.getDisplayName(), notebook.getId(),
+                                userId);
+                    }
+                    consumer.accept(notebook);
+                });
+            } else {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("No notebooks found for user/group: {}", userId);
+                }
             }
             // Pagination handling is implemented in the Microsoft365Client methods
         } catch (final ApiException e) {
             if (e.getResponseStatusCode() == 404) {
-                logger.debug("Notebook is not found.", e);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Notebooks not found (404) for user/group: {}", userId, e);
+                }
             } else {
-                logger.warn("Failed to access a notebook.", e);
+                logger.warn("Failed to retrieve notebooks for user/group: {}", userId, e);
             }
         }
     }

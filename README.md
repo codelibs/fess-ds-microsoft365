@@ -1,5 +1,5 @@
 Microsoft365 Data Store for Fess
-[![Java CI with Maven](https://github.com/codelibs/fess-ds-office365/actions/workflows/maven.yml/badge.svg)](https://github.com/codelibs/fess-ds-office365/actions/workflows/maven.yml)
+[![Java CI with Maven](https://github.com/codelibs/fess-ds-microsoft365/actions/workflows/maven.yml/badge.svg)](https://github.com/codelibs/fess-ds-microsoft365/actions/workflows/maven.yml)
 ==========================
 
 ## Overview
@@ -258,4 +258,4 @@ mvn test
 
 ## License
 
-[ASL 2.0](https://github.com/codelibs/fess-ds-office365/blob/master/LICENSE)
+[ASL 2.0](https://github.com/codelibs/fess-ds-microsoft365/blob/master/LICENSE)

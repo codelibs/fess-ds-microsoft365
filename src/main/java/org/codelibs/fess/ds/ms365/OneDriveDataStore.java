@@ -44,14 +44,12 @@ import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.crawler.helper.ContentLengthHelper;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
-import org.codelibs.fess.ds.ms365.client.Microsoft365Client.UserType;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
 import org.codelibs.fess.helper.PermissionHelper;
-import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
@@ -61,7 +59,6 @@ import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.DriveItemCollectionResponse;
 import com.microsoft.graph.models.Hashes;
 import com.microsoft.graph.models.Permission;
-import com.microsoft.graph.models.PermissionCollectionResponse;
 import com.microsoft.kiota.ApiException;
 
 /**
@@ -71,14 +68,14 @@ import com.microsoft.kiota.ApiException;
  */
 public class OneDriveDataStore extends Microsoft365DataStore {
 
+    private static final Logger logger = LogManager.getLogger(OneDriveDataStore.class);
+
     /**
      * Default constructor.
      */
     public OneDriveDataStore() {
         super();
     }
-
-    private static final Logger logger = LogManager.getLogger(OneDriveDataStore.class);
 
     /** Default maximum size of a file to be crawled. */
     protected static final long DEFAULT_MAX_SIZE = -1L;
@@ -220,45 +217,85 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         configMap.put(SUPPORTED_MIMETYPES, getSupportedMimeTypes(paramMap));
         configMap.put(URL_FILTER, getUrlFilter(paramMap));
         if (logger.isDebugEnabled()) {
-            logger.debug("configMap: {}", configMap);
+            logger.debug(
+                    "OneDrive crawling started with configuration - MaxSize: {}, IgnoreFolder: {}, IgnoreError: {}, MimeTypes: {}, Threads: {}",
+                    configMap.get(MAX_CONTENT_LENGTH), configMap.get(IGNORE_FOLDER), configMap.get(IGNORE_ERROR),
+                    java.util.Arrays.toString((String[]) configMap.get(SUPPORTED_MIMETYPES)), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
         final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
         try (final Microsoft365Client client = createClient(paramMap)) {
             if (isSharedDocumentsDriveCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("crawling shared documents drive.");
+                    logger.debug("Starting shared documents drive crawling");
                 }
                 configMap.put(CURRENT_CRAWLER, CRAWLER_TYPE_SHARED);
-                storeSharedDocumentsDrive(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client,
-                        null);
+                try {
+                    storeSharedDocumentsDrive(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client,
+                            null);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Completed shared documents drive crawling");
+                    }
+                } catch (final Exception e) {
+                    logger.warn("Failed to crawl shared documents drive", e);
+                    throw e;
+                }
             }
 
             if (isUserDriveCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("crawling user drive.");
+                    logger.debug("Starting user drives crawling");
                 }
                 configMap.put(CURRENT_CRAWLER, CRAWLER_TYPE_USER);
-                storeUsersDrive(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client);
+                try {
+                    storeUsersDrive(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Completed user drives crawling");
+                    }
+                } catch (final Exception e) {
+                    logger.warn("Failed to crawl user drives", e);
+                    throw e;
+                }
             }
 
             if (isGroupDriveCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("crawling group drive.");
+                    logger.debug("Starting group drives crawling");
                 }
                 configMap.put(CURRENT_CRAWLER, CRAWLER_TYPE_GROUP);
-                storeGroupsDrive(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client);
+                try {
+                    storeGroupsDrive(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Completed group drives crawling");
+                    }
+                } catch (final Exception e) {
+                    logger.warn("Failed to crawl group drives", e);
+                    throw e;
+                }
             }
 
             final String driveId = paramMap.getAsString(DRIVE_ID);
             if (StringUtil.isNotBlank(driveId)) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("crawling doclument library drive: {}", driveId);
+                    logger.debug("Starting specific drive crawling for drive ID: {}", driveId);
                 }
                 configMap.put(CURRENT_CRAWLER, CRAWLER_TYPE_DRIVE);
-                configMap.put(DRIVE_INFO, client.getDrive(driveId));
-                storeSharedDocumentsDrive(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client,
-                        driveId);
+                try {
+                    final Drive drive = client.getDrive(driveId);
+                    configMap.put(DRIVE_INFO, drive);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Retrieved drive info - Name: {}, DriveType: {}, WebUrl: {}", drive.getName(), drive.getDriveType(),
+                                drive.getWebUrl());
+                    }
+                    storeSharedDocumentsDrive(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client,
+                            driveId);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Completed specific drive crawling for drive ID: {}", driveId);
+                    }
+                } catch (final Exception e) {
+                    logger.warn("Failed to crawl drive with ID: {}", driveId, e);
+                    throw e;
+                }
             }
 
             if (logger.isDebugEnabled()) {
@@ -271,16 +308,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         } finally {
             executorService.shutdownNow();
         }
-    }
-
-    /**
-     * Creates a new Microsoft365Client.
-     *
-     * @param params The data store parameters.
-     * @return A new Microsoft365Client.
-     */
-    protected Microsoft365Client createClient(final DataStoreParams params) {
-        return new Microsoft365Client(params);
     }
 
     /**
@@ -399,13 +426,30 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
             final Map<String, Object> defaultDataMap, final ExecutorService executorService, final Microsoft365Client client,
             final String driveId) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Processing shared documents drive - requested driveId: {}", driveId);
+        }
+
         final String actualDriveId = driveId != null ? driveId : getCachedUserDriveId(client);
         if (actualDriveId == null) {
             logger.warn("Unable to get user drive ID, skipping OneDrive crawling");
             return;
         }
-        getDriveItemsInDrive(client, actualDriveId, item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap,
-                paramMap, scriptMap, defaultDataMap, client, actualDriveId, item, Collections.emptyList())));
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Using actual drive ID: {} for shared documents crawling", actualDriveId);
+        }
+
+        try {
+            getDriveItemsInDrive(client, actualDriveId, item -> executorService.execute(() -> processDriveItem(dataConfig, callback,
+                    configMap, paramMap, scriptMap, defaultDataMap, client, actualDriveId, item, Collections.emptyList())));
+            if (logger.isDebugEnabled()) {
+                logger.debug("Successfully initiated drive items processing for drive: {}", actualDriveId);
+            }
+        } catch (final Exception e) {
+            logger.warn("Failed to process shared documents drive: {}", actualDriveId, e);
+            throw e;
+        }
     }
 
     /**
@@ -423,13 +467,32 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected void storeUsersDrive(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
             final ExecutorService executorService, final Microsoft365Client client) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Starting user drives crawling - retrieving licensed users");
+        }
+
         getLicensedUsers(client, user -> {
+            String userId = user.getId();
+            String displayName = user.getDisplayName();
+            if (logger.isDebugEnabled()) {
+                logger.debug("Processing user drive for: {} (ID: {})", displayName, userId);
+            }
+
             try {
-                final Drive userDrive = client.getDrive(user.getId());
+                final Drive userDrive = client.getUserDrive(userId);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Retrieved drive for user {} - Drive Name: {}, Drive ID: {}", displayName, userDrive.getName(),
+                            userDrive.getId());
+                }
+
                 getDriveItemsInDrive(client, userDrive.getId(), item -> executorService.execute(() -> processDriveItem(dataConfig, callback,
                         configMap, paramMap, scriptMap, defaultDataMap, client, userDrive.getId(), item, getUserRoles(user))));
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Successfully initiated processing for user {}'s drive", displayName);
+                }
             } catch (final ApiException e) {
-                logger.warn("Failed to store {}'s Drive, ", user.getDisplayName(), e);
+                logger.warn("Failed to process drive for user: {} (ID: {})", displayName, userId, e);
             }
         });
     }
@@ -460,14 +523,32 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected void storeGroupsDrive(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
             final ExecutorService executorService, final Microsoft365Client client) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Starting group drives crawling - retrieving Microsoft 365 groups");
+        }
+
         getMicrosoft365Groups(client, group -> {
+            String groupId = group.getId();
+            String displayName = group.getDisplayName();
+            if (logger.isDebugEnabled()) {
+                logger.debug("Processing group drive for: {} (ID: {})", displayName, groupId);
+            }
+
             try {
-                final Drive groupDrive = client.getDrive(group.getId());
-                getDriveItemsInDrive(client, groupDrive.getId(), //
-                        item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap,
-                                defaultDataMap, client, groupDrive.getId(), item, getGroupRoles(group))));
+                final Drive groupDrive = client.getGroupDrive(groupId);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Retrieved drive for group {} - Drive Name: {}, Drive ID: {}", displayName, groupDrive.getName(),
+                            groupDrive.getId());
+                }
+
+                getDriveItemsInDrive(client, groupDrive.getId(), item -> executorService.execute(() -> processDriveItem(dataConfig,
+                        callback, configMap, paramMap, scriptMap, defaultDataMap, client, groupDrive.getId(), item, getGroupRoles(group))));
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Successfully initiated processing for group {}'s drive", displayName);
+                }
             } catch (final ApiException e) {
-                logger.warn("Failed to store {}'s Drive, ", group.getDisplayName(), e);
+                logger.warn("Failed to process drive for group: {} (ID: {})", displayName, groupId, e);
             }
         });
     }
@@ -489,6 +570,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected void processDriveItem(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
             final Microsoft365Client client, final String driveId, final DriveItem item, final List<String> roles) {
+        final boolean isFolder = item.getFolder() != null;
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
         final FessConfig fessConfig = ComponentUtil.getFessConfig();
         final String mimetype;
@@ -498,6 +580,14 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
         try {
             crawlerStatsHelper.begin(statsKey);
+            if (((Boolean) configMap.get(IGNORE_FOLDER)).booleanValue() && isFolder) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Ignoring folder item (IGNORE_FOLDER=true): {} - Name: {}", item.getWebUrl(), item.getName());
+                }
+                crawlerStatsHelper.discard(statsKey);
+                return;
+            }
+
             if (item.getFile() != null) {
                 mimetype = item.getFile().getMimeType();
                 hashes = item.getFile().getHashes();
@@ -505,18 +595,11 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 mimetype = "application/octet-stream";
                 hashes = null;
             }
-            if (((Boolean) configMap.get(IGNORE_FOLDER)).booleanValue() && mimetype == null) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Ignore item: {}", item.getWebUrl());
-                }
-                crawlerStatsHelper.discard(statsKey);
-                return;
-            }
 
             final String[] supportedMimeTypes = (String[]) configMap.get(SUPPORTED_MIMETYPES);
             if (!Stream.of(supportedMimeTypes).anyMatch(mimetype::matches)) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("{} is not an indexing target.", mimetype);
+                    logger.debug("Mimetype {} not supported for indexing - Item: {} ({})", mimetype, item.getName(), item.getWebUrl());
                 }
                 crawlerStatsHelper.discard(statsKey);
                 return;
@@ -526,13 +609,17 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             final UrlFilter urlFilter = (UrlFilter) configMap.get(URL_FILTER);
             if (urlFilter != null && !urlFilter.match(url)) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("Not matched: {}", url);
+                    logger.debug("URL filter rejected item: {} - Original URL: {}", url, item.getWebUrl());
                 }
                 crawlerStatsHelper.discard(statsKey);
                 return;
             }
 
-            logger.info("Crawling URL: {}", url);
+            final Long size = item.getSize();
+            if (logger.isInfoEnabled()) {
+                logger.info("Crawling OneDrive item - URL: {}, Name: {}, Size: {} bytes, MimeType: {}", url, item.getName(), size,
+                        mimetype);
+            }
 
             final boolean ignoreError = ((Boolean) configMap.get(IGNORE_ERROR));
 
@@ -548,9 +635,13 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                     logger.warn("Failed to get maxContentLength.", e);
                 }
             }
-            if (maxContentLength >= 0 && item.getSize().longValue() > maxContentLength) {
-                throw new MaxLengthExceededException("The content length (" + item.getSize() + " byte) is over " + maxContentLength
-                        + " byte. The url is " + item.getWebUrl());
+            if (maxContentLength >= 0 && size != null && size.longValue() > maxContentLength) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Content length exceeded for item: {} - Size: {} bytes, Max: {} bytes", item.getName(), size,
+                            maxContentLength);
+                }
+                throw new MaxLengthExceededException(
+                        "The content length (" + size + " byte) is over " + maxContentLength + " byte. The url is " + item.getWebUrl());
             }
 
             final String filetype = ComponentUtil.getFileTypeHelper().get(mimetype);
@@ -561,7 +652,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             filesMap.put(FILE_FILETYPE, filetype);
             filesMap.put(FILE_CREATED, item.getCreatedDateTime());
             filesMap.put(FILE_LAST_MODIFIED, item.getLastModifiedDateTime());
-            filesMap.put(FILE_SIZE, item.getSize());
+            filesMap.put(FILE_SIZE, size);
             filesMap.put(FILE_WEB_URL, item.getWebUrl());
             filesMap.put(FILE_URL, url);
             filesMap.put(FILE_CTAG, item.getCTag());
@@ -589,22 +680,24 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             filesMap.put(FILE_SPECIAL_FOLDER, item.getSpecialFolder() != null ? item.getSpecialFolder().getName() : null);
             filesMap.put(FILE_VIDEO, item.getVideo());
 
-            final List<String> permissions = getDriveItemPermissions(client, driveId, item);
-            roles.forEach(permissions::add);
+            final List<String> fileRoles = getDriveItemPermissions(client, driveId, item);
+            roles.forEach(fileRoles::add);
             final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
             StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(permissions::add));
+                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(fileRoles::add));
             if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof List<?> roleTypeList) {
-                roleTypeList.stream().map(s -> (String) s).forEach(permissions::add);
+                roleTypeList.stream().map(s -> (String) s).forEach(fileRoles::add);
             }
-            filesMap.put(FILE_ROLES, permissions.stream().distinct().collect(Collectors.toList()));
+            filesMap.put(FILE_ROLES, fileRoles.stream().distinct().collect(Collectors.toList()));
 
             resultMap.put(FILE, filesMap);
 
             crawlerStatsHelper.record(statsKey, StatsAction.PREPARED);
 
             if (logger.isDebugEnabled()) {
-                logger.debug("filesMap: {}", filesMap);
+                logger.debug("Prepared file data for indexing - Name: {}, Size: {} bytes, Permissions count: {}, URL: {}",
+                        filesMap.get(FILE_NAME), filesMap.get(FILE_SIZE),
+                        filesMap.get(FILE_ROLES) instanceof List ? ((List<?>) filesMap.get(FILE_ROLES)).size() : 0, filesMap.get(FILE_URL));
             }
 
             final String scriptType = getScriptType(paramMap);
@@ -618,7 +711,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             crawlerStatsHelper.record(statsKey, StatsAction.EVALUATED);
 
             if (logger.isDebugEnabled()) {
-                logger.debug("dataMap: {}", dataMap);
+                logger.debug("Final data map prepared for indexing - Fields count: {}, URL: {}", dataMap.size(), dataMap.get("url"));
             }
 
             if (dataMap.get("url") instanceof final String statsUrl) {
@@ -656,105 +749,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
         } finally {
             crawlerStatsHelper.done(statsKey);
-        }
-    }
-
-    /**
-     * Gets the permissions for a drive item.
-     *
-     * @param client The Microsoft365Client.
-     * @param driveId The drive ID.
-     * @param item The drive item.
-     * @return A list of permissions.
-     */
-    protected List<String> getDriveItemPermissions(final Microsoft365Client client, final String driveId, final DriveItem item) {
-        final List<String> permissions = new ArrayList<>();
-        PermissionCollectionResponse response = client.getDrivePermissions(driveId, item.getId());
-        final Consumer<Permission> consumer = p -> {
-            if (p.getGrantedToV2() != null && p.getGrantedToV2().getUser() != null) {
-                assignPermission(client, permissions, p);
-            }
-        };
-
-        // Handle pagination with odata.nextLink
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using a helper method in Microsoft365Client
-                try {
-                    response = client.getDrivePermissionsByNextLink(driveId, item.getId(), response.getOdataNextLink());
-                } catch (final Exception e) {
-                    logger.warn("Failed to get next page of permissions: {}", e.getMessage());
-                    break;
-                }
-            } else {
-                // No more pages, exit loop
-                break;
-            }
-        }
-        return permissions;
-    }
-
-    /**
-     * Assigns a permission to a user or group.
-     *
-     * @param client The Microsoft365Client.
-     * @param permissions The list of permissions.
-     * @param permission The permission to assign.
-     */
-    protected void assignPermission(final Microsoft365Client client, final List<String> permissions, final Permission permission) {
-        final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
-        final String id = permission.getGrantedToV2().getUser().getId();
-        final String email = getUserEmail(permission);
-        if (StringUtil.isNotBlank(email)) {
-            final List<String> idList = new ArrayList<>();
-            if (StringUtil.isBlank(id)) {
-                Collections.addAll(idList, client.getGroupIdsByEmail(email));
-            } else {
-                idList.add(id);
-            }
-            if (idList.isEmpty()) {
-                permissions.add(systemHelper.getSearchRoleByUser(email));
-                permissions.add(systemHelper.getSearchRoleByGroup(email));
-            } else {
-                idList.stream().forEach(i -> {
-                    final UserType userType = client.getUserType(i);
-                    switch (userType) {
-                    case USER:
-                        permissions.add(systemHelper.getSearchRoleByUser(email));
-                        permissions.add(systemHelper.getSearchRoleByUser(i));
-                        break;
-                    case GROUP:
-                        permissions.add(systemHelper.getSearchRoleByGroup(email));
-                        permissions.add(systemHelper.getSearchRoleByGroup(i));
-                        break;
-                    default:
-                        permissions.add(systemHelper.getSearchRoleByUser(email));
-                        permissions.add(systemHelper.getSearchRoleByGroup(email));
-                        permissions.add(systemHelper.getSearchRoleByUser(i));
-                        permissions.add(systemHelper.getSearchRoleByGroup(i));
-                        break;
-                    }
-                });
-            }
-        } else if (StringUtil.isNotBlank(id)) {
-            final UserType userType = client.getUserType(id);
-            switch (userType) {
-            case USER:
-                permissions.add(systemHelper.getSearchRoleByUser(id));
-                break;
-            case GROUP:
-                permissions.add(systemHelper.getSearchRoleByGroup(id));
-                break;
-            default:
-                permissions.add(systemHelper.getSearchRoleByUser(id));
-                permissions.add(systemHelper.getSearchRoleByGroup(id));
-                break;
-            }
-        } else if (logger.isDebugEnabled()) {
-            logger.debug("No identity for permission.");
         }
     }
 
@@ -899,7 +893,12 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected void getDriveItemChildren(final Microsoft365Client client, final String driveId, final Consumer<DriveItem> consumer,
             final DriveItem item) {
         if (logger.isDebugEnabled()) {
-            logger.debug("Current item: {}", item != null ? item.getName() + " -> " + item.getWebUrl() : "root");
+            if (item != null) {
+                logger.debug("Processing drive item - Name: {}, Type: {}, URL: {}", item.getName(),
+                        item.getFolder() != null ? "folder" : "file", item.getWebUrl());
+            } else {
+                logger.debug("Processing root drive items for drive: {}", driveId);
+            }
         }
         DriveItemCollectionResponse response;
         try {
@@ -918,11 +917,15 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 // Check if there's a next page
                 if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
                     // Request the next page using a helper method in Microsoft365Client
+                    final String itemIdToUse = item != null ? item.getId() : "root";
                     try {
-                        final String itemIdToUse = item != null ? item.getId() : "root";
                         response = client.getDriveItemsByNextLink(driveId, itemIdToUse, response.getOdataNextLink());
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Retrieved next page of drive items for drive: {}, item: {}", driveId, itemIdToUse);
+                        }
                     } catch (final Exception e) {
-                        logger.warn("Failed to get next page of drive items: {}", e.getMessage());
+                        logger.warn("Failed to get next page of drive items for drive: {}, item: {} - {}", driveId, itemIdToUse,
+                                e.getMessage());
                         break;
                     }
                 } else {
@@ -932,9 +935,12 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             }
         } catch (final ApiException e) {
             if (e.getResponseStatusCode() == 404) {
-                logger.debug("Drive item is not found.", e);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Drive item not found (404) - Drive: {}, Item: {}", driveId, item != null ? item.getName() : "root", e);
+                }
             } else {
-                logger.warn("Failed to access a drive item.", e);
+                logger.warn("Failed to access drive item - Drive: {}, Item: {}, Status: {}", driveId,
+                        item != null ? item.getName() : "root", e.getResponseStatusCode(), e);
             }
         }
     }
@@ -953,12 +959,12 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 if (cachedUserDriveId == null) {
                     try {
                         // Make the expensive API call only once
-                        cachedUserDriveId = client.getDrive("me").getId();
+                        cachedUserDriveId = client.getDrive(null).getId();
                         if (logger.isDebugEnabled()) {
-                            logger.debug("Cached user drive ID: {}", cachedUserDriveId);
+                            logger.debug("Successfully cached user drive ID: {}", cachedUserDriveId);
                         }
                     } catch (final Exception e) {
-                        logger.warn("Failed to get user drive ID: {}", e.getMessage());
+                        logger.warn("Failed to retrieve user drive ID from Microsoft Graph API", e);
                         // Return null instead of "me" to indicate failure
                         return null;
                     }
