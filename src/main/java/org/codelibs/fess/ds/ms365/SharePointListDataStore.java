@@ -15,20 +15,18 @@
  */
 package org.codelibs.fess.ds.ms365;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
@@ -61,47 +59,81 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     private static final Logger logger = LogManager.getLogger(SharePointListDataStore.class);
 
     // Configuration parameters
+    /** The parameter name for the site ID. */
     protected static final String SITE_ID = "site_id";
+    /** The parameter name for the list ID. */
     protected static final String LIST_ID = "list_id";
+    /** The parameter name for excluded list IDs. */
     protected static final String EXCLUDE_LIST_ID = "exclude_list_id";
+    /** The parameter name for the list template filter. */
     protected static final String LIST_TEMPLATE_FILTER = "list_template_filter";
+    /** The parameter name for including attachments. */
     protected static final String INCLUDE_ATTACHMENTS = "include_attachments";
+    /** The parameter name for the number of threads. */
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
+    /** The parameter name for default permissions. */
     protected static final String DEFAULT_PERMISSIONS = "default_permissions";
+    /** The parameter name for ignoring system lists. */
     protected static final String IGNORE_SYSTEM_LISTS = "ignore_system_lists";
+    /** The parameter name for ignoring errors. */
     protected static final String IGNORE_ERROR = "ignore_error";
+    /** The parameter name for the include pattern. */
     protected static final String INCLUDE_PATTERN = "include_pattern";
+    /** The parameter name for the exclude pattern. */
     protected static final String EXCLUDE_PATTERN = "exclude_pattern";
 
     // Field mappings for list items
+    /** The field name for list item. */
     protected static final String LIST_ITEM = "item";
+    /** The field name for list item title. */
     protected static final String LIST_ITEM_TITLE = "title";
+    /** The field name for list item content. */
     protected static final String LIST_ITEM_CONTENT = "content";
+    /** The field name for list item creation date. */
     protected static final String LIST_ITEM_CREATED = "created";
+    /** The field name for list item modification date. */
     protected static final String LIST_ITEM_MODIFIED = "modified";
+    /** The field name for list item ID. */
     protected static final String LIST_ITEM_ID = "id";
+    /** The field name for list item URL. */
     protected static final String LIST_ITEM_URL = "url";
+    /** The field name for list item fields. */
     protected static final String LIST_ITEM_FIELDS = "fields";
+    /** The field name for list item attachments. */
     protected static final String LIST_ITEM_ATTACHMENTS = "attachments";
+    /** The field name for list item roles. */
     protected static final String LIST_ITEM_ROLES = "roles";
 
     // Field mappings for list metadata
+    /** The field name for list name. */
     protected static final String LIST_NAME = "name";
+    /** The field name for list description. */
     protected static final String LIST_DESCRIPTION = "description";
+    /** The field name for list URL. */
     protected static final String LIST_URL = "url";
+    /** The field name for list template type. */
     protected static final String LIST_TEMPLATE_TYPE = "template_type";
+    /** The field name for list item count. */
     protected static final String LIST_ITEM_COUNT = "item_count";
 
     // Site field mappings
+    /** The field name for site ID. */
     protected static final String SITE_ID_FIELD = "id";
+    /** The field name for site name. */
     protected static final String SITE_NAME = "name";
+    /** The field name for site URL. */
     protected static final String SITE_URL = "url";
 
     // Configuration constants
+    /** The parameter name for URL filter. */
     protected static final String URL_FILTER = "url_filter";
 
+    /** The name of the extractor for SharePoint lists. */
     protected String extractorName = "sharePointListExtractor";
 
+    /**
+     * Creates a new SharePointListDataStore instance.
+     */
     public SharePointListDataStore() {
         super();
     }
@@ -118,138 +150,164 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         final Map<String, Object> configMap = new LinkedHashMap<>();
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
         configMap.put(URL_FILTER, getUrlFilter(paramMap));
+
         if (logger.isDebugEnabled()) {
-            logger.debug("configMap: {}", configMap);
+            logger.debug(
+                    "SharePoint lists crawling started - Configuration: SiteID={}, ListID={}, IgnoreError={}, IgnoreSystemLists={}, IncludeAttachments={}, Threads={}",
+                    getSiteId(paramMap), getListId(paramMap), configMap.get(IGNORE_ERROR), isIgnoreSystemLists(paramMap),
+                    isIncludeAttachments(paramMap), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
         final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
         try (final Microsoft365Client client = createClient(paramMap)) {
             final String siteId = getSiteId(paramMap);
             if (StringUtil.isBlank(siteId)) {
-                logger.warn("site_id parameter is required for SharePoint list crawling");
+                logger.error("site_id parameter is required for SharePoint list crawling - operation aborted");
                 return;
             }
 
+            if (logger.isDebugEnabled()) {
+                logger.debug("Retrieving site information for site ID: {}", siteId);
+            }
+
             final Site site = client.getSite(siteId);
+            if (logger.isDebugEnabled()) {
+                logger.debug("Retrieved site: {} (ID: {}, WebUrl: {})", site.getDisplayName(), site.getId(), site.getWebUrl());
+            }
+
             final String listId = getListId(paramMap);
 
             if (StringUtil.isNotBlank(listId)) {
                 // Crawl specific list
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Crawling specific list with ID: {} in site: {}", listId, site.getDisplayName());
+                }
+
                 final com.microsoft.graph.models.List list = client.getList(siteId, listId);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Retrieved list: {} (ID: {}, Template: {}, IsSystem: {})", list.getDisplayName(), list.getId(),
+                            list.getList() != null ? list.getList().getTemplate() : "unknown", isSystemList(list));
+                }
+
                 // Check ignore_system_lists setting even for specific list ID
                 if (!isIgnoreSystemLists(paramMap) || !isSystemList(list)) {
                     storeList(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site, list);
                 } else {
-                    logger.info("Skipping system list {} (ID: {}) because ignore_system_lists is enabled", list.getDisplayName(),
-                            list.getId());
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Skipping system list {} (ID: {}) because ignore_system_lists is enabled", list.getDisplayName(),
+                                list.getId());
+                    }
                 }
             } else {
                 // Crawl all lists in the site
-                final List<Future<?>> listProcessingFutures = new java.util.concurrent.CopyOnWriteArrayList<>();
-                client.getSiteLists(siteId, list -> {
-                    if (!isExcludedList(paramMap, list) && isTargetListType(paramMap, list)
-                            && (!isIgnoreSystemLists(paramMap) || !isSystemList(list))) {
-                        listProcessingFutures.add(executorService.submit(() -> {
-                            try {
-                                storeList(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client,
-                                        site, list);
-                            } catch (final Exception e) {
-                                logger.warn("Failed to process list: {} in site: {}", list.getDisplayName(), site.getDisplayName(), e);
-                                if (!isIgnoreError(paramMap)) {
-                                    throw new DataStoreCrawlingException(site.getDisplayName(),
-                                            "Failed to process list: " + list.getDisplayName(), e);
-                                }
-                            }
-                        }));
-                    }
-                });
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Crawling all lists in site: {} with filtering", site.getDisplayName());
+                }
 
-                // Wait for all list processing tasks to complete
-                for (final Future<?> future : listProcessingFutures) {
-                    try {
-                        future.get();
-                    } catch (final Exception e) {
-                        logger.warn("A list processing task for site {} was interrupted/failed.", site.getDisplayName(), e);
-                        if (!isIgnoreError(paramMap)) {
-                            throw new DataStoreCrawlingException(site.getDisplayName(),
-                                    "A list processing task failed for site: " + site.getDisplayName(), e);
+                client.getSiteLists(siteId, list -> {
+
+                    final boolean excluded = isExcludedList(paramMap, list);
+                    final boolean targetType = isTargetListType(paramMap, list);
+                    final boolean systemList = isSystemList(list);
+                    final boolean ignoreSystem = isIgnoreSystemLists(paramMap);
+
+                    if (logger.isDebugEnabled()) {
+                        logger.debug(
+                                "Evaluating list: {} (ID: {}, Template: {}) - Excluded: {}, TargetType: {}, SystemList: {}, IgnoreSystem: {}",
+                                list.getDisplayName(), list.getId(), list.getList() != null ? list.getList().getTemplate() : "unknown",
+                                excluded, targetType, systemList, ignoreSystem);
+                    }
+
+                    if (!excluded && targetType && (!ignoreSystem || !systemList)) {
+                        try {
+                            if (logger.isDebugEnabled()) {
+                                logger.debug("Processing list: {} (ID: {}) in site: {}", list.getDisplayName(), list.getId(),
+                                        site.getDisplayName());
+                            }
+                            storeList(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site,
+                                    list);
+                            if (logger.isDebugEnabled()) {
+                                logger.debug("Successfully processed list: {} (ID: {})", list.getDisplayName(), list.getId());
+                            }
+                        } catch (final Exception e) {
+                            logger.warn("Failed to process list: {} (ID: {}) in site: {}", list.getDisplayName(), list.getId(),
+                                    site.getDisplayName(), e);
+                            if (!isIgnoreError(paramMap)) {
+                                throw new DataStoreCrawlingException(site.getDisplayName(),
+                                        "Failed to process list: " + list.getDisplayName(), e);
+                            }
+                        }
+                    } else {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Skipped list: {} (ID: {}) - Excluded: {}, TargetType: {}, SystemList: {}", list.getDisplayName(),
+                                    list.getId(), excluded, targetType, systemList);
                         }
                     }
-                }
+                });
             }
-        } finally {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Shutting down thread executor.");
+            }
             executorService.shutdown();
-            try {
-                // Wait for all tasks to complete
-                if (!executorService.awaitTermination(30, TimeUnit.MINUTES)) {
-                    logger.warn("Executor did not terminate in the specified time. Forcing shutdownNow()");
-                    executorService.shutdownNow();
-                }
-            } catch (final InterruptedException ie) {
-                executorService.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-            try {
-                // Commit remaining documents in buffer
-                callback.commit();
-            } catch (final Exception e) {
-                logger.warn("Failed to commit index update callback.", e);
-            }
+            executorService.awaitTermination(60, TimeUnit.SECONDS);
+        } catch (final InterruptedException e) {
+            throw new InterruptedRuntimeException(e);
+        } finally {
+            executorService.shutdownNow();
         }
     }
 
-    protected Microsoft365Client createClient(final DataStoreParams paramMap) {
-        return new Microsoft365Client(paramMap);
-    }
-
+    /**
+     * Stores a SharePoint list and its items.
+     *
+     * @param dataConfig the data configuration
+     * @param callback the index update callback
+     * @param configMap the configuration map
+     * @param paramMap the data store parameters
+     * @param scriptMap the script map
+     * @param defaultDataMap the default data map
+     * @param executorService the executor service for parallel processing
+     * @param client the Microsoft365 client
+     * @param site the SharePoint site
+     * @param list the SharePoint list to store
+     */
     protected void storeList(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
             final ExecutorService executorService, final Microsoft365Client client, final Site site,
             final com.microsoft.graph.models.List list) {
-
-        if (logger.isDebugEnabled()) {
-            logger.debug("Processing list: {} in site: {}", list.getDisplayName(), site.getDisplayName());
-        }
-
-        try {
-            // Get list items and process them
-            final List<Future<?>> futures = new CopyOnWriteArrayList<>();
+        executorService.execute(() -> {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Processing list: {} in site: {}", list.getDisplayName(), site.getDisplayName());
+            }
             client.getListItems(site.getId(), list.getId(), item -> {
                 if (isTargetItem(paramMap, item)) {
-                    futures.add(executorService.submit(() -> {
-                        try {
-                            processListItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site, list, item);
-                        } catch (final Exception e) {
-                            logger.warn("Failed to process list item: {} in list: {}", item.getId(), list.getDisplayName(), e);
-                            if (!isIgnoreError(paramMap)) {
-                                throw new DataStoreCrawlingException(list.getDisplayName(), "Failed to process list item: " + item.getId(),
-                                        e);
-                            }
+                    try {
+                        processListItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site, list, item);
+                    } catch (final Exception e) {
+                        logger.warn("Failed to process list item: {} in list: {}", item.getId(), list.getDisplayName(), e);
+                        if (!isIgnoreError(paramMap)) {
+                            throw new DataStoreCrawlingException(list.getDisplayName(), "Failed to process list item: " + item.getId(), e);
                         }
-                    }));
-                }
-            });
-
-            // Wait for all item processing tasks to complete
-            for (final Future<?> future : futures) {
-                try {
-                    future.get();
-                } catch (final Exception e) {
-                    logger.warn("A task for list {} was interrupted/failed.", list.getDisplayName(), e);
-                    if (!isIgnoreError(paramMap)) {
-                        throw new DataStoreCrawlingException(list.getDisplayName(), "A task failed for list: " + list.getDisplayName(), e);
                     }
                 }
-            }
-        } catch (final Exception e) {
-            logger.warn("Failed to get list items for list: {} in site: {}", list.getDisplayName(), site.getDisplayName(), e);
-            if (!isIgnoreError(paramMap)) {
-                throw new DataStoreCrawlingException(site.getDisplayName(), "Failed to get list items for list: " + list.getDisplayName(),
-                        e);
-            }
-        }
+            });
+        });
     }
 
+    /**
+     * Processes a single list item.
+     *
+     * @param dataConfig the data configuration
+     * @param callback the index update callback
+     * @param configMap the configuration map
+     * @param paramMap the data store parameters
+     * @param scriptMap the script map
+     * @param defaultDataMap the default data map
+     * @param client the Microsoft365 client
+     * @param site the SharePoint site
+     * @param list the SharePoint list
+     * @param item the list item to process
+     */
     protected void processListItem(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
             final Microsoft365Client client, final Site site, final com.microsoft.graph.models.List list, final ListItem item) {
@@ -264,22 +322,14 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             itemUrl = list.getWebUrl() + "/DispForm.aspx?ID=" + item.getId();
         }
 
+        if (logger.isDebugEnabled()) {
+            logger.debug("Processing list item - ID: {}, URL: {}, List: {} ({}), Site: {} ({}), Created: {}, Modified: {}", item.getId(),
+                    itemUrl, list.getDisplayName(), list.getId(), site.getDisplayName(), site.getId(), item.getCreatedDateTime(),
+                    item.getLastModifiedDateTime());
+        }
+
         final StatsKeyObject statsKey = new StatsKeyObject(itemUrl);
         paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
-
-        // Extract roles from site permissions for SharePoint context
-        final List<String> roles = new ArrayList<>();
-        try {
-            if (site.getPermissions() != null) {
-                site.getPermissions().stream().forEach(x -> {
-                    if (x.getRoles() != null) {
-                        roles.addAll(x.getRoles());
-                    }
-                });
-            }
-        } catch (Exception e) {
-            logger.debug("Failed to get site permissions, continuing with empty roles", e);
-        }
 
         try {
             crawlerStatsHelper.begin(statsKey);
@@ -289,13 +339,13 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             final UrlFilter urlFilter = (UrlFilter) configMap.get(URL_FILTER);
             if (urlFilter != null && !urlFilter.match(url)) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("Not matched: {}", url);
+                    logger.debug("URL filter rejected item: {} - Original URL: {}", url, item.getWebUrl());
                 }
                 crawlerStatsHelper.discard(statsKey);
                 return;
             }
 
-            logger.info("Crawling URL: {}", url);
+            logger.info("Crawling list item URL: {} (ID: {}, List: {})", url, item.getId(), list.getDisplayName());
 
             final boolean ignoreError = ((Boolean) configMap.get(IGNORE_ERROR));
             final Map<String, Object> resultMap = new LinkedHashMap<>(paramMap.asMap());
@@ -326,19 +376,37 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             listItemMap.put(LIST_ITEM_MODIFIED, item.getLastModifiedDateTime());
             listItemMap.put(LIST_ITEM_URL, url);
 
+            if (logger.isDebugEnabled()) {
+                logger.debug("Basic metadata prepared for item {} - Site: {}, List: {}", item.getId(), site.getDisplayName(),
+                        list.getDisplayName());
+            }
+
             // Get item fields (this is where SharePoint list data is stored)
             com.microsoft.graph.models.FieldValueSet fieldValueSet = item.getFields();
             Map<String, Object> fields = fieldValueSet != null ? fieldValueSet.getAdditionalData() : null;
 
+            if (logger.isDebugEnabled()) {
+                logger.debug("Initial field extraction for item {} - FieldValueSet: {}, Fields count: {}", item.getId(),
+                        fieldValueSet != null, fields != null ? fields.size() : 0);
+            }
+
             // If fields are null or empty, try to fetch the item individually with expanded fields
             if (fields == null || fields.isEmpty()) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Fields empty for item {} - attempting to refresh with expanded fields", item.getId());
+                }
                 try {
                     final ListItem refreshedItem = client.getListItem(site.getId(), list.getId(), item.getId(), true);
                     if (refreshedItem != null && refreshedItem.getFields() != null) {
                         fields = refreshedItem.getFields().getAdditionalData();
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Successfully refreshed fields for item {} - Fields count: {}", item.getId(),
+                                    fields != null ? fields.size() : 0);
+                        }
                     }
                 } catch (final Exception re) {
-                    logger.debug("Failed to refresh list item fields for item {}: {}", item.getId(), re.getMessage());
+                    logger.warn("Failed to refresh list item fields for item {} in list {}: {}", item.getId(), list.getDisplayName(),
+                            re.getMessage(), re);
                     if (!ignoreError) {
                         throw new DataStoreCrawlingException(list.getDisplayName(),
                                 "Failed to refresh list item fields for item: " + item.getId(), re);
@@ -349,35 +417,61 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             if (fields != null) {
                 listItemMap.put(LIST_ITEM_FIELDS, fields);
 
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Fields available for item {} - Total fields: {}, Field names: {}", item.getId(), fields.size(),
+                            fields.keySet().toString());
+                }
+
                 // Extract common fields
                 final String title = extractFieldValue(fields, "Title", "LinkTitle", "FileLeafRef");
                 if (StringUtil.isNotBlank(title)) {
                     listItemMap.put(LIST_ITEM_TITLE, title);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Extracted title for item {}: {}", item.getId(), title);
+                    }
                 }
 
                 // Try to extract content from various content fields
                 final String content = extractFieldValue(fields, "Body", "Description", "Comments", "Notes");
                 if (StringUtil.isNotBlank(content)) {
                     listItemMap.put(LIST_ITEM_CONTENT, content);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Extracted content for item {} - Content length: {}", item.getId(), content.length());
+                    }
+                }
+            } else {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("No fields available for item {} after refresh attempts", item.getId());
                 }
             }
 
             // Handle permissions properly
-            final List<String> permissions = new ArrayList<>(roles);
+            final List<String> roles = getSitePermissions(client, site.getId());
+            if (logger.isDebugEnabled()) {
+                logger.debug("Initial permissions for site {} - Count: {}, Permissions: {}", site.getDisplayName(), roles.size(), roles);
+            }
+
             final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
             StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(permissions::add));
+                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
             if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof List<?> roleTypeList) {
-                roleTypeList.stream().map(s -> (String) s).forEach(permissions::add);
+                roleTypeList.stream().map(s -> (String) s).forEach(roles::add);
             }
-            listItemMap.put(LIST_ITEM_ROLES, permissions.stream().distinct().collect(Collectors.toList()));
+
+            final List<String> finalPermissions = roles.stream().distinct().collect(Collectors.toList());
+            if (logger.isDebugEnabled()) {
+                logger.debug("Final permissions for item {} - Count: {}, Permissions: {}", item.getId(), finalPermissions.size(),
+                        finalPermissions);
+            }
+            listItemMap.put(LIST_ITEM_ROLES, finalPermissions);
 
             resultMap.put(LIST_ITEM, listItemMap);
 
             crawlerStatsHelper.record(statsKey, StatsAction.PREPARED);
 
             if (logger.isDebugEnabled()) {
-                logger.debug("listItemMap: {}", listItemMap);
+                logger.debug("List item map prepared for processing - Item: {}, Fields: {}, Permissions: {}, URL: {}", item.getId(),
+                        listItemMap.size(), finalPermissions.size(), url);
             }
 
             // Apply script processing for field mapping
@@ -392,7 +486,8 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             crawlerStatsHelper.record(statsKey, StatsAction.EVALUATED);
 
             if (logger.isDebugEnabled()) {
-                logger.debug("dataMap: {}", dataMap);
+                logger.debug("Final data map prepared for indexing - Item: {}, Fields: {}, URL: {}", item.getId(), dataMap.size(),
+                        dataMap.get("url"));
             }
 
             if (dataMap.get("url") instanceof final String statsUrl) {
@@ -402,8 +497,13 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             callback.store(paramMap, dataMap);
             crawlerStatsHelper.record(statsKey, StatsAction.FINISHED);
 
+            if (logger.isDebugEnabled()) {
+                logger.debug("Successfully indexed list item: {} (ID: {}, List: {})", itemUrl, item.getId(), list.getDisplayName());
+            }
+
         } catch (final CrawlingAccessException e) {
-            logger.warn("Crawling Access Exception at : {} in list: {}", dataMap, list.getDisplayName(), e);
+            logger.warn("Crawling Access Exception for list item: {} (ID: {}) in list: {} - Data: {}", itemUrl, item.getId(),
+                    list.getDisplayName(), dataMap, e);
 
             Throwable target = e;
             if (target instanceof final MultipleCrawlingAccessException ex) {
@@ -425,7 +525,8 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             failureUrlService.store(dataConfig, errorName, itemUrl, target);
             crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
         } catch (final Throwable t) {
-            logger.warn("Crawling Access Exception at : {} in list: {}", dataMap, list.getDisplayName(), t);
+            logger.warn("Processing exception for list item: {} (ID: {}) in list: {} - Data: {}", itemUrl, item.getId(),
+                    list.getDisplayName(), dataMap, t);
             final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
             failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), itemUrl, t);
             crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
@@ -437,6 +538,10 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     /**
      * Extract field value from SharePoint list item fields.
      * Tries multiple field names in order and returns the first non-empty value.
+     *
+     * @param fields the map of field values
+     * @param fieldNames the field names to extract (in order of preference)
+     * @return the extracted field value or null if not found
      */
     protected String extractFieldValue(final Map<String, Object> fields, final String... fieldNames) {
         if (fields == null || fieldNames == null) {
@@ -457,6 +562,9 @@ public class SharePointListDataStore extends Microsoft365DataStore {
 
     /**
      * Build content string from all fields for indexing.
+     *
+     * @param fields the map of field values
+     * @return the concatenated content string
      */
     protected String buildContentFromFields(final Map<String, Object> fields) {
         if (fields == null || fields.isEmpty()) {
@@ -480,6 +588,9 @@ public class SharePointListDataStore extends Microsoft365DataStore {
 
     /**
      * Check if a field is a system field that should not be included in content.
+     *
+     * @param fieldName the name of the field to check
+     * @return true if the field is a system field, false otherwise
      */
     protected boolean isSystemField(final String fieldName) {
         if (StringUtil.isBlank(fieldName)) {
@@ -491,14 +602,33 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     }
 
     // Configuration helper methods
+    /**
+     * Gets the site ID from the parameter map.
+     *
+     * @param paramMap the data store parameters
+     * @return the site ID or null if not specified
+     */
     protected String getSiteId(final DataStoreParams paramMap) {
         return paramMap.getAsString(SITE_ID, null);
     }
 
+    /**
+     * Gets the list ID from the parameter map.
+     *
+     * @param paramMap the data store parameters
+     * @return the list ID or null if not specified
+     */
     protected String getListId(final DataStoreParams paramMap) {
         return paramMap.getAsString(LIST_ID, null);
     }
 
+    /**
+     * Checks if the list should be excluded from crawling.
+     *
+     * @param paramMap the data store parameters
+     * @param list the SharePoint list to check
+     * @return true if the list should be excluded, false otherwise
+     */
     protected boolean isExcludedList(final DataStoreParams paramMap, final com.microsoft.graph.models.List list) {
         final String excludeIds = paramMap.getAsString(EXCLUDE_LIST_ID, null);
         if (StringUtil.isBlank(excludeIds)) {
@@ -513,6 +643,13 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         return false;
     }
 
+    /**
+     * Checks if the list matches the target template type filter.
+     *
+     * @param paramMap the data store parameters
+     * @param list the SharePoint list to check
+     * @return true if the list matches the template filter, false otherwise
+     */
     protected boolean isTargetListType(final DataStoreParams paramMap, final com.microsoft.graph.models.List list) {
         final String templateFilter = paramMap.getAsString(LIST_TEMPLATE_FILTER, null);
         if (StringUtil.isBlank(templateFilter)) {
@@ -532,6 +669,12 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         return true;
     }
 
+    /**
+     * Checks if the list is a system list.
+     *
+     * @param list the SharePoint list to check
+     * @return true if the list is a system list, false otherwise
+     */
     protected boolean isSystemList(final com.microsoft.graph.models.List list) {
         // Check for system facet according to Microsoft Graph API documentation
         // https://learn.microsoft.com/en-us/graph/api/resources/systemfacet?view=graph-rest-1.0
@@ -549,6 +692,13 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                 || name.contains("form templates");
     }
 
+    /**
+     * Checks if the list item should be crawled based on include/exclude patterns.
+     *
+     * @param paramMap the data store parameters
+     * @param item the list item to check
+     * @return true if the item should be crawled, false otherwise
+     */
     protected boolean isTargetItem(final DataStoreParams paramMap, final ListItem item) {
         // Apply include/exclude patterns if configured
         final String includePattern = paramMap.getAsString(INCLUDE_PATTERN, null);
@@ -578,18 +728,42 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         return true;
     }
 
+    /**
+     * Checks if errors should be ignored during crawling.
+     *
+     * @param paramMap the data store parameters
+     * @return true if errors should be ignored, false otherwise
+     */
     protected boolean isIgnoreError(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.FALSE));
     }
 
+    /**
+     * Checks if system lists should be ignored during crawling.
+     *
+     * @param paramMap the data store parameters
+     * @return true if system lists should be ignored, false otherwise
+     */
     protected boolean isIgnoreSystemLists(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_LISTS, Constants.TRUE));
     }
 
+    /**
+     * Checks if list item attachments should be included during crawling.
+     *
+     * @param paramMap the data store parameters
+     * @return true if attachments should be included, false otherwise
+     */
     protected boolean isIncludeAttachments(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(INCLUDE_ATTACHMENTS, Constants.FALSE));
     }
 
+    /**
+     * Gets the URL filter for crawling.
+     *
+     * @param paramMap the data store parameters
+     * @return the configured URL filter
+     */
     protected UrlFilter getUrlFilter(final DataStoreParams paramMap) {
         final UrlFilter urlFilter = ComponentUtil.getComponent(UrlFilter.class);
         final String include = paramMap.getAsString(INCLUDE_PATTERN);
@@ -607,6 +781,11 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         return urlFilter;
     }
 
+    /**
+     * Sets the extractor name for SharePoint lists.
+     *
+     * @param extractorName the extractor name to set
+     */
     public void setExtractorName(final String extractorName) {
         this.extractorName = extractorName;
     }
