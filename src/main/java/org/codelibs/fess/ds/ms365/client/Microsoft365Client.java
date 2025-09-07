@@ -1574,7 +1574,7 @@ public class Microsoft365Client implements Closeable {
             } catch (final ApiException e) {
                 final int status = e.getResponseStatusCode();
                 if ((status == 429 || status == 503) && attempts == 1) {
-                    final long waitMs = parseRetryAfterMillis(e, 2000L, 15000L); // 既定2s〜最大15s
+                    final long waitMs = parseRetryAfterMillis(e, 2000L, 15000L); // default 2s ~ max 15s
                     if (logger.isDebugEnabled()) {
                         logger.debug("Retrying /users/{} after {} ms due to {}", objectId, waitMs, status, e);
                     }
