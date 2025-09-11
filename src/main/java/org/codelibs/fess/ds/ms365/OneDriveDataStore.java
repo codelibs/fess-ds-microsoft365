@@ -967,7 +967,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                         if (logger.isDebugEnabled()) {
                             logger.debug("Exception occurred while retrieving user drive ID", e);
                         } else {
-                            logger.debug("Exception occurred while retrieving user drive ID: {}", e.getMessage());
+                            logger.warn("Exception occurred while retrieving user drive ID: {}", e.getMessage());
                         }
                         return null;
                     }
