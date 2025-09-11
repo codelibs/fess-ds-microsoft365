@@ -1060,6 +1060,31 @@ public class Microsoft365Client implements Closeable {
     }
 
     /**
+     * Retrieves all drives for a specific SharePoint site, processing each drive with the provided consumer.
+     * Implements pagination to handle sites with many drives.
+     *
+     * @param siteId The ID of the SharePoint site.
+     * @param consumer A consumer to process each Drive object.
+     */
+    public void getSiteDrives(final String siteId, final Consumer<Drive> consumer) {
+        DriveCollectionResponse response = client.sites().bySiteId(siteId).drives().get();
+
+        // Handle pagination with odata.nextLink
+        while (response != null && response.getValue() != null) {
+            response.getValue().forEach(consumer::accept);
+
+            // Check if there's a next page
+            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
+                // Request the next page using the nextLink URL
+                response = client.sites().bySiteId(siteId).drives().withUrl(response.getOdataNextLink()).get();
+            } else {
+                // No more pages, exit loop
+                break;
+            }
+        }
+    }
+
+    /**
      * Retrieves the drive for a specific user.
      *
      * @param userId the ID of the user
