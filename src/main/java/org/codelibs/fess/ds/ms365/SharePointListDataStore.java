@@ -95,6 +95,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     protected static final String LIST_ITEM_ID = "id";
     /** The field name for list item URL. */
     protected static final String LIST_ITEM_URL = "url";
+    protected static final String LIST_ITEM_WEB_URL = "web_url";
     /** The field name for list item fields. */
     protected static final String LIST_ITEM_FIELDS = "fields";
     /** The field name for list item attachments. */
@@ -273,12 +274,15 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
             final ExecutorService executorService, final Microsoft365Client client, final Site site,
             final com.microsoft.graph.models.List list) {
-        executorService.execute(() -> {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Processing list: {} in site: {}", list.getDisplayName(), site.getDisplayName());
-            }
-            client.getListItems(site.getId(), list.getId(), item -> {
-                if (isTargetItem(paramMap, item)) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Processing list: {} in site: {}", list.getDisplayName(), site.getDisplayName());
+        }
+        client.getListItems(site.getId(), list.getId(), item -> {
+            if (isTargetItem(paramMap, item)) {
+                executorService.execute(() -> {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Processing item ID: {} in list: {}", item.getId(), list.getDisplayName());
+                    }
                     try {
                         processListItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site, list, item);
                     } catch (final Exception e) {
@@ -287,8 +291,8 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                             throw new DataStoreCrawlingException(list.getDisplayName(), "Failed to process list item: " + item.getId(), e);
                         }
                     }
-                }
-            });
+                });
+            }
         });
     }
 
@@ -373,6 +377,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             listItemMap.put(LIST_ITEM_CREATED, item.getCreatedDateTime());
             listItemMap.put(LIST_ITEM_MODIFIED, item.getLastModifiedDateTime());
             listItemMap.put(LIST_ITEM_URL, url);
+            listItemMap.put(LIST_ITEM_WEB_URL, item.getWebUrl());
 
             if (logger.isDebugEnabled()) {
                 logger.debug("Basic metadata prepared for item {} - Site: {}, List: {}", item.getId(), site.getDisplayName(),
@@ -705,15 +710,19 @@ public class SharePointListDataStore extends Microsoft365DataStore {
      * @return true if the item should be crawled, false otherwise
      */
     protected boolean isTargetItem(final DataStoreParams paramMap, final ListItem item) {
-        // Apply include/exclude patterns if configured
-        final String includePattern = paramMap.getAsString(INCLUDE_PATTERN, null);
-        final String excludePattern = paramMap.getAsString(EXCLUDE_PATTERN, null);
-
+        if (logger.isDebugEnabled()) {
+            logger.debug("Checking if list item is target - FieldValueSet: {}, Fields: {}", item.getFields() != null,
+                    item.getFields() != null ? item.getFields().getAdditionalData().size() : 0);
+        }
         if (item.getFields() != null) {
             final com.microsoft.graph.models.FieldValueSet fieldValueSet = item.getFields();
             final Map<String, Object> fields = fieldValueSet != null ? fieldValueSet.getAdditionalData() : null;
             final String title = extractFieldValue(fields, "Title", "LinkTitle", "FileLeafRef");
             if (StringUtil.isNotBlank(title)) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("List item title for filtering: {}", title);
+                }
+                final String includePattern = paramMap.getAsString(INCLUDE_PATTERN, null);
                 if (StringUtil.isNotBlank(includePattern)) {
                     final Pattern pattern = Pattern.compile(includePattern);
                     if (!pattern.matcher(title).matches()) {
@@ -721,6 +730,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                     }
                 }
 
+                final String excludePattern = paramMap.getAsString(EXCLUDE_PATTERN, null);
                 if (StringUtil.isNotBlank(excludePattern)) {
                     final Pattern pattern = Pattern.compile(excludePattern);
                     if (pattern.matcher(title).matches()) {

@@ -14,7 +14,7 @@ This plugin extends [Fess](https://fess.codelibs.org/) enterprise search capabil
 
 ### 📁 **Comprehensive Content Crawling**
 - **OneDrive**: User and group files, folders with metadata extraction
-- **OneNote**: Notebooks, sections, pages with rich text content
+- **OneNote**: Complete notebooks with aggregated content from all sections and pages, supporting site, user, and group notebooks
 - **Teams**: Channels, messages, chats with conversation context
 - **SharePoint Document Libraries**: Sites and document libraries with enhanced content aggregation
 - **SharePoint Lists**: Custom lists and list items with dynamic field mapping
@@ -110,7 +110,7 @@ The plugin provides five specialized data store types, each optimized for differ
 | Data Store | Service | Content Types | Use Cases |
 |------------|---------|---------------|----------|
 | `oneDriveDataStore` | OneDrive | Files, Folders, Metadata | Document search, file discovery |
-| `oneNoteDataStore` | OneNote | Notebooks, Sections, Pages | Knowledge base search, note finding |
+| `oneNoteDataStore` | OneNote | Notebooks (with sections & pages content) | Knowledge base search, note finding, documentation search |
 | `teamsDataStore` | Teams | Channels, Messages, Chats | Conversation search, team communication |
 | `sharePointDocLibDataStore` | SharePoint | Document Libraries, Files | Document management, content discovery |
 | `sharePointListDataStore` | SharePoint | Lists, List Items, Custom Fields | Structured data search, business process content |
@@ -141,77 +141,117 @@ role=file.roles
 | --- | --- |
 | file.name | The name of the file. |
 | file.description | A short description of the file. |
-| file.contents | The text contents of the file |
+| file.contents | The text contents of the file (extracted using Tika) |
 | file.mimetype | The MIME type of the file. |
+| file.filetype | The file type category determined by MIME type. |
 | file.created | The time at which the file was created. |
 | file.last_modified | The last time the file was modified by anyone. |
+| file.size | The size of the file in bytes. |
 | file.web_url | A link for opening the file in an editor or viewer in a browser. |
-| file.roles | A users/groups who can access the file. |
+| file.url | The processed URL for the file (may differ from web_url for certain locations). |
+| file.roles | Users/groups who can access the file. |
+| file.ctag | Change tag for the file (used for change tracking). |
+| file.etag | Entity tag for the file (used for caching). |
+| file.id | The unique identifier of the file in OneDrive. |
+| file.webdav_url | WebDAV URL for the file (if available). |
+| file.location | Geographic location metadata (if available). |
+| file.createdby_application | Application that created the file. |
+| file.createdby_device | Device that created the file. |
+| file.createdby_user | User who created the file. |
+| file.deleted | Deletion information (if file was deleted). |
+| file.hashes | File hash values for integrity checking. |
+| file.last_modifiedby_application | Application that last modified the file. |
+| file.last_modifiedby_device | Device that last modified the file. |
+| file.last_modifiedby_user | User who last modified the file. |
+| file.image | Image metadata (for image files). |
+| file.parent | Parent reference information. |
+| file.parent_id | ID of the parent folder. |
+| file.parent_name | Name of the parent folder. |
+| file.parent_path | Path to the parent folder. |
+| file.photo | Photo metadata (for photo files). |
+| file.publication | Publication information (if applicable). |
+| file.search_result | Search result metadata (if file was found via search). |
+| file.special_folder | Special folder name (if file is in a special folder). |
+| file.video | Video metadata (for video files). |
 
 #### OneNote
 
 ```
-title=notebooks.name
-content=notebooks.contents
-created=notebooks.created
-last_modified=notebooks.last_modified
-url=notebooks.web_url
-role=notebooks.roles
+title=notebook.name
+content=notebook.contents
+created=notebook.created
+last_modified=notebook.last_modified
+url=notebook.web_url
+role=notebook.roles
+size=notebook.size
 ```
 
 | Key | Value |
 | --- | --- |
-| notebooks.name | The name of the notebook. |
-| notebooks.contents | The text contents of the notebook |
-| notebooks.created | The time at which the notebook was created. |
-| notebooks.last_modified | The last time the notebook was modified by anyone. |
-| notebooks.web_url | A link for opening the notebook in an editor in a browser. |
-| notebooks.roles | A users/groups who can access the notebook. |
+| notebook.name | The name of the notebook. |
+| notebook.contents | The extracted text contents from all sections and pages within the notebook. |
+| notebook.size | The size of the notebook content in characters. |
+| notebook.created | The time at which the notebook was created. |
+| notebook.last_modified | The last time the notebook was modified by anyone. |
+| notebook.web_url | A link for opening the notebook in OneNote web or desktop app. |
+| notebook.roles | Users/groups who can access the notebook. |
 
 #### Teams
 
 ```
-title=teams.name
-content=teams.contents
-created=teams.created
-last_modified=teams.last_modified
-url=teams.web_url
-role=teams.roles
+title=message.title
+content=message.content
+created=message.created_date_time
+last_modified=message.last_modified_date_time
+url=message.web_url
+role=message.roles
 ```
 
 | Key | Value |
 | --- | --- |
-| teams.name | The name of the team/channel/message. |
-| teams.contents | The text contents of the message |
-| teams.created | The time at which the message was created. |
-| teams.last_modified | The last time the message was modified. |
-| teams.web_url | A link for opening the message in Teams. |
-| teams.roles | A users/groups who can access the team. |
+| message.title | The message title (sender name and timestamp). |
+| message.content | The text contents of the message including attachments if configured. |
+| message.created_date_time | The time at which the message was created. |
+| message.last_modified_date_time | The last time the message was modified. |
+| message.web_url | A link for opening the message in Teams. |
+| message.roles | Users/groups who can access the team/channel/chat. |
+| message.id | The unique identifier of the message. |
+| message.from | The sender information. |
+| message.subject | The subject of the message. |
+| message.body | The body content with type information. |
+| message.attachments | File attachments associated with the message. |
+| message.mentions | Users mentioned in the message. |
+| team | The team object containing team information (when applicable). |
+| channel | The channel object containing channel information (when applicable). |
+| parent | The parent message for replies (when applicable). |
 
-#### SharePoint Sites
+#### SharePoint Document Libraries
 
 ```
-title=site.name
-content=site.content
-mimetype=site.mimetype
-created=site.created
-last_modified=site.last_modified
-url=site.web_url
-role=site.roles
+title=doclib.name
+content=doclib.content
+created=doclib.created
+last_modified=doclib.modified
+url=doclib.url
+role=doclib.roles
 ```
 
 | Key | Value |
 | --- | --- |
-| site.name | The name of the site. |
-| site.content | Rich content including site information and document library metadata for enhanced search. |
-| site.description | The description of the site. |
-| site.type | The type of the site (root or subsite). |
-| site.created | The time at which the site was created. |
-| site.modified | The last time the site was modified. |
-| site.web_url | A link for opening the site in a browser. |
-| site.roles | A users/groups who can access the site. |
+| doclib.id | The unique identifier of the document library (Drive ID). |
+| doclib.name | The name of the document library. |
+| doclib.description | The description of the document library. |
+| doclib.content | Rich content combining document library name, description, and site name for enhanced search. |
+| doclib.url | The Microsoft Graph API web URL for the document library. |
+| doclib.canonical_url | The standardized SharePoint URL for accessing the document library. |
+| doclib.created | The time at which the document library was created. |
+| doclib.modified | The last time the document library was modified. |
+| doclib.type | The type of the drive (e.g., "documentLibrary"). |
+| doclib.site_name | The display name of the SharePoint site containing this document library. |
+| doclib.site_url | The web URL of the SharePoint site. |
+| doclib.roles | Users/groups who can access the document library. |
 
-**Note**: The `site.content` field now includes comprehensive site information (name, description, URL) combined with document library metadata to provide richer search content for SharePoint sites.
+**Note**: SharePointDocLibDataStore indexes document libraries as individual searchable entities, combining library metadata with site information to provide comprehensive search content. The `doclib.content` field aggregates the library name, description, and parent site name for enhanced discoverability.
 
 #### SharePoint Lists
 
@@ -228,11 +268,20 @@ role=item.roles
 | --- | --- |
 | item.title | The title of the list item (extracted from Title, LinkTitle, or FileLeafRef fields). |
 | item.content | The text contents of the list item (extracted from Body, Description, Comments, or Notes fields) |
-| item.fields | All fields and values from the SharePoint list item |
+| item.id | The unique identifier of the list item |
 | item.created | The time at which the list item was created. |
 | item.modified | The last time the list item was modified. |
 | item.url | A link for opening the list item in SharePoint. |
-| item.roles | A users/groups who can access the list item. |
+| item.fields | All fields and values from the SharePoint list item as a map |
+| item.attachments | File attachments associated with the list item (if any) |
+| item.roles | Users/groups who can access the list item. |
+| item.site | Site information containing `id`, `name`, and `url` |
+| item.list | List information containing `name`, `description`, `url`, and `template_type` |
+
+**Data Structure**: The `item` object contains nested structures:
+- `item.site` - Contains site metadata (site.id, site.name, site.url)
+- `item.list` - Contains list metadata (list.name, list.description, list.url, list.template_type)
+- `item.fields` - Dynamic map of all SharePoint list fields and their values
 
 **Note**: The plugin automatically expands SharePoint list item fields to ensure content extraction. If fields are not initially available, it performs an individual API call with `$expand=fields` to retrieve the complete field data.
 
@@ -251,10 +300,52 @@ role=item.roles
 | Parameter | Description | Default | Example |
 |-----------|-------------|---------|----------|
 | `number_of_threads` | Concurrent crawling threads | `1` | `3` |
-| `ignore_error` | Continue on errors | `false` | `true` |
+| `ignore_error` | Continue on errors | `true` | `false` |
 | `include_pattern` | Regex pattern for inclusion | - | `.*\.pdf$` |
 | `exclude_pattern` | Regex pattern for exclusion | - | `.*temp.*` |
 | `default_permissions` | Default role assignments | - | `{role}admin` |
+
+### Teams-Specific Parameters
+
+| Parameter | Description | Default | Notes |
+|-----------|-------------|---------|-------|
+| `team_id` | Specific team ID to crawl | All teams | Microsoft 365 group ID |
+| `exclude_team_ids` | Comma-separated team IDs to exclude | - | Multiple teams to skip |
+| `include_visibility` | Team visibility levels to include | All | `public`, `private` |
+| `channel_id` | Specific channel ID to crawl | All channels | Within specified team |
+| `chat_id` | Specific chat ID to crawl | - | For 1:1 or group chats |
+| `ignore_replies` | Skip reply messages | `false` | Process only root messages |
+| `append_attachment` | Include attachments in content | `true` | Append attachment text to message body |
+| `ignore_system_events` | Skip system event messages | `true` | Filter out system notifications |
+| `title_dateformat` | Date format for message titles | `yyyy/MM/dd'T'HH:mm:ss` | Java date pattern |
+| `title_timezone_offset` | Timezone offset for titles | `Z` | e.g., `+09:00`, `-05:00` |
+
+**Crawling Modes**:
+- **All Teams**: Leave `team_id` empty to crawl all accessible teams
+- **Specific Team**: Set `team_id` to crawl only that team's channels
+- **Specific Channel**: Set both `team_id` and `channel_id`
+- **Chat Messages**: Set `chat_id` to crawl a specific chat (messages are aggregated)
+
+### OneNote-Specific Parameters
+
+| Parameter | Description | Default | Notes |
+|-----------|-------------|---------|-------|
+| `site_note_crawler` | Enable crawling of site notebooks | `true` | Crawls notebooks at the root SharePoint site |
+| `user_note_crawler` | Enable crawling of user notebooks | `true` | Crawls personal OneNote notebooks for licensed users |
+| `group_note_crawler` | Enable crawling of group notebooks | `true` | Crawls shared notebooks in Microsoft 365 groups |
+| `number_of_threads` | Number of processing threads | `1` | Controls concurrent notebook processing |
+
+### OneDrive-Specific Parameters
+
+| Parameter | Description | Default | Notes |
+|-----------|-------------|---------|-------|
+| `max_content_length` | Maximum content length in bytes | `-1` (unlimited) | Set size limit for file content |
+| `ignore_folder` | Skip folder documents | `true` | Process files only, ignore folders |
+| `supported_mimetypes` | Supported MIME types pattern | `.*` | Regex pattern for supported file types |
+| `drive_id` | Specific drive ID to crawl | - | If specified, only crawls this drive |
+| `shared_documents_drive_crawler` | Enable shared documents crawling | `true` | Crawl default user's OneDrive |
+| `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
+| `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
 
 ### SharePoint Document Library Parameters
 
@@ -263,11 +354,8 @@ role=item.roles
 | `site_id` | Specific site ID to crawl | All sites | Can be site URL or GUID |
 | `exclude_site_id` | Site IDs to exclude | - | See format guide below |
 | `site_type_filter` | Filter by type | - | `root`, `subsite` |
-| `include_subsites` | Include subsites | `true` | Crawl site hierarchy |
 | `ignore_system_libraries` | Skip system libraries | `true` | Excludes Form Templates, etc. |
-| `ignore_folder` | Skip folder documents | `false` | Index folder structure |
-| `max_content_length` | Content extraction limit (bytes) | `10485760` | 10MB default |
-| `supported_mimetypes` | Allowed MIME types | `.*` | Comma-separated patterns |
+| `ignore_folder` | Skip folder documents | `true` | Index folder structure |
 
 ##### exclude_site_id Format
 
@@ -288,15 +376,20 @@ SharePoint site IDs contain commas as part of their format (`hostname,siteCollec
   exclude_site_id=site1,site2,site3
   ```
 
-#### SharePoint List Parameters
+### SharePoint List Parameters
 
-| Parameter | Description | Default |
-| --- | --- | --- |
-| site_id | SharePoint site ID containing lists | Required |
-| list_id | Specific list ID to crawl | All lists |
-| exclude_list_id | Comma-separated list IDs to exclude | - |
-| list_template_filter | Filter by list template types | - |
-| ignore_system_lists | Skip system lists | true |
+| Parameter | Description | Default | Notes |
+| --- | --- | --- | --- |
+| `site_id` | SharePoint site ID containing lists | Required | Full site ID format: `hostname,siteCollectionId,siteId` |
+| `list_id` | Specific list ID to crawl | All lists | If specified, only this list will be crawled |
+| `exclude_list_id` | Comma-separated list IDs to exclude | - | Multiple list IDs separated by commas |
+| `list_template_filter` | Filter by list template types | - | Comma-separated template IDs (e.g., `100,101`) |
+| `ignore_system_lists` | Skip system lists | `true` | Excludes lists like User Information, Workflow Tasks |
+| `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed items |
+| `include_pattern` | Regex pattern for item titles to include | - | Filter items by title matching |
+| `exclude_pattern` | Regex pattern for item titles to exclude | - | Skip items with matching titles |
+| `number_of_threads` | Number of processing threads | `1` | Concurrent list processing |
+| `default_permissions` | Default role assignments | - | Additional permissions for all items |
 
 **Recent Improvements**: SharePoint List crawling now includes enhanced statistical tracking, improved error handling with configurable failure recording, comprehensive URL filtering support, and robust permission processing to ensure secure and efficient list item indexing.
 
@@ -428,22 +521,49 @@ role=file.roles
 ### Example 2: SharePoint List Configuration
 ```properties
 # SharePoint list crawling with filtering
-site_id=contoso.sharepoint.com,guid1,guid2
+site_id=contoso.sharepoint.com,686d3f1a-a383-4367-b5f5-93b99baabcf3,12048306-4e53-420e-bd7c-31af611f6d8a
 list_template_filter=100,101  # Generic lists and Document Libraries
 ignore_system_lists=true
 include_pattern=.*Important.*
+exclude_pattern=.*Draft.*
+ignore_error=false
 number_of_threads=2
+default_permissions={role}sharepoint-users
+
+# Crawl specific list only
+# list_id=12345678-1234-1234-1234-123456789abc
+
+# Exclude multiple lists
+# exclude_list_id=list1-id,list2-id,list3-id
 ```
 
 ### Example 3: Teams Content Search
 ```javascript
 // Teams message indexing script
-title=teams.name
-content=teams.contents
-created=teams.created
-last_modified=teams.last_modified
-url=teams.web_url
-role=teams.roles
+title=message.title
+content=message.content
+created=message.created_date_time
+last_modified=message.last_modified_date_time
+url=message.web_url
+role=message.roles
+// Access additional fields
+team_name=team.displayName
+channel_name=channel.displayName
+sender=message.from.user.displayName
+```
+
+### Example 4: Teams Configuration
+```properties
+# Crawl specific team with filters
+team_id=12345678-1234-1234-1234-123456789abc
+ignore_replies=true
+ignore_system_events=true
+append_attachment=true
+number_of_threads=2
+
+# Exclude multiple teams
+exclude_team_ids=team1-id,team2-id,team3-id
+include_visibility=public
 ```
 
 ## 🔍 Troubleshooting
@@ -468,10 +588,9 @@ Solution: Adjust threading and implement backoff
 
 **Large Content Issues**
 ```
-Solution: Configure content size limits
-- Set max_content_length appropriately  
-- Use supported_mimetypes to filter file types
+Solution: Configure content handling
 - Implement exclude_pattern for large files
+- Use OneDriveDataStore settings for file content extraction
 ```
 
 ### Debug Mode

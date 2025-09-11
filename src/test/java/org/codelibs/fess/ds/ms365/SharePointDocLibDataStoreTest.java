@@ -193,20 +193,6 @@ public class SharePointDocLibDataStoreTest extends LastaFluteTestCase {
         assertTrue(dataStore.isIgnoreFolder(paramMap3)); // default is true
     }
 
-    public void test_getMaxSize() {
-        final DataStoreParams paramMap1 = new DataStoreParams();
-        paramMap1.put("max_content_length", "1048576");
-
-        final DataStoreParams paramMap2 = new DataStoreParams();
-        paramMap2.put("max_content_length", "invalid");
-
-        final DataStoreParams paramMap3 = new DataStoreParams();
-
-        assertEquals(1048576L, dataStore.getMaxSize(paramMap1));
-        assertEquals(10485760L, dataStore.getMaxSize(paramMap2)); // default on invalid
-        assertEquals(10485760L, dataStore.getMaxSize(paramMap3)); // default
-    }
-
     public void test_isExcludedSite_multipleSites() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_site_id", "site1,site2, site3 ");
@@ -246,21 +232,6 @@ public class SharePointDocLibDataStoreTest extends LastaFluteTestCase {
 
         assertFalse("Site should not be excluded with empty exclude list", dataStore.isExcludedSite(paramMap1, site));
         assertFalse("Site should not be excluded with no exclude parameter", dataStore.isExcludedSite(paramMap2, site));
-    }
-
-    public void test_getMaxSize_customValues() {
-        final DataStoreParams paramMap1 = new DataStoreParams();
-        paramMap1.put("max_content_length", "5242880"); // 5MB
-
-        final DataStoreParams paramMap2 = new DataStoreParams();
-        paramMap2.put("max_content_length", "20971520"); // 20MB
-
-        final DataStoreParams paramMap3 = new DataStoreParams();
-        paramMap3.put("max_content_length", "0"); // 0 bytes
-
-        assertEquals("Should parse 5MB correctly", 5242880L, dataStore.getMaxSize(paramMap1));
-        assertEquals("Should parse 20MB correctly", 20971520L, dataStore.getMaxSize(paramMap2));
-        assertEquals("Should parse 0 bytes correctly", 0L, dataStore.getMaxSize(paramMap3));
     }
 
     public void test_threadPoolCreation() {
@@ -334,12 +305,10 @@ public class SharePointDocLibDataStoreTest extends LastaFluteTestCase {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("site_id", "doclib-test-site");
         paramMap.put("ignore_system_libraries", "true");
-        paramMap.put("max_content_length", "5242880");
 
         // Verify configuration parameters for document library crawling
         assertEquals("Should get site ID for document library context", "doclib-test-site", paramMap.getAsString("site_id"));
         assertTrue("Should ignore system libraries by default", dataStore.isIgnoreSystemLibraries(paramMap));
-        assertEquals("Should get max content length", 5242880L, dataStore.getMaxSize(paramMap));
     }
 
     public void test_documentLibraryMetadata_configuration() {

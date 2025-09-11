@@ -48,7 +48,6 @@ import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.Drive;
-import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.Site;
 
 /**
@@ -72,10 +71,6 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
     /** Default permissions to assign to crawled documents */
     protected static final String DEFAULT_PERMISSIONS = "default_permissions";
-    /** Maximum content length in bytes for file extraction */
-    protected static final String MAX_CONTENT_LENGTH = "max_content_length";
-    /** Comma-separated list of supported MIME types */
-    protected static final String SUPPORTED_MIMETYPES = "supported_mimetypes";
     /** Flag to continue crawling on errors */
     protected static final String IGNORE_ERROR = "ignore_error";
     /** Flag to skip folder documents */
@@ -133,16 +128,12 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap) {
 
         final Map<String, Object> configMap = new LinkedHashMap<>();
-        configMap.put(MAX_CONTENT_LENGTH, getMaxSize(paramMap));
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
         configMap.put(IGNORE_FOLDER, isIgnoreFolder(paramMap));
-        configMap.put(SUPPORTED_MIMETYPES, getSupportedMimeTypes(paramMap));
 
         if (logger.isDebugEnabled()) {
-            logger.debug(
-                    "SharePoint Document Library crawling started - Configuration: MaxSize={}, IgnoreError={}, IgnoreFolder={}, MimeTypes={}, Threads={}",
-                    configMap.get(MAX_CONTENT_LENGTH), configMap.get(IGNORE_ERROR), configMap.get(IGNORE_FOLDER),
-                    java.util.Arrays.toString((String[]) configMap.get(SUPPORTED_MIMETYPES)), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
+            logger.debug("SharePoint Document Library crawling started - Configuration: IgnoreError={}, IgnoreFolder={}, Threads={}",
+                    configMap.get(IGNORE_ERROR), configMap.get(IGNORE_FOLDER), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
         final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
@@ -498,37 +489,6 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
         return null;
     }
 
-    /**
-     * Gets permissions for a drive item (file).
-     */
-    protected List<String> getDriveItemPermissions(final Microsoft365Client client, final String driveId, final DriveItem item) {
-        final List<String> roles = new ArrayList<>();
-        try {
-            var response = client.getDrivePermissions(driveId, item.getId());
-
-            // Handle pagination for permissions
-            while (response != null && response.getValue() != null) {
-                response.getValue().forEach(permission -> {
-                    if (permission.getGrantedToV2() != null && permission.getGrantedToV2().getUser() != null) {
-                        String email = getUserEmail(permission);
-                        if (StringUtil.isNotBlank(email)) {
-                            roles.add(email);
-                        }
-                    }
-                });
-
-                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                    response = client.getDrivePermissionsByNextLink(driveId, item.getId(), response.getOdataNextLink());
-                } else {
-                    break;
-                }
-            }
-        } catch (final Exception e) {
-            logger.warn("Failed to get permissions for drive item: {} in drive: {}", item.getId(), driveId, e);
-        }
-        return roles;
-    }
-
     // Configuration helper methods
     /**
      * Gets the site ID from configuration parameters.
@@ -621,70 +581,6 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
      */
     protected boolean isIgnoreFolder(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_FOLDER, Constants.TRUE));
-    }
-
-    /**
-     * Gets the maximum content size for file extraction.
-     *
-     * @param paramMap data store parameters
-     * @return maximum content size in bytes
-     */
-    protected long getMaxSize(final DataStoreParams paramMap) {
-        final String value = paramMap.getAsString(MAX_CONTENT_LENGTH, "10485760"); // 10MB default
-        try {
-            return Long.parseLong(value);
-        } catch (final NumberFormatException e) {
-            logger.warn("Invalid max content length: {}", value);
-            return 10485760L;
-        }
-    }
-
-    /**
-     * Gets the array of supported MIME types.
-     *
-     * @param paramMap data store parameters
-     * @return array of supported MIME type patterns
-     */
-    protected String[] getSupportedMimeTypes(final DataStoreParams paramMap) {
-        return StreamUtil.split(paramMap.getAsString(SUPPORTED_MIMETYPES, ".*"), ",")
-                .get(stream -> stream.map(String::trim).toArray(n -> new String[n]));
-    }
-
-    /**
-     * Gets the contents of a drive item.
-     * Reuses OneDrive pattern for content extraction.
-     *
-     * @param client Microsoft 365 client for API calls
-     * @param driveId ID of the document library drive
-     * @param item drive item to extract content from
-     * @param maxContentLength maximum content length to extract
-     * @param ignoreError whether to ignore extraction errors
-     * @return extracted text content or empty string on error
-     */
-    protected String getDriveItemContents(final Microsoft365Client client, final String driveId, final DriveItem item,
-            final long maxContentLength, final boolean ignoreError) {
-        if (item.getFile() != null) {
-            try (final var in = client.getDriveContent(driveId, item.getId())) {
-                return ComponentUtil.getExtractorFactory()
-                        .builder(in, Collections.emptyMap())
-                        .filename(item.getName())
-                        .maxContentLength(maxContentLength)
-                        .extractorName(extractorName)
-                        .extract()
-                        .getContent();
-            } catch (final Exception e) {
-                if (!ignoreError && !ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
-                    throw new DataStoreCrawlingException(item.getWebUrl(), "Failed to get contents: " + item.getName(), e);
-                }
-                if (logger.isDebugEnabled()) {
-                    logger.warn("Failed to get contents: {}", item.getName(), e);
-                } else {
-                    logger.warn("Failed to get contents: {}. {}", item.getName(), e.getMessage());
-                }
-                return "";
-            }
-        }
-        return "";
     }
 
     /**
