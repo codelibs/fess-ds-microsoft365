@@ -255,11 +255,9 @@ public class SharePointListDataStoreTest extends LastaFluteTestCase {
         // Test that permission-related configurations are properly handled
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("site_id", "test-site-123");
-        paramMap.put("include_attachments", "true");
 
         // Test that parameters needed for permission processing are available
         assertEquals("Should get site ID for permission context", "test-site-123", paramMap.getAsString("site_id"));
-        assertTrue("Should handle attachment permissions", dataStore.isIncludeAttachments(paramMap));
     }
 
     public void test_isSystemField() {
@@ -309,20 +307,6 @@ public class SharePointListDataStoreTest extends LastaFluteTestCase {
         assertTrue(dataStore.isIgnoreSystemLists(paramMap1));
         assertFalse(dataStore.isIgnoreSystemLists(paramMap2));
         assertTrue(dataStore.isIgnoreSystemLists(paramMap3)); // default is true
-    }
-
-    public void test_isIncludeAttachments() {
-        final DataStoreParams paramMap1 = new DataStoreParams();
-        paramMap1.put("include_attachments", "true");
-
-        final DataStoreParams paramMap2 = new DataStoreParams();
-        paramMap2.put("include_attachments", "false");
-
-        final DataStoreParams paramMap3 = new DataStoreParams();
-
-        assertTrue(dataStore.isIncludeAttachments(paramMap1));
-        assertFalse(dataStore.isIncludeAttachments(paramMap2));
-        assertFalse(dataStore.isIncludeAttachments(paramMap3)); // default is false
     }
 
     public void test_isIgnoreSystemLists_withSystemListFiltering() {

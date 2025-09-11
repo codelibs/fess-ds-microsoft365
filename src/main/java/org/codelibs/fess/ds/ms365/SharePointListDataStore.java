@@ -67,8 +67,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     protected static final String EXCLUDE_LIST_ID = "exclude_list_id";
     /** The parameter name for the list template filter. */
     protected static final String LIST_TEMPLATE_FILTER = "list_template_filter";
-    /** The parameter name for including attachments. */
-    protected static final String INCLUDE_ATTACHMENTS = "include_attachments";
     /** The parameter name for the number of threads. */
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
     /** The parameter name for default permissions. */
@@ -153,9 +151,9 @@ public class SharePointListDataStore extends Microsoft365DataStore {
 
         if (logger.isDebugEnabled()) {
             logger.debug(
-                    "SharePoint lists crawling started - Configuration: SiteID={}, ListID={}, IgnoreError={}, IgnoreSystemLists={}, IncludeAttachments={}, Threads={}",
+                    "SharePoint lists crawling started - Configuration: SiteID={}, ListID={}, IgnoreError={}, IgnoreSystemLists={}, Threads={}",
                     getSiteId(paramMap), getListId(paramMap), configMap.get(IGNORE_ERROR), isIgnoreSystemLists(paramMap),
-                    isIncludeAttachments(paramMap), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
+                    paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
         final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
@@ -486,8 +484,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             crawlerStatsHelper.record(statsKey, StatsAction.EVALUATED);
 
             if (logger.isDebugEnabled()) {
-                logger.debug("Final data map prepared for indexing - Item: {}, Fields: {}, URL: {}", item.getId(), dataMap.size(),
-                        dataMap.get("url"));
+                logger.debug("Data map prepared for storage - DataMap: {}", dataMap);
             }
 
             if (dataMap.get("url") instanceof final String statsUrl) {
@@ -676,13 +673,21 @@ public class SharePointListDataStore extends Microsoft365DataStore {
      * @return true if the list is a system list, false otherwise
      */
     protected boolean isSystemList(final com.microsoft.graph.models.List list) {
-        // Check for system facet according to Microsoft Graph API documentation
-        // https://learn.microsoft.com/en-us/graph/api/resources/systemfacet?view=graph-rest-1.0
-        if (list.getSystem() != null) {
-            return true;
+        if (logger.isDebugEnabled()) {
+            logger.debug("Checking if list is system list - Name: {}, ID: {}, Template: {}, WebUrl: {}", list.getDisplayName(),
+                    list.getId(), list.getList() != null ? list.getList().getTemplate() : "unknown", list.getWebUrl());
         }
 
-        // Fallback to name-based detection for compatibility
+        // Use URL-based detection for better reliability when available
+        if (list.getWebUrl() != null) {
+            final String url = list.getWebUrl().toLowerCase();
+            return url.contains("/_catalogs/") || url.contains("/lists/userinformationlist") || url.contains("/lists/workflowtasks")
+                    || url.contains("/lists/accessrequests") || url.contains("/sitepages/") || url.contains("/siteassets/")
+                    || url.contains("/lists/masterpage") || url.contains("/lists/stylelibrary") || url.contains("/lists/formtemplates")
+                    || url.contains("/_layouts/") || url.contains("/workflowhistory") || url.contains("/_private/");
+        }
+
+        // Fallback to name-based detection when URL is not available
         if (list.getDisplayName() == null) {
             return false;
         }
@@ -746,16 +751,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
      */
     protected boolean isIgnoreSystemLists(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_LISTS, Constants.TRUE));
-    }
-
-    /**
-     * Checks if list item attachments should be included during crawling.
-     *
-     * @param paramMap the data store parameters
-     * @return true if attachments should be included, false otherwise
-     */
-    protected boolean isIncludeAttachments(final DataStoreParams paramMap) {
-        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(INCLUDE_ATTACHMENTS, Constants.FALSE));
     }
 
     /**

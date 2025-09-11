@@ -11,7 +11,7 @@
     <component name="teamsDataStore" class="org.codelibs.fess.ds.ms365.TeamsDataStore">
         <postConstruct name="register"></postConstruct>
     </component>
-    <component name="sharePointSiteDataStore" class="org.codelibs.fess.ds.ms365.SharePointSiteDataStore">
+    <component name="sharePointDocLibDataStore" class="org.codelibs.fess.ds.ms365.SharePointDocLibDataStore">
         <postConstruct name="register"></postConstruct>
     </component>
     <component name="sharePointListDataStore" class="org.codelibs.fess.ds.ms365.SharePointListDataStore">

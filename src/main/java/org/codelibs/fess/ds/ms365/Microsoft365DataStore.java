@@ -310,7 +310,11 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 logger.debug("Successfully retrieved {} permissions for site: {}", permissions.size(), siteId);
             }
         } catch (final Exception e) {
-            logger.warn("Failed to retrieve permissions for site: {} - {}", siteId, e.getMessage());
+            if (logger.isDebugEnabled()) {
+                logger.debug("Failed to retrieve permissions for site: {}", siteId, e);
+            } else {
+                logger.warn("Failed to retrieve permissions for site: {} - {}", siteId, e.getMessage());
+            }
         }
         return permissions;
     }
