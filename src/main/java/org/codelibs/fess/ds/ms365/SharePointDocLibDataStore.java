@@ -62,35 +62,63 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     private static final Logger logger = LogManager.getLogger(SharePointDocLibDataStore.class);
 
     // Configuration parameters
+    /** Site ID parameter name for specifying which SharePoint site to crawl */
     protected static final String SITE_ID = "site_id";
+    /** Comma-separated list of site IDs to exclude from crawling */
     protected static final String EXCLUDE_SITE_ID = "exclude_site_id";
+    /** Flag to ignore system document libraries */
     protected static final String IGNORE_SYSTEM_LIBRARIES = "ignore_system_libraries";
+    /** Number of concurrent threads for processing */
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
+    /** Default permissions to assign to crawled documents */
     protected static final String DEFAULT_PERMISSIONS = "default_permissions";
+    /** Maximum content length in bytes for file extraction */
     protected static final String MAX_CONTENT_LENGTH = "max_content_length";
+    /** Comma-separated list of supported MIME types */
     protected static final String SUPPORTED_MIMETYPES = "supported_mimetypes";
+    /** Flag to continue crawling on errors */
     protected static final String IGNORE_ERROR = "ignore_error";
+    /** Flag to skip folder documents */
     protected static final String IGNORE_FOLDER = "ignore_folder";
+    /** Regular expression pattern for files to include */
     protected static final String INCLUDE_PATTERN = "include_pattern";
+    /** Regular expression pattern for files to exclude */
     protected static final String EXCLUDE_PATTERN = "exclude_pattern";
 
     // Field mappings for document libraries
+    /** Document library prefix for field mappings */
     protected static final String DOCLIB = "doclib";
+    /** Field mapping for document library name */
     protected static final String DOCLIB_NAME = "name";
+    /** Field mapping for document library description */
     protected static final String DOCLIB_DESCRIPTION = "description";
+    /** Field mapping for document library web URL */
     protected static final String DOCLIB_URL = "web_url";
+    /** Field mapping for document library creation date */
     protected static final String DOCLIB_CREATED = "created";
+    /** Field mapping for document library modification date */
     protected static final String DOCLIB_MODIFIED = "modified";
+    /** Field mapping for document library type */
     protected static final String DOCLIB_TYPE = "type";
+    /** Field mapping for document library access roles */
     protected static final String DOCLIB_ROLES = "roles";
+    /** Field mapping for document library content */
     protected static final String DOCLIB_CONTENT = "content";
+    /** Field mapping for document library ID */
     protected static final String DOCLIB_ID = "id";
+    /** Field mapping for parent site name */
     protected static final String DOCLIB_SITE_NAME = "site_name";
+    /** Field mapping for parent site URL */
     protected static final String DOCLIB_SITE_URL = "site_url";
+    /** Field mapping for canonical URL */
     protected static final String DOCLIB_CANONICAL_URL = "url";
 
+    /** Name of the extractor to use for file content extraction */
     protected String extractorName = "sharePointDocLibExtractor";
 
+    /**
+     * Default constructor for SharePointDocLibDataStore.
+     */
     public SharePointDocLibDataStore() {
         super();
     }
@@ -188,6 +216,16 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
 
     /**
      * Stores document libraries and their files in a SharePoint site.
+     *
+     * @param dataConfig the data configuration
+     * @param callback the index update callback for storing documents
+     * @param configMap configuration map containing crawl settings
+     * @param paramMap data store parameters
+     * @param scriptMap script mappings for field transformation
+     * @param defaultDataMap default data values for documents
+     * @param executorService executor service for concurrent processing
+     * @param client Microsoft 365 client for API calls
+     * @param site SharePoint site to process
      */
     protected void storeDocumentLibrariesInSite(final DataConfig dataConfig, final IndexUpdateCallback callback,
             final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
@@ -236,6 +274,16 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
 
     /**
      * Stores a document library as a document for indexing.
+     *
+     * @param dataConfig the data configuration
+     * @param callback the index update callback for storing documents
+     * @param configMap configuration map containing crawl settings
+     * @param paramMap data store parameters
+     * @param scriptMap script mappings for field transformation
+     * @param defaultDataMap default data values for documents
+     * @param client Microsoft 365 client for API calls
+     * @param site SharePoint site containing the document library
+     * @param drive document library drive to process
      */
     protected void storeDocumentLibrary(final DataConfig dataConfig, final IndexUpdateCallback callback,
             final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
@@ -368,6 +416,10 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
 
     /**
      * Gets drives (document libraries) for a specific site.
+     *
+     * @param client Microsoft 365 client for API calls
+     * @param siteId ID of the SharePoint site
+     * @param consumer consumer to process each drive found
      */
     protected void getSiteDrives(final Microsoft365Client client, final String siteId, final Consumer<Drive> consumer) {
         if (logger.isDebugEnabled()) {
@@ -394,6 +446,10 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
 
     /**
      * Gets permissions for a document library (drive).
+     *
+     * @param client Microsoft 365 client for API calls
+     * @param driveId ID of the document library drive
+     * @return list of user emails/IDs with access permissions
      */
     protected List<String> getDrivePermissions(final Microsoft365Client client, final String driveId) {
         final List<String> permissions = new ArrayList<>();
@@ -421,6 +477,9 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
 
     /**
      * Gets the user email from a permission.
+     *
+     * @param permission the permission object containing user information
+     * @return user email or display name, or null if not found
      */
     protected String getUserEmail(final com.microsoft.graph.models.Permission permission) {
         if (permission.getGrantedToV2() != null && permission.getGrantedToV2().getUser() != null) {
@@ -471,10 +530,23 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     }
 
     // Configuration helper methods
+    /**
+     * Gets the site ID from configuration parameters.
+     *
+     * @param paramMap data store parameters
+     * @return site ID or null if not specified
+     */
     protected String getSiteId(final DataStoreParams paramMap) {
         return paramMap.getAsString(SITE_ID, null);
     }
 
+    /**
+     * Checks if a site is excluded from crawling.
+     *
+     * @param paramMap data store parameters containing exclusion list
+     * @param site SharePoint site to check
+     * @return true if the site should be excluded, false otherwise
+     */
     protected boolean isExcludedSite(final DataStoreParams paramMap, final Site site) {
         final String excludeIds = paramMap.getAsString(EXCLUDE_SITE_ID, null);
         if (StringUtil.isBlank(excludeIds)) {
@@ -505,6 +577,12 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
         return false;
     }
 
+    /**
+     * Checks if a drive is a system library.
+     *
+     * @param drive document library drive to check
+     * @return true if the drive is a system library, false otherwise
+     */
     protected boolean isSystemLibrary(final Drive drive) {
         if (drive.getWebUrl() == null) {
             return false;
@@ -515,18 +593,42 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                 || webUrl.contains("/style library/") || webUrl.contains("/formservertemplates/");
     }
 
+    /**
+     * Checks if system libraries should be ignored.
+     *
+     * @param paramMap data store parameters
+     * @return true if system libraries should be ignored, false otherwise
+     */
     protected boolean isIgnoreSystemLibraries(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_LIBRARIES, Constants.TRUE));
     }
 
+    /**
+     * Checks if errors should be ignored during crawling.
+     *
+     * @param paramMap data store parameters
+     * @return true if errors should be ignored, false otherwise
+     */
     protected boolean isIgnoreError(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.FALSE));
     }
 
+    /**
+     * Checks if folder documents should be ignored.
+     *
+     * @param paramMap data store parameters
+     * @return true if folders should be ignored, false otherwise
+     */
     protected boolean isIgnoreFolder(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_FOLDER, Constants.TRUE));
     }
 
+    /**
+     * Gets the maximum content size for file extraction.
+     *
+     * @param paramMap data store parameters
+     * @return maximum content size in bytes
+     */
     protected long getMaxSize(final DataStoreParams paramMap) {
         final String value = paramMap.getAsString(MAX_CONTENT_LENGTH, "10485760"); // 10MB default
         try {
@@ -537,6 +639,12 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
         }
     }
 
+    /**
+     * Gets the array of supported MIME types.
+     *
+     * @param paramMap data store parameters
+     * @return array of supported MIME type patterns
+     */
     protected String[] getSupportedMimeTypes(final DataStoreParams paramMap) {
         return StreamUtil.split(paramMap.getAsString(SUPPORTED_MIMETYPES, ".*"), ",")
                 .get(stream -> stream.map(String::trim).toArray(n -> new String[n]));
@@ -545,6 +653,13 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     /**
      * Gets the contents of a drive item.
      * Reuses OneDrive pattern for content extraction.
+     *
+     * @param client Microsoft 365 client for API calls
+     * @param driveId ID of the document library drive
+     * @param item drive item to extract content from
+     * @param maxContentLength maximum content length to extract
+     * @param ignoreError whether to ignore extraction errors
+     * @return extracted text content or empty string on error
      */
     protected String getDriveItemContents(final Microsoft365Client client, final String driveId, final DriveItem item,
             final long maxContentLength, final boolean ignoreError) {

@@ -964,8 +964,11 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                             logger.debug("Successfully cached user drive ID: {}", cachedUserDriveId);
                         }
                     } catch (final Exception e) {
-                        logger.warn("Failed to retrieve user drive ID from Microsoft Graph API", e);
-                        // Return null instead of "me" to indicate failure
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Exception occurred while retrieving user drive ID", e);
+                        } else {
+                            logger.debug("Exception occurred while retrieving user drive ID: {}", e.getMessage());
+                        }
                         return null;
                     }
                 }
