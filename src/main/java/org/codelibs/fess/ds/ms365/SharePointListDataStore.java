@@ -96,6 +96,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     /** The field name for list item URL. */
     protected static final String LIST_ITEM_URL = "url";
     protected static final String LIST_ITEM_WEB_URL = "web_url";
+    protected static final String LIST_ITEM_CONTENT_TYPE = "content_type";
     /** The field name for list item fields. */
     protected static final String LIST_ITEM_FIELDS = "fields";
     /** The field name for list item attachments. */
@@ -314,21 +315,43 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
             final Microsoft365Client client, final Site site, final com.microsoft.graph.models.List list, final ListItem item) {
 
-        final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
-        final FessConfig fessConfig = ComponentUtil.getFessConfig();
-        final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
+        final String listTemplate;
+        if (list.getList() != null && list.getList().getTemplate() != null) {
+            listTemplate = list.getList().getTemplate();
+        } else {
+            logger.warn("List template type is unknown for list: {} (ID: {}) - skipping item ID: {}", list.getDisplayName(), list.getId(),
+                    item.getId());
+            return;
+        }
+
+        if (!"genericList".equals(listTemplate)) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping non-generic list item - List: {} (ID: {}, Template: {}), Item ID: {}", list.getDisplayName(),
+                        list.getId(), listTemplate, item.getId());
+
+            }
+            return;
+        }
 
         // Create URL for the item first for stats tracking
-        String itemUrl = item.getWebUrl();
-        if (StringUtil.isBlank(itemUrl) && list.getWebUrl() != null) {
-            itemUrl = list.getWebUrl() + "/DispForm.aspx?ID=" + item.getId();
+        final String listUrl = list.getWebUrl();
+        final String itemUrl = item.getWebUrl();
+        final String url;
+        if (listUrl != null) {
+            url = listUrl + "/DispForm.aspx?ID=" + item.getId();
+        } else {
+            url = itemUrl;
         }
 
         if (logger.isDebugEnabled()) {
             logger.debug("Processing list item - ID: {}, URL: {}, List: {} ({}), Site: {} ({}), Created: {}, Modified: {}", item.getId(),
-                    itemUrl, list.getDisplayName(), list.getId(), site.getDisplayName(), site.getId(), item.getCreatedDateTime(),
+                    url, list.getDisplayName(), list.getId(), site.getDisplayName(), site.getId(), item.getCreatedDateTime(),
                     item.getLastModifiedDateTime());
         }
+
+        final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
+        final FessConfig fessConfig = ComponentUtil.getFessConfig();
+        final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
 
         final StatsKeyObject statsKey = new StatsKeyObject(itemUrl);
         paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
@@ -337,7 +360,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             crawlerStatsHelper.begin(statsKey);
 
             // Apply URL filter if configured
-            final String url = itemUrl;
             final UrlFilter urlFilter = (UrlFilter) configMap.get(URL_FILTER);
             if (urlFilter != null && !urlFilter.match(url)) {
                 if (logger.isDebugEnabled()) {
@@ -347,7 +369,8 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                 return;
             }
 
-            logger.info("Crawling list item URL: {} (ID: {}, List: {})", url, item.getId(), list.getDisplayName());
+            logger.info("Crawling list item ID: {}, list ID: {}, site ID: {}, URL: {}, WebURL: {}", item.getId(), list.getId(),
+                    site.getId(), url, itemUrl);
 
             final boolean ignoreError = ((Boolean) configMap.get(IGNORE_ERROR));
             final Map<String, Object> resultMap = new LinkedHashMap<>(paramMap.asMap());
@@ -365,10 +388,8 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             // Add list-specific fields
             listMap.put(LIST_NAME, list.getDisplayName());
             listMap.put(LIST_DESCRIPTION, list.getDescription() != null ? list.getDescription() : StringUtil.EMPTY);
-            listMap.put(LIST_URL, list.getWebUrl());
-            if (list.getList() != null && list.getList().getTemplate() != null) {
-                listMap.put(LIST_TEMPLATE_TYPE, list.getList().getTemplate());
-            }
+            listMap.put(LIST_URL, listUrl);
+            listMap.put(LIST_TEMPLATE_TYPE, listTemplate);
 
             listItemMap.put("list", listMap);
 
@@ -377,7 +398,8 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             listItemMap.put(LIST_ITEM_CREATED, item.getCreatedDateTime());
             listItemMap.put(LIST_ITEM_MODIFIED, item.getLastModifiedDateTime());
             listItemMap.put(LIST_ITEM_URL, url);
-            listItemMap.put(LIST_ITEM_WEB_URL, item.getWebUrl());
+            listItemMap.put(LIST_ITEM_WEB_URL, itemUrl);
+            listItemMap.put(LIST_ITEM_CONTENT_TYPE, item.getContentType() != null ? item.getContentType().getName() : StringUtil.EMPTY);
 
             if (logger.isDebugEnabled()) {
                 logger.debug("Basic metadata prepared for item {} - Site: {}, List: {}", item.getId(), site.getDisplayName(),
