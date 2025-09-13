@@ -15,7 +15,13 @@
  */
 package org.codelibs.fess.ds.ms365.client;
 
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.*;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.ATTACHMENT_NAME_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ATTACHMENT_SOURCE_TYPE;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ID_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_ID_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_TITLE_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SITE_ID_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SOURCE_TYPE_KEY;
 
 import java.io.Closeable;
 import java.io.InputStream;

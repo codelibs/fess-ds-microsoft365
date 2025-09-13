@@ -15,7 +15,29 @@
  */
 package org.codelibs.fess.ds.ms365;
 
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.*;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.AUTHOR_FIELD;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.CREATED_FIELD;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ATTACHMENT_SOURCE_TYPE;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ID_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_AUTHOR_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_CREATED_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_ID_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_MODIFIED_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_TITLE_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_NAME_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_TEMPLATE_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_TITLE_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.MODIFIED_FIELD;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SHAREPOINT_LIST_ID_FIELD;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SHAREPOINT_LIST_ITEM_ID_FIELD;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SHAREPOINT_LIST_ITEM_TITLE_FIELD;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SHAREPOINT_LIST_TITLE_FIELD;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SHAREPOINT_SITE_ID_FIELD;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SITE_ID_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SITE_NAME_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SOURCE_TYPE_KEY;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.TITLE_FIELD;
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.UNKNOWN_TEMPLATE;
 
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
