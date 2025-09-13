@@ -53,7 +53,6 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      * Default constructor.
      */
     public Microsoft365DataStore() {
-        super();
     }
 
     /**
@@ -110,7 +109,7 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         if (logger.isDebugEnabled()) {
             logger.debug("Executor Thread Pool: {}", nThreads);
         }
-        return new ThreadPoolExecutor(nThreads, nThreads, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<Runnable>(nThreads),
+        return new ThreadPoolExecutor(nThreads, nThreads, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(nThreads),
                 new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
@@ -138,7 +137,7 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
             }
 
             return isLicensed;
-        } catch (Exception e) {
+        } catch (final Exception e) {
             logger.warn("Failed to check license status for user: {}", userId, e);
             return false;
         }
@@ -243,16 +242,15 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 response.getValue().forEach(consumer);
 
                 // Check if there's a next page
-                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                    // Request the next page using a helper method in Microsoft365Client
-                    try {
-                        response = client.getDrivePermissionsByNextLink(driveId, item.getId(), response.getOdataNextLink());
-                    } catch (final Exception e) {
-                        logger.warn("Failed to get next page of permissions: {}", e.getMessage());
-                        break;
-                    }
-                } else {
+                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
+                    break;
+                }
+                // Request the next page using a helper method in Microsoft365Client
+                try {
+                    response = client.getDrivePermissionsByNextLink(driveId, item.getId(), response.getOdataNextLink());
+                } catch (final Exception e) {
+                    logger.warn("Failed to get next page of permissions: {}", e.getMessage());
                     break;
                 }
             }
@@ -292,16 +290,15 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 response.getValue().forEach(consumer);
 
                 // Check if there's a next page
-                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                    // Request the next page using a helper method in Microsoft365Client
-                    try {
-                        response = client.getSitePermissionsByNextLink(siteId, response.getOdataNextLink());
-                    } catch (final Exception e) {
-                        logger.warn("Failed to get next page of permissions: {}", e.getMessage());
-                        break;
-                    }
-                } else {
+                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
+                    break;
+                }
+                // Request the next page using a helper method in Microsoft365Client
+                try {
+                    response = client.getSitePermissionsByNextLink(siteId, response.getOdataNextLink());
+                } catch (final Exception e) {
+                    logger.warn("Failed to get next page of permissions: {}", e.getMessage());
                     break;
                 }
             }

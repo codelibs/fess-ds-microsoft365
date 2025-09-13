@@ -17,4 +17,7 @@
     <component name="sharePointListDataStore" class="org.codelibs.fess.ds.ms365.SharePointListDataStore">
         <postConstruct name="register"></postConstruct>
     </component>
+    <component name="sharePointPageDataStore" class="org.codelibs.fess.ds.ms365.SharePointPageDataStore">
+        <postConstruct name="register"></postConstruct>
+    </component>
 </components>

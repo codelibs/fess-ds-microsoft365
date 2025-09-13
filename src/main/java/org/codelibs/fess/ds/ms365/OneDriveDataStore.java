@@ -58,7 +58,9 @@ import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.DriveItemCollectionResponse;
 import com.microsoft.graph.models.Hashes;
+import com.microsoft.graph.models.ListItem;
 import com.microsoft.graph.models.Permission;
+import com.microsoft.graph.models.Site;
 import com.microsoft.kiota.ApiException;
 
 /**
@@ -74,7 +76,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      * Default constructor.
      */
     public OneDriveDataStore() {
-        super();
     }
 
     /** Default maximum size of a file to be crawled. */
@@ -125,6 +126,14 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected static final String USER_DRIVE_CRAWLER = "user_drive_crawler";
     /** Parameter name for enabling the group drive crawler. */
     protected static final String GROUP_DRIVE_CRAWLER = "group_drive_crawler";
+    /** Parameter name for enabling the list attachments crawler. */
+    protected static final String LIST_ATTACHMENTS_CRAWLER = "list_attachments_crawler";
+    /** Parameter name for the site ID to crawl list attachments from. */
+    protected static final String SITE_ID = "site_id";
+    /** Parameter name for the list template filter. */
+    protected static final String LIST_TEMPLATE_FILTER = "list_template_filter";
+    /** ConfigMap key for the parsed list template types. */
+    protected static final String LIST_TEMPLATE_TYPES = "list_template_types";
 
     // scripts
     /** Key for the file object in the script map. */
@@ -298,6 +307,31 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 }
             }
 
+            if (isListAttachmentsCrawler(paramMap)) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Starting list attachments crawling");
+                }
+                configMap.put(CURRENT_CRAWLER, "list_attachments");
+
+                // Initialize list template types filter
+                final String templateFilter = paramMap.getAsString(LIST_TEMPLATE_FILTER, "documentLibrary,genericList");
+                final String[] templateTypes = templateFilter.split(",");
+                for (int i = 0; i < templateTypes.length; i++) {
+                    templateTypes[i] = templateTypes[i].trim();
+                }
+                configMap.put(LIST_TEMPLATE_TYPES, templateTypes);
+
+                try {
+                    storeListAttachments(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Completed list attachments crawling");
+                    }
+                } catch (final Exception e) {
+                    logger.warn("Failed to crawl list attachments", e);
+                    throw e;
+                }
+            }
+
             if (logger.isDebugEnabled()) {
                 logger.debug("Shutting down thread executor.");
             }
@@ -361,6 +395,16 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      */
     protected boolean isGroupDriveCrawler(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(GROUP_DRIVE_CRAWLER, Constants.TRUE));
+    }
+
+    /**
+     * Checks if the list attachments crawler is enabled.
+     *
+     * @param paramMap The data store parameters.
+     * @return true if the list attachments crawler is enabled, false otherwise.
+     */
+    protected boolean isListAttachmentsCrawler(final DataStoreParams paramMap) {
+        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(LIST_ATTACHMENTS_CRAWLER, Constants.FALSE));
     }
 
     /**
@@ -472,8 +516,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         }
 
         getLicensedUsers(client, user -> {
-            String userId = user.getId();
-            String displayName = user.getDisplayName();
+            final String userId = user.getId();
+            final String displayName = user.getDisplayName();
             if (logger.isDebugEnabled()) {
                 logger.debug("Processing user drive for: {} (ID: {})", displayName, userId);
             }
@@ -528,8 +572,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         }
 
         getMicrosoft365Groups(client, group -> {
-            String groupId = group.getId();
-            String displayName = group.getDisplayName();
+            final String groupId = group.getId();
+            final String displayName = group.getDisplayName();
             if (logger.isDebugEnabled()) {
                 logger.debug("Processing group drive for: {} (ID: {})", displayName, groupId);
             }
@@ -621,17 +665,17 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                         mimetype);
             }
 
-            final boolean ignoreError = ((Boolean) configMap.get(IGNORE_ERROR));
+            final boolean ignoreError = (Boolean) configMap.get(IGNORE_ERROR);
 
             final Map<String, Object> resultMap = new LinkedHashMap<>(paramMap.asMap());
             final Map<String, Object> filesMap = new HashMap<>();
 
-            long maxContentLength = ((Long) configMap.get(MAX_CONTENT_LENGTH)).longValue();
+            long maxContentLength = ((Long) configMap.get(MAX_CONTENT_LENGTH));
             if (maxContentLength < 0) {
                 try {
                     final ContentLengthHelper contentLengthHelper = ComponentUtil.getComponent("contentLengthHelper");
                     maxContentLength = contentLengthHelper.getMaxLength(mimetype);
-                } catch (Exception e) {
+                } catch (final Exception e) {
                     logger.warn("Failed to get maxContentLength.", e);
                 }
             }
@@ -647,6 +691,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             final String filetype = ComponentUtil.getFileTypeHelper().get(mimetype);
             filesMap.put(FILE_NAME, item.getName());
             filesMap.put(FILE_DESCRIPTION, item.getDescription() != null ? item.getDescription() : StringUtil.EMPTY);
+
             filesMap.put(FILE_CONTENTS, getDriveItemContents(client, driveId, item, maxContentLength, ignoreError));
             filesMap.put(FILE_MIMETYPE, mimetype);
             filesMap.put(FILE_FILETYPE, filetype);
@@ -680,12 +725,31 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             filesMap.put(FILE_SPECIAL_FOLDER, item.getSpecialFolder() != null ? item.getSpecialFolder().getName() : null);
             filesMap.put(FILE_VIDEO, item.getVideo());
 
+            // Add list attachment specific metadata if this is a virtual DriveItem for list attachment
+            final Map<String, Object> additionalData = item.getAdditionalData();
+            if (additionalData != null && "ListAttachment".equals(additionalData.get("sourceType"))) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Adding list attachment metadata for item: {} from site: {}, list: {}, listItem: {}", item.getName(),
+                            additionalData.get("siteId"), additionalData.get("listId"), additionalData.get("listItemId"));
+                }
+                filesMap.put("source_type", "ListAttachment");
+                filesMap.put("sharepoint_site_id", additionalData.get("siteId"));
+                filesMap.put("sharepoint_list_id", additionalData.get("listId"));
+                filesMap.put("sharepoint_list_item_id", additionalData.get("listItemId"));
+                if (additionalData.get("listTitle") != null) {
+                    filesMap.put("sharepoint_list_title", additionalData.get("listTitle"));
+                }
+                if (additionalData.get("listItemTitle") != null) {
+                    filesMap.put("sharepoint_list_item_title", additionalData.get("listItemTitle"));
+                }
+            }
+
             final List<String> fileRoles = getDriveItemPermissions(client, driveId, item);
             roles.forEach(fileRoles::add);
             final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
             StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
                     .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(fileRoles::add));
-            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof List<?> roleTypeList) {
+            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
                 roleTypeList.stream().map(s -> (String) s).forEach(fileRoles::add);
             }
             filesMap.put(FILE_ROLES, fileRoles.stream().distinct().collect(Collectors.toList()));
@@ -764,11 +828,9 @@ public class OneDriveDataStore extends Microsoft365DataStore {
 
             // In Microsoft Graph SDK v6, Identity object has id and displayName properties
             // The id is often in email format for user identities
-            if (user.getId() != null && !user.getId().isEmpty()) {
-                // Check if the id looks like an email address
-                if (user.getId().contains("@")) {
-                    return user.getId();
-                }
+            // Check if the id looks like an email address
+            if ((user.getId() != null && !user.getId().isEmpty()) && user.getId().contains("@")) {
+                return user.getId();
             }
 
             // Fallback to displayName if available
@@ -847,6 +909,24 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      */
     protected String getDriveItemContents(final Microsoft365Client client, final String driveId, final DriveItem item,
             final long maxContentLength, final boolean ignoreError) {
+        // Check if this is a ListAttachment virtual item
+        if (item.getAdditionalData() != null && "ListAttachment".equals(item.getAdditionalData().get("sourceType"))) {
+            final String siteId = (String) item.getAdditionalData().get("siteId");
+            final String listId = (String) item.getAdditionalData().get("listId");
+            final String listItemId = (String) item.getAdditionalData().get("listItemId");
+            final String attachmentName = (String) item.getAdditionalData().get("attachmentName");
+
+            if (siteId != null && listId != null && listItemId != null && attachmentName != null) {
+                return getListAttachmentContents(client, siteId, listId, listItemId, attachmentName, maxContentLength, ignoreError);
+            }
+            if (logger.isDebugEnabled()) {
+                logger.debug("Missing required metadata for ListAttachment: siteId={}, listId={}, listItemId={}, attachmentName={}", siteId,
+                        listId, listItemId, attachmentName);
+            }
+            return StringUtil.EMPTY;
+        }
+
+        // Original DriveItem processing
         if (item.getFile() != null) {
             try (final InputStream in = client.getDriveContent(driveId, item.getId())) {
                 return ComponentUtil.getExtractorFactory()
@@ -865,7 +945,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 } else {
                     logger.warn("Failed to get contents: {}. {}", item.getName(), e.getMessage());
                 }
-                return StringUtil.EMPTY;
             }
         }
         return StringUtil.EMPTY;
@@ -915,21 +994,20 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 response.getValue().forEach(child -> getDriveItemChildren(client, driveId, consumer, child));
 
                 // Check if there's a next page
-                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                    // Request the next page using a helper method in Microsoft365Client
-                    final String itemIdToUse = item != null ? item.getId() : "root";
-                    try {
-                        response = client.getDriveItemsByNextLink(driveId, itemIdToUse, response.getOdataNextLink());
-                        if (logger.isDebugEnabled()) {
-                            logger.debug("Retrieved next page of drive items for drive: {}, item: {}", driveId, itemIdToUse);
-                        }
-                    } catch (final Exception e) {
-                        logger.warn("Failed to get next page of drive items for drive: {}, item: {} - {}", driveId, itemIdToUse,
-                                e.getMessage());
-                        break;
-                    }
-                } else {
+                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
+                    break;
+                }
+                // Request the next page using a helper method in Microsoft365Client
+                final String itemIdToUse = item != null ? item.getId() : "root";
+                try {
+                    response = client.getDriveItemsByNextLink(driveId, itemIdToUse, response.getOdataNextLink());
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Retrieved next page of drive items for drive: {}, item: {}", driveId, itemIdToUse);
+                    }
+                } catch (final Exception e) {
+                    logger.warn("Failed to get next page of drive items for drive: {}, item: {} - {}", driveId, itemIdToUse,
+                            e.getMessage());
                     break;
                 }
             }
@@ -975,6 +1053,255 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             }
         }
         return cachedUserDriveId;
+    }
+
+    /**
+     * Stores list attachments from SharePoint sites.
+     *
+     * @param dataConfig The data configuration.
+     * @param callback The index update callback.
+     * @param configMap The configuration map.
+     * @param paramMap The data store parameters.
+     * @param scriptMap The script map.
+     * @param defaultDataMap The default data map.
+     * @param executorService The executor service.
+     * @param client The Microsoft365Client.
+     */
+    protected void storeListAttachments(final DataConfig dataConfig, final IndexUpdateCallback callback,
+            final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
+            final Map<String, Object> defaultDataMap, final ExecutorService executorService, final Microsoft365Client client) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Starting list attachments crawling");
+        }
+
+        final String specificSiteId = paramMap.getAsString(SITE_ID);
+
+        if (StringUtil.isNotBlank(specificSiteId)) {
+            // Crawl specific site only
+            if (logger.isDebugEnabled()) {
+                logger.debug("Crawling list attachments for specific site: {}", specificSiteId);
+            }
+            try {
+                final Site site = client.getSite(specificSiteId);
+                processListAttachmentsInSite(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client,
+                        site);
+            } catch (final Exception e) {
+                logger.warn("Failed to process list attachments for site: {}", specificSiteId, e);
+                if (!isIgnoreError(paramMap)) {
+                    throw e;
+                }
+            }
+        } else {
+            // Crawl all sites
+            if (logger.isDebugEnabled()) {
+                logger.debug("Crawling list attachments for all sites");
+            }
+            client.getSites(site -> {
+                try {
+                    processListAttachmentsInSite(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService,
+                            client, site);
+                } catch (final Exception e) {
+                    logger.warn("Failed to process list attachments for site: {} ({})", site.getDisplayName(), site.getId(), e);
+                    if (!isIgnoreError(paramMap)) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            });
+        }
+    }
+
+    /**
+     * Processes list attachments in a specific site.
+     *
+     * @param dataConfig The data configuration.
+     * @param callback The index update callback.
+     * @param configMap The configuration map.
+     * @param paramMap The data store parameters.
+     * @param scriptMap The script map.
+     * @param defaultDataMap The default data map.
+     * @param executorService The executor service.
+     * @param client The Microsoft365Client.
+     * @param site The SharePoint site.
+     */
+    protected void processListAttachmentsInSite(final DataConfig dataConfig, final IndexUpdateCallback callback,
+            final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
+            final Map<String, Object> defaultDataMap, final ExecutorService executorService, final Microsoft365Client client,
+            final Site site) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Processing list attachments in site: {} ({})", site.getDisplayName(), site.getId());
+        }
+
+        // Get all lists in the site
+        client.getSiteLists(site.getId(), list -> {
+            final boolean targetType = isTargetListType(configMap, list);
+
+            if (logger.isDebugEnabled()) {
+                final String template =
+                        (list.getList() != null && list.getList().getTemplate() != null) ? list.getList().getTemplate() : "unknown";
+                logger.debug("Evaluating list: {} (ID: {}, Template: {}) - TargetType: {}", list.getDisplayName(), list.getId(), template,
+                        targetType);
+            }
+
+            if (!targetType) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Skipping list {} - doesn't match template filter", list.getDisplayName());
+                }
+                return;
+            }
+
+            // Get all items in the list
+            client.getListItems(site.getId(), list.getId(), item -> {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Processing list item: {} in list: {}", item.getId(), list.getDisplayName());
+                }
+
+                // Get attachments for this list item and process them
+                client.getListItemAttachments(site.getId(), list.getId(), item.getId(), virtualAttachment -> {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Processing virtual attachment: {} for item: {} in list: {}", virtualAttachment.getName(),
+                                item.getId(), list.getDisplayName());
+                    }
+
+                    executorService.execute(() -> processListAttachment(dataConfig, callback, configMap, paramMap, scriptMap,
+                            defaultDataMap, client, site, list, item, virtualAttachment));
+                });
+            });
+        });
+    }
+
+    /**
+     * Processes a single list attachment by creating additional metadata and calling processDriveItem.
+     *
+     * @param dataConfig The data configuration.
+     * @param callback The index update callback.
+     * @param configMap The configuration map.
+     * @param paramMap The data store parameters.
+     * @param scriptMap The script map.
+     * @param defaultDataMap The default data map.
+     * @param client The Microsoft365Client.
+     * @param site The SharePoint site.
+     * @param list The SharePoint list.
+     * @param item The list item.
+     * @param virtualAttachment The virtual DriveItem representing the attachment.
+     */
+    protected void processListAttachment(final DataConfig dataConfig, final IndexUpdateCallback callback,
+            final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
+            final Map<String, Object> defaultDataMap, final Microsoft365Client client, final Site site,
+            final com.microsoft.graph.models.List list, final ListItem item, final DriveItem virtualAttachment) {
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Processing list attachment: {} for item: {} in list: {} on site: {}", virtualAttachment.getName(), item.getId(),
+                    list.getDisplayName(), site.getDisplayName());
+        }
+
+        // Enhance the virtual attachment with additional metadata
+        final Map<String, Object> additionalData =
+                new HashMap<>(virtualAttachment.getAdditionalData() != null ? virtualAttachment.getAdditionalData() : new HashMap<>());
+
+        // Add enhanced metadata
+        additionalData.put("siteName", site.getDisplayName());
+        additionalData.put("listName", list.getDisplayName());
+        additionalData.put("listTemplate", list.getList() != null ? list.getList().getTemplate() : "unknown");
+
+        // Try to get more list item details
+        if (item.getFields() != null && item.getFields().getAdditionalData() != null) {
+            final Map<String, Object> fields = item.getFields().getAdditionalData();
+
+            // Add commonly available fields
+            if (fields.get("Title") != null) {
+                additionalData.put("listItemTitle", fields.get("Title").toString());
+            }
+            if (fields.get("Created") != null) {
+                additionalData.put("listItemCreated", fields.get("Created"));
+            }
+            if (fields.get("Modified") != null) {
+                additionalData.put("listItemModified", fields.get("Modified"));
+            }
+            if (fields.get("Author") != null) {
+                additionalData.put("listItemAuthor", fields.get("Author"));
+            }
+        }
+
+        virtualAttachment.setAdditionalData(additionalData);
+
+        // Get site permissions for this attachment
+        final List<String> roles = getSitePermissions(client, site.getId());
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Calling processDriveItem for list attachment: {} with {} roles", virtualAttachment.getName(), roles.size());
+        }
+
+        // Process as a regular drive item using the site ID as driveId
+        // This will trigger the full indexing pipeline
+        processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site.getId(), virtualAttachment,
+                roles);
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Completed processing list attachment: {} for item: {}", virtualAttachment.getName(), item.getId());
+        }
+    }
+
+    /**
+     * Gets the content of a list attachment using the placeholder content retrieval.
+     *
+     * @param client The Microsoft365Client.
+     * @param siteId The site ID.
+     * @param listId The list ID.
+     * @param itemId The item ID.
+     * @param attachmentName The attachment name.
+     * @param maxContentLength The maximum content length.
+     * @param ignoreError true to ignore errors.
+     * @return The contents of the attachment.
+     */
+    protected String getListAttachmentContents(final Microsoft365Client client, final String siteId, final String listId,
+            final String itemId, final String attachmentName, final long maxContentLength, final boolean ignoreError) {
+        try (final InputStream in = client.getListItemAttachmentContent(siteId, listId, itemId, attachmentName)) {
+            return ComponentUtil.getExtractorFactory()
+                    .builder(in, Collections.emptyMap())
+                    .filename(attachmentName)
+                    .maxContentLength(maxContentLength)
+                    .extractorName(extractorName)
+                    .extract()
+                    .getContent();
+        } catch (final Exception e) {
+            if (!ignoreError && !ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
+                throw new DataStoreCrawlingException(attachmentName, "Failed to get list attachment contents: " + attachmentName, e);
+            }
+            if (logger.isDebugEnabled()) {
+                logger.warn("Failed to get list attachment contents: {}", attachmentName, e);
+            } else {
+                logger.warn("Failed to get list attachment contents: {}. {}", attachmentName, e.getMessage());
+            }
+        }
+        return StringUtil.EMPTY;
+    }
+
+    /**
+     * Checks if the list matches the target template type filter.
+     *
+     * @param configMap the configuration map containing pre-parsed template types
+     * @param list the SharePoint list to check
+     * @return true if the list matches the template filter, false otherwise
+     */
+    protected boolean isTargetListType(final Map<String, Object> configMap, final com.microsoft.graph.models.List list) {
+        final String[] templateTypes = (String[]) configMap.get(LIST_TEMPLATE_TYPES);
+        if (templateTypes == null || templateTypes.length == 0) {
+            return true;
+        }
+
+        if (list.getList() != null && list.getList().getTemplate() != null) {
+            final String template = list.getList().getTemplate();
+            if (logger.isDebugEnabled()) {
+                logger.debug("List {} has template type: {} : {}", list.getDisplayName(), template, templateTypes);
+            }
+            for (final String targetTemplate : templateTypes) {
+                if (template.equals(targetTemplate)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return true;
     }
 
     /**

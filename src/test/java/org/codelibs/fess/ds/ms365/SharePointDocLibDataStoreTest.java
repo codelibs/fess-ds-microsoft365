@@ -16,7 +16,6 @@
 package org.codelibs.fess.ds.ms365;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 import org.apache.logging.log4j.LogManager;

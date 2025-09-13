@@ -56,7 +56,6 @@ public class OneNoteDataStore extends Microsoft365DataStore {
      * Default constructor.
      */
     public OneNoteDataStore() {
-        super();
     }
 
     private static final Logger logger = LogManager.getLogger(OneNoteDataStore.class);
@@ -407,7 +406,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         }
 
         try {
-            NotebookCollectionResponse response = client.getNotebookPage(userId);
+            final NotebookCollectionResponse response = client.getNotebookPage(userId);
             if (response.getValue() != null) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Retrieved {} notebooks for user/group: {}", response.getValue().size(), userId);
@@ -419,12 +418,9 @@ public class OneNoteDataStore extends Microsoft365DataStore {
                     }
                     consumer.accept(notebook);
                 });
-            } else {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("No notebooks found for user/group: {}", userId);
-                }
+            } else if (logger.isDebugEnabled()) {
+                logger.debug("No notebooks found for user/group: {}", userId);
             }
-            // Pagination handling is implemented in the Microsoft365Client methods
         } catch (final ApiException e) {
             if (e.getResponseStatusCode() == 404) {
                 if (logger.isDebugEnabled()) {

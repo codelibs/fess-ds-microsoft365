@@ -95,7 +95,9 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     protected static final String LIST_ITEM_ID = "id";
     /** The field name for list item URL. */
     protected static final String LIST_ITEM_URL = "url";
+    /** The field name for list item web URL. */
     protected static final String LIST_ITEM_WEB_URL = "web_url";
+    /** The field name for list item content type. */
     protected static final String LIST_ITEM_CONTENT_TYPE = "content_type";
     /** The field name for list item fields. */
     protected static final String LIST_ITEM_FIELDS = "fields";
@@ -124,10 +126,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     /** The field name for site URL. */
     protected static final String SITE_URL = "url";
 
-    // Configuration constants
-    /** The parameter name for URL filter. */
-    protected static final String URL_FILTER = "url_filter";
-
     /** The name of the extractor for SharePoint lists. */
     protected String extractorName = "sharePointListExtractor";
 
@@ -135,7 +133,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
      * Creates a new SharePointListDataStore instance.
      */
     public SharePointListDataStore() {
-        super();
     }
 
     @Override
@@ -149,7 +146,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
 
         final Map<String, Object> configMap = new LinkedHashMap<>();
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
-        configMap.put(URL_FILTER, getUrlFilter(paramMap));
 
         if (logger.isDebugEnabled()) {
             logger.debug(
@@ -192,11 +188,9 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                 // Check ignore_system_lists setting even for specific list ID
                 if (!isIgnoreSystemLists(paramMap) || !isSystemList(list)) {
                     storeList(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site, list);
-                } else {
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("Skipping system list {} (ID: {}) because ignore_system_lists is enabled", list.getDisplayName(),
-                                list.getId());
-                    }
+                } else if (logger.isDebugEnabled()) {
+                    logger.debug("Skipping system list {} (ID: {}) because ignore_system_lists is enabled", list.getDisplayName(),
+                            list.getId());
                 }
             } else {
                 // Crawl all lists in the site
@@ -237,11 +231,9 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                                         "Failed to process list: " + list.getDisplayName(), e);
                             }
                         }
-                    } else {
-                        if (logger.isDebugEnabled()) {
-                            logger.debug("Skipped list: {} (ID: {}) - Excluded: {}, TargetType: {}, SystemList: {}", list.getDisplayName(),
-                                    list.getId(), excluded, targetType, systemList);
-                        }
+                    } else if (logger.isDebugEnabled()) {
+                        logger.debug("Skipped list: {} (ID: {}) - Excluded: {}, TargetType: {}, SystemList: {}", list.getDisplayName(),
+                                list.getId(), excluded, targetType, systemList);
                     }
                 });
             }
@@ -316,13 +308,12 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             final Microsoft365Client client, final Site site, final com.microsoft.graph.models.List list, final ListItem item) {
 
         final String listTemplate;
-        if (list.getList() != null && list.getList().getTemplate() != null) {
-            listTemplate = list.getList().getTemplate();
-        } else {
+        if ((list.getList() == null) || (list.getList().getTemplate() == null)) {
             logger.warn("List template type is unknown for list: {} (ID: {}) - skipping item ID: {}", list.getDisplayName(), list.getId(),
                     item.getId());
             return;
         }
+        listTemplate = list.getList().getTemplate();
 
         if (!"genericList".equals(listTemplate)) {
             if (logger.isDebugEnabled()) {
@@ -359,20 +350,10 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         try {
             crawlerStatsHelper.begin(statsKey);
 
-            // Apply URL filter if configured
-            final UrlFilter urlFilter = (UrlFilter) configMap.get(URL_FILTER);
-            if (urlFilter != null && !urlFilter.match(url)) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("URL filter rejected item: {} - Original URL: {}", url, item.getWebUrl());
-                }
-                crawlerStatsHelper.discard(statsKey);
-                return;
-            }
-
             logger.info("Crawling list item ID: {}, list ID: {}, site ID: {}, URL: {}, WebURL: {}", item.getId(), list.getId(),
                     site.getId(), url, itemUrl);
 
-            final boolean ignoreError = ((Boolean) configMap.get(IGNORE_ERROR));
+            final boolean ignoreError = (Boolean) configMap.get(IGNORE_ERROR);
             final Map<String, Object> resultMap = new LinkedHashMap<>(paramMap.asMap());
             final Map<String, Object> listItemMap = new HashMap<>();
             final Map<String, Object> listMap = new HashMap<>();
@@ -407,7 +388,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             }
 
             // Get item fields (this is where SharePoint list data is stored)
-            com.microsoft.graph.models.FieldValueSet fieldValueSet = item.getFields();
+            final com.microsoft.graph.models.FieldValueSet fieldValueSet = item.getFields();
             Map<String, Object> fields = fieldValueSet != null ? fieldValueSet.getAdditionalData() : null;
 
             if (logger.isDebugEnabled()) {
@@ -464,10 +445,8 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                         logger.debug("Extracted content for item {} - Content length: {}", item.getId(), content.length());
                     }
                 }
-            } else {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("No fields available for item {} after refresh attempts", item.getId());
-                }
+            } else if (logger.isDebugEnabled()) {
+                logger.debug("No fields available for item {} after refresh attempts", item.getId());
             }
 
             // Handle permissions properly
@@ -479,7 +458,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
             StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
                     .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
-            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof List<?> roleTypeList) {
+            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
                 roleTypeList.stream().map(s -> (String) s).forEach(roles::add);
             }
 
