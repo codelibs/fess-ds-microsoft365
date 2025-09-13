@@ -76,7 +76,6 @@ public class TeamsDataStore extends Microsoft365DataStore {
      * Default constructor.
      */
     public TeamsDataStore() {
-        super();
     }
 
     /** Key for the message title. */
@@ -264,10 +263,8 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     logger.debug("No messages found for chat: {}", chatId);
                 }
             }
-        } else {
-            if (logger.isDebugEnabled()) {
-                logger.debug("No specific chat ID configured - skipping chat message processing");
-            }
+        } else if (logger.isDebugEnabled()) {
+            logger.debug("No specific chat ID configured - skipping chat message processing");
         }
     }
 
@@ -583,7 +580,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
             return new String[0];
         }
         return StreamUtil.split(idStr, ",")
-                .get(stream -> stream.map(s -> s.trim()).filter(StringUtil::isNotBlank).toArray(n -> new String[n]));
+                .get(stream -> stream.map(String::trim).filter(StringUtil::isNotBlank).toArray(n -> new String[n]));
     }
 
     /**
@@ -598,7 +595,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
             return new String[0];
         }
         return StreamUtil.split(idStr, ",")
-                .get(stream -> stream.map(s -> s.trim()).filter(StringUtil::isNotBlank).toArray(n -> new String[n]));
+                .get(stream -> stream.map(String::trim).filter(StringUtil::isNotBlank).toArray(n -> new String[n]));
     }
 
     /**
@@ -662,7 +659,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
         } else {
             logger.info("Member: {} : {}", m.getId(), m.getDisplayName());
         }
-        if (m instanceof AadUserConversationMember member) {
+        if (m instanceof final AadUserConversationMember member) {
             final String id = member.getUserId();
             final String email = member.getEmail();
             if (StringUtil.isNotBlank(email)) {
@@ -724,12 +721,10 @@ public class TeamsDataStore extends Microsoft365DataStore {
      * @return true if the message is a system event and should be ignored, false otherwise.
      */
     protected boolean isSystemEvent(final Map<String, Object> configMap, final ChatMessage message) {
-        if (((Boolean) configMap.get(IGNORE_SYSTEM_EVENTS)).booleanValue()) {
+        if (((Boolean) configMap.get(IGNORE_SYSTEM_EVENTS))) {
             if (message.getBody() != null && "<systemEventMessage/>".equals(message.getBody().getContent())) {
                 return true;
             }
-
-            return false;
         }
         return false;
     }

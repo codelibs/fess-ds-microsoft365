@@ -4,7 +4,7 @@
 [![Maven Central](https://img.shields.io/maven-central/v/org.codelibs.fess/fess-ds-microsoft365.svg?label=Maven%20Central)](https://search.maven.org/search?q=g:%22org.codelibs.fess%22%20AND%20a:%22fess-ds-microsoft365%22)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-A powerful Fess Data Store plugin that enables enterprise search across Microsoft 365 services including OneDrive, OneNote, Teams, SharePoint Document Libraries, and SharePoint Lists via Microsoft Graph API v6.
+A powerful Fess Data Store plugin that enables enterprise search across Microsoft 365 services including OneDrive, OneNote, Teams, SharePoint Document Libraries, SharePoint Lists, and SharePoint Pages via Microsoft Graph API v6.
 
 ## Overview
 
@@ -18,6 +18,7 @@ This plugin extends [Fess](https://fess.codelibs.org/) enterprise search capabil
 - **Teams**: Channels, messages, chats with conversation context
 - **SharePoint Document Libraries**: Sites and document libraries with enhanced content aggregation
 - **SharePoint Lists**: Custom lists and list items with dynamic field mapping
+- **SharePoint Pages**: Site pages, news articles, and wiki pages with full content extraction
 
 ### 🔐 **Enterprise-Grade Security**
 - **Role-based Access Control**: Seamless integration with Fess security model
@@ -105,7 +106,7 @@ ignore_error=false
 
 ## 📊 Data Store Types
 
-The plugin provides five specialized data store types, each optimized for different Microsoft 365 services:
+The plugin provides six specialized data store types, each optimized for different Microsoft 365 services:
 
 | Data Store | Service | Content Types | Use Cases |
 |------------|---------|---------------|----------|
@@ -114,6 +115,7 @@ The plugin provides five specialized data store types, each optimized for differ
 | `teamsDataStore` | Teams | Channels, Messages, Chats | Conversation search, team communication |
 | `sharePointDocLibDataStore` | SharePoint | Document Libraries, Files | Document management, content discovery |
 | `sharePointListDataStore` | SharePoint | Lists, List Items, Custom Fields | Structured data search, business process content |
+| `sharePointPageDataStore` | SharePoint | Site Pages, News Articles, Wiki Pages | Web content search, intranet portal search |
 
 ### Configuration in Fess Admin UI
 
@@ -285,6 +287,48 @@ role=item.roles
 
 **Note**: The plugin automatically expands SharePoint list item fields to ensure content extraction. If fields are not initially available, it performs an individual API call with `$expand=fields` to retrieve the complete field data.
 
+#### SharePoint Pages
+
+```
+title=page.title
+content=page.content
+created=page.created
+last_modified=page.modified
+url=page.url
+role=page.roles
+```
+
+| Key | Value |
+| --- | --- |
+| page.title | The title of the SharePoint page. |
+| page.content | The extracted text content from the page canvas layout including web parts. |
+| page.id | The unique identifier of the page. |
+| page.created | The time at which the page was created. |
+| page.modified | The last time the page was modified. |
+| page.author | The user who created the page. |
+| page.type | The type of page (news, article, wiki, page). |
+| page.description | The page description or summary. |
+| page.url | A link for opening the page in SharePoint. |
+| page.canonical_url | The canonical URL for accessing the page. |
+| page.promotion_state | The promotion status of the page (for news pages). |
+| page.site_name | The display name of the SharePoint site containing this page. |
+| page.site_url | The web URL of the SharePoint site. |
+| page.roles | Users/groups who can access the page. |
+
+**Content Extraction**: The SharePointPageDataStore extracts content from:
+- **Page Title**: The main page title
+- **Page Description**: Page description or summary text
+- **Canvas Layout**: Text content from web parts (TextWebPart, StandardWebPart)
+- **Web Parts**: HTML content converted to plain text with proper formatting
+
+**Page Types**: The plugin automatically detects and categorizes pages:
+- `news`: News posts and announcements
+- `article`: Article pages and documentation
+- `wiki`: Wiki-style collaborative pages
+- `page`: Standard site pages
+
+**Note**: Content extraction from canvas layout depends on the Microsoft Graph SDK's ability to retrieve web part data. The plugin handles both text web parts and attempts to extract meaningful content from standard web parts when possible.
+
 ## ⚙️ Configuration Reference
 
 ### Authentication Parameters (Required)
@@ -393,6 +437,27 @@ SharePoint site IDs contain commas as part of their format (`hostname,siteCollec
 
 **Recent Improvements**: SharePoint List crawling now includes enhanced statistical tracking, improved error handling with configurable failure recording, comprehensive URL filtering support, and robust permission processing to ensure secure and efficient list item indexing.
 
+### SharePoint Pages Parameters
+
+| Parameter | Description | Default | Notes |
+| --- | --- | --- | --- |
+| `site_id` | SharePoint site ID containing pages | All sites | Full site ID format: `hostname,siteCollectionId,siteId` |
+| `exclude_site_id` | Comma-separated site IDs to exclude | - | Multiple site IDs separated by commas |
+| `ignore_system_pages` | Skip system pages | `true` | Excludes Forms, DevHome, and other system pages |
+| `page_type_filter` | Filter by page type | All types | Comma-separated: `news,article,wiki,page` |
+| `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed pages |
+| `include_pattern` | Regex pattern for page URLs to include | - | Filter pages by URL matching |
+| `exclude_pattern` | Regex pattern for page URLs to exclude | - | Skip pages with matching URLs |
+| `number_of_threads` | Number of processing threads | `1` | Concurrent page processing |
+| `default_permissions` | Default role assignments | - | Additional permissions for all pages |
+
+**Crawling Modes**:
+- **All Sites**: Leave `site_id` empty to crawl pages from all accessible sites
+- **Specific Site**: Set `site_id` to crawl only pages from that site
+- **Filtered Content**: Use `page_type_filter` to limit to specific page types (news, articles, etc.)
+
+**Content Processing**: Pages are processed with canvas layout expansion to extract rich content from web parts, including text formatting and embedded data when available through the Microsoft Graph API.
+
 ## 🔧 Development
 
 ### Tech Stack
@@ -412,10 +477,11 @@ src/
 ├── main/java/org/codelibs/fess/ds/ms365/
 │   ├── Microsoft365DataStore.java        # Abstract base class
 │   ├── OneDriveDataStore.java            # OneDrive implementation
-│   ├── OneNoteDataStore.java             # OneNote implementation  
+│   ├── OneNoteDataStore.java             # OneNote implementation
 │   ├── TeamsDataStore.java               # Teams implementation
 │   ├── SharePointDocLibDataStore.java    # SharePoint doc libs
 │   ├── SharePointListDataStore.java      # SharePoint lists
+│   ├── SharePointPageDataStore.java      # SharePoint pages
 │   └── client/
 │       └── Microsoft365Client.java       # Graph API wrapper
 ├── main/resources/
@@ -564,6 +630,39 @@ number_of_threads=2
 # Exclude multiple teams
 exclude_team_ids=team1-id,team2-id,team3-id
 include_visibility=public
+```
+
+### Example 5: SharePoint Pages Content Search
+```javascript
+// SharePoint pages indexing script
+title=page.title
+content=page.content
+created=page.created
+last_modified=page.modified
+url=page.url
+role=page.roles
+// Access additional page fields
+page_type=page.type
+author=page.author
+site_name=page.site_name
+description=page.description
+```
+
+### Example 6: SharePoint Pages Configuration
+```properties
+# Crawl pages from all sites with content filtering
+ignore_system_pages=true
+page_type_filter=news,article
+include_pattern=.*important.*|.*announcement.*
+exclude_pattern=.*draft.*|.*temp.*
+number_of_threads=2
+ignore_error=false
+
+# Crawl pages from specific site only
+# site_id=contoso.sharepoint.com,686d3f1a-a383-4367-b5f5-93b99baabcf3,12048306-4e53-420e-bd7c-31af611f6d8a
+
+# Exclude multiple sites
+# exclude_site_id=site1.sharepoint.com,guid1,guid1;site2.sharepoint.com,guid2,guid2
 ```
 
 ## 🔍 Troubleshooting

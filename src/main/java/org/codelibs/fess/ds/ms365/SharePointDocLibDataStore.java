@@ -114,7 +114,6 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
      * Default constructor for SharePointDocLibDataStore.
      */
     public SharePointDocLibDataStore() {
-        super();
     }
 
     @Override
@@ -150,10 +149,8 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                 if (!isExcludedSite(paramMap, site)) {
                     storeDocumentLibrariesInSite(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService,
                             client, site);
-                } else {
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("Skipping excluded site: {} (ID: {})", site.getDisplayName(), site.getId());
-                    }
+                } else if (logger.isDebugEnabled()) {
+                    logger.debug("Skipping excluded site: {} (ID: {})", site.getDisplayName(), site.getId());
                 }
             } else {
                 // Crawl document libraries in all sites
@@ -185,10 +182,8 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                                         "Failed to process document libraries in site: " + site.getDisplayName(), e);
                             }
                         }
-                    } else {
-                        if (logger.isDebugEnabled()) {
-                            logger.debug("Skipped site: {} (ID: {}) - Excluded", site.getDisplayName(), site.getId());
-                        }
+                    } else if (logger.isDebugEnabled()) {
+                        logger.debug("Skipped site: {} (ID: {}) - Excluded", site.getDisplayName(), site.getId());
                     }
                 });
             }
@@ -231,7 +226,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             if (logger.isDebugEnabled()) {
                 logger.debug("Evaluating drive: {} - Type: {}, System: {}", drive.getName(), drive.getDriveType(), isSystemLibrary(drive));
             }
-            if ("documentLibrary".equals(drive.getDriveType()) && !(isIgnoreSystemLibraries(paramMap) && isSystemLibrary(drive))) {
+            if ("documentLibrary".equals(drive.getDriveType()) && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive))) {
 
                 executorService.execute(() -> {
                     try {
@@ -253,11 +248,8 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                         }
                     }
                 });
-            } else {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Skipping drive: {} - Type: {}, System: {}", drive.getName(), drive.getDriveType(),
-                            isSystemLibrary(drive));
-                }
+            } else if (logger.isDebugEnabled()) {
+                logger.debug("Skipping drive: {} - Type: {}, System: {}", drive.getName(), drive.getDriveType(), isSystemLibrary(drive));
             }
         });
     }
@@ -334,7 +326,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
             StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
                     .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
-            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof List<?> roleTypeList) {
+            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
                 roleTypeList.stream().map(s -> (String) s).forEach(roles::add);
             }
 
@@ -453,11 +445,10 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                     assignPermission(client, permissions, permission);
                 });
 
-                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                    response = client.getDrivePermissionsByNextLink(driveId, "root", response.getOdataNextLink());
-                } else {
+                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                     break;
                 }
+                response = client.getDrivePermissionsByNextLink(driveId, "root", response.getOdataNextLink());
             }
         } catch (final Exception e) {
             logger.warn("Failed to get permissions for drive: {}", driveId, e);
@@ -475,10 +466,8 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
         if (permission.getGrantedToV2() != null && permission.getGrantedToV2().getUser() != null) {
             final var user = permission.getGrantedToV2().getUser();
 
-            if (user.getId() != null && !user.getId().isEmpty()) {
-                if (user.getId().contains("@")) {
-                    return user.getId();
-                }
+            if ((user.getId() != null && !user.getId().isEmpty()) && user.getId().contains("@")) {
+                return user.getId();
             }
 
             if (user.getDisplayName() != null && !user.getDisplayName().isEmpty()) {
@@ -600,10 +589,9 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
         // Handle standard document libraries
         if ("Documents".equals(driveName) || "Shared Documents".equals(driveName)) {
             return siteUrl + "/Shared%20Documents";
-        } else {
-            // For custom document libraries, encode the name
-            return siteUrl + "/" + encodeUrlComponent(driveName);
         }
+        // For custom document libraries, encode the name
+        return siteUrl + "/" + encodeUrlComponent(driveName);
     }
 
     /**

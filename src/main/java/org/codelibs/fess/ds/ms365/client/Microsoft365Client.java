@@ -20,6 +20,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -45,6 +46,7 @@ import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.microsoft.graph.models.BaseSitePage;
 import com.microsoft.graph.models.Channel;
 import com.microsoft.graph.models.ChannelCollectionResponse;
 import com.microsoft.graph.models.Chat;
@@ -56,6 +58,7 @@ import com.microsoft.graph.models.ConversationMember;
 import com.microsoft.graph.models.ConversationMemberCollectionResponse;
 import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.DriveCollectionResponse;
+import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.DriveItemCollectionResponse;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.GroupCollectionResponse;
@@ -70,6 +73,7 @@ import com.microsoft.graph.models.OnenoteSectionCollectionResponse;
 import com.microsoft.graph.models.PermissionCollectionResponse;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.models.SiteCollectionResponse;
+import com.microsoft.graph.models.SitePageCollectionResponse;
 import com.microsoft.graph.models.User;
 import com.microsoft.graph.models.UserCollectionResponse;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
@@ -137,7 +141,7 @@ public class Microsoft365Client implements Closeable {
         }
         try {
             maxContentLength = Integer.parseInt(params.getAsString(MAX_CONTENT_LENGTH, Integer.toString(maxContentLength)));
-        } catch (NumberFormatException e) {
+        } catch (final NumberFormatException e) {
             logger.warn("Failed to parse {}.", params.getAsString(MAX_CONTENT_LENGTH), e);
         }
 
@@ -242,7 +246,7 @@ public class Microsoft365Client implements Closeable {
             return UserType.UNKNOWN;
         }
         try {
-            UserType userType = userTypeCache.get(id);
+            final UserType userType = userTypeCache.get(id);
             if (logger.isDebugEnabled()) {
                 logger.debug("Retrieved user type - ID: {}, Type: {}", id, userType);
             }
@@ -265,12 +269,12 @@ public class Microsoft365Client implements Closeable {
             logger.debug("Getting drive content - Drive ID: {}, Item ID: {}", driveId, itemId);
         }
         try {
-            InputStream content = client.drives().byDriveId(driveId).items().byDriveItemId(itemId).content().get();
+            final InputStream content = client.drives().byDriveId(driveId).items().byDriveItemId(itemId).content().get();
             if (logger.isDebugEnabled()) {
                 logger.debug("Successfully retrieved drive content for Drive ID: {}, Item ID: {}", driveId, itemId);
             }
             return content;
-        } catch (Exception e) {
+        } catch (final Exception e) {
             logger.error("Failed to get drive content - Drive ID: {}, Item ID: {}", driveId, itemId, e);
             throw e;
         }
@@ -287,7 +291,7 @@ public class Microsoft365Client implements Closeable {
         if (logger.isDebugEnabled()) {
             logger.debug("Getting drive permissions - Drive ID: {}, Item ID: {}", driveId, itemId);
         }
-        PermissionCollectionResponse response = client.drives().byDriveId(driveId).items().byDriveItemId(itemId).permissions().get();
+        final PermissionCollectionResponse response = client.drives().byDriveId(driveId).items().byDriveItemId(itemId).permissions().get();
         if (logger.isDebugEnabled()) {
             logger.debug("Retrieved {} drive permissions for Drive ID: {}, Item ID: {}",
                     response.getValue() != null ? response.getValue().size() : 0, driveId, itemId);
@@ -337,7 +341,7 @@ public class Microsoft365Client implements Closeable {
         if (logger.isDebugEnabled()) {
             logger.debug("Getting drive permissions via next link - Drive ID: {}, Item ID: {}", driveId, itemId);
         }
-        PermissionCollectionResponse response =
+        final PermissionCollectionResponse response =
                 client.drives().byDriveId(driveId).items().byDriveItemId(itemId).permissions().withUrl(nextLink).get();
         if (logger.isDebugEnabled()) {
             logger.debug("Retrieved {} drive permissions via next link for Drive ID: {}, Item ID: {}",
@@ -412,13 +416,12 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.users().withUrl(response.getOdataNextLink()).get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.users().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -457,13 +460,12 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.groups().withUrl(response.getOdataNextLink()).get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.groups().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -490,13 +492,12 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.groups().withUrl(response.getOdataNextLink()).get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.groups().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -531,9 +532,8 @@ public class Microsoft365Client implements Closeable {
     public NotebookCollectionResponse getNotebookPage(final String userId) {
         if (userId != null) {
             return client.users().byUserId(userId).onenote().notebooks().get();
-        } else {
-            return client.me().onenote().notebooks().get();
         }
+        return client.me().onenote().notebooks().get();
     }
 
     /**
@@ -557,29 +557,22 @@ public class Microsoft365Client implements Closeable {
             sections.addAll(response.getValue());
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                if (userId != null) {
-                    response = client.users()
-                            .byUserId(userId)
-                            .onenote()
-                            .notebooks()
-                            .byNotebookId(notebookId)
-                            .sections()
-                            .withUrl(response.getOdataNextLink())
-                            .get();
-                } else {
-                    response = client.me()
-                            .onenote()
-                            .notebooks()
-                            .byNotebookId(notebookId)
-                            .sections()
-                            .withUrl(response.getOdataNextLink())
-                            .get();
-                }
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
+            }
+            // Request the next page using the nextLink URL
+            if (userId != null) {
+                response = client.users()
+                        .byUserId(userId)
+                        .onenote()
+                        .notebooks()
+                        .byNotebookId(notebookId)
+                        .sections()
+                        .withUrl(response.getOdataNextLink())
+                        .get();
+            } else {
+                response = client.me().onenote().notebooks().byNotebookId(notebookId).sections().withUrl(response.getOdataNextLink()).get();
             }
         }
         return sections;
@@ -606,29 +599,23 @@ public class Microsoft365Client implements Closeable {
             pages.addAll(response.getValue());
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                if (userId != null) {
-                    response = client.users()
-                            .byUserId(userId)
-                            .onenote()
-                            .sections()
-                            .byOnenoteSectionId(sectionId)
-                            .pages()
-                            .withUrl(response.getOdataNextLink())
-                            .get();
-                } else {
-                    response = client.me()
-                            .onenote()
-                            .sections()
-                            .byOnenoteSectionId(sectionId)
-                            .pages()
-                            .withUrl(response.getOdataNextLink())
-                            .get();
-                }
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
+            }
+            // Request the next page using the nextLink URL
+            if (userId != null) {
+                response = client.users()
+                        .byUserId(userId)
+                        .onenote()
+                        .sections()
+                        .byOnenoteSectionId(sectionId)
+                        .pages()
+                        .withUrl(response.getOdataNextLink())
+                        .get();
+            } else {
+                response =
+                        client.me().onenote().sections().byOnenoteSectionId(sectionId).pages().withUrl(response.getOdataNextLink()).get();
             }
         }
         return pages;
@@ -661,8 +648,8 @@ public class Microsoft365Client implements Closeable {
         final StringBuilder sb = new StringBuilder();
         sb.append(page.getTitle()).append('\n');
         try (final InputStream in =
-                (userId != null ? client.users().byUserId(userId).onenote().pages().byOnenotePageId(page.getId()).content().get()
-                        : client.me().onenote().pages().byOnenotePageId(page.getId()).content().get())) {
+                userId != null ? client.users().byUserId(userId).onenote().pages().byOnenotePageId(page.getId()).content().get()
+                        : client.me().onenote().pages().byOnenotePageId(page.getId()).content().get()) {
             sb.append(ComponentUtil.getExtractorFactory()
                     .builder(in, Collections.emptyMap())
                     .maxContentLength(maxContentLength)
@@ -706,7 +693,7 @@ public class Microsoft365Client implements Closeable {
             logger.debug("Getting site with ID: {} (resolved to: {})", id, siteId);
         }
         try {
-            Site site = client.sites().bySiteId(siteId).get();
+            final Site site = client.sites().bySiteId(siteId).get();
             if (logger.isDebugEnabled()) {
                 logger.debug("Successfully retrieved site - ID: {}, DisplayName: {}, WebUrl: {}", site.getId(), site.getDisplayName(),
                         site.getWebUrl());
@@ -746,19 +733,18 @@ public class Microsoft365Client implements Closeable {
                 sites.forEach(consumer::accept);
 
                 // Check if there's a next page
-                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("Found next link, continuing to page {}", pageCount + 1);
-                    }
-                    // Request the next page using the nextLink URL
-                    response = client.sites().withUrl(response.getOdataNextLink()).get();
-                } else {
+                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
                     if (logger.isDebugEnabled()) {
                         logger.debug("Site pagination completed - processed {} pages with total {} sites", pageCount, totalSites);
                     }
                     break;
                 }
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Found next link, continuing to page {}", pageCount + 1);
+                }
+                // Request the next page using the nextLink URL
+                response = client.sites().withUrl(response.getOdataNextLink()).get();
             }
         } catch (final Exception e) {
             logger.warn("Failed to get sites", e);
@@ -813,13 +799,7 @@ public class Microsoft365Client implements Closeable {
                 lists.forEach(consumer::accept);
 
                 // Check if there's a next page
-                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("Found next link for lists, continuing to page {} for site: {}", pageCount + 1, siteId);
-                    }
-                    // Request the next page using the nextLink URL
-                    response = client.sites().bySiteId(siteId).lists().withUrl(response.getOdataNextLink()).get();
-                } else {
+                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
                     if (logger.isDebugEnabled()) {
                         logger.debug("List pagination completed for site {} - processed {} pages with total {} lists", siteId, pageCount,
@@ -827,6 +807,11 @@ public class Microsoft365Client implements Closeable {
                     }
                     break;
                 }
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Found next link for lists, continuing to page {} for site: {}", pageCount + 1, siteId);
+                }
+                // Request the next page using the nextLink URL
+                response = client.sites().bySiteId(siteId).lists().withUrl(response.getOdataNextLink()).get();
             }
         } catch (final Exception e) {
             logger.warn("Failed to get lists for site: {}", siteId, e);
@@ -906,13 +891,12 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.sites().bySiteId(siteId).lists().byListId(listId).items().withUrl(response.getOdataNextLink()).get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.sites().bySiteId(siteId).lists().byListId(listId).items().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -938,14 +922,13 @@ public class Microsoft365Client implements Closeable {
      * @return The ListItem object with expanded fields.
      */
     public ListItem getListItem(final String siteId, final String listId, final String itemId, final boolean expandFields) {
-        if (expandFields) {
-            return client.sites().bySiteId(siteId).lists().byListId(listId).items().byListItemId(itemId).get(config -> {
-                config.queryParameters.expand = new String[] { "fields" };
-                config.queryParameters.select = new String[] { "id", "createdDateTime", "lastModifiedDateTime", "webUrl", "fields" };
-            });
-        } else {
+        if (!expandFields) {
             return getListItem(siteId, listId, itemId);
         }
+        return client.sites().bySiteId(siteId).lists().byListId(listId).items().byListItemId(itemId).get(config -> {
+            config.queryParameters.expand = new String[] { "fields" };
+            config.queryParameters.select = new String[] { "id", "createdDateTime", "lastModifiedDateTime", "webUrl", "fields" };
+        });
     }
 
     /**
@@ -987,17 +970,16 @@ public class Microsoft365Client implements Closeable {
                 response.getValue().forEach(child -> getDriveItemChildren(driveId, consumer, child));
 
                 // Check if there's a next page
-                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                    // Request the next page using the nextLink URL
-                    try {
-                        final String itemIdToUse = item != null ? item.getId() : "root";
-                        response = getDriveItemsByNextLink(driveId, itemIdToUse, response.getOdataNextLink());
-                    } catch (final Exception e) {
-                        logger.warn("Failed to get next page of drive items: {}", e.getMessage());
-                        break;
-                    }
-                } else {
+                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
+                    break;
+                }
+                // Request the next page using the nextLink URL
+                try {
+                    final String itemIdToUse = item != null ? item.getId() : "root";
+                    response = getDriveItemsByNextLink(driveId, itemIdToUse, response.getOdataNextLink());
+                } catch (final Exception e) {
+                    logger.warn("Failed to get next page of drive items: {}", e.getMessage());
                     break;
                 }
             }
@@ -1049,13 +1031,12 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.drives().withUrl(response.getOdataNextLink()).get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.drives().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -1074,13 +1055,12 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.sites().bySiteId(siteId).drives().withUrl(response.getOdataNextLink()).get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.sites().bySiteId(siteId).drives().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -1128,7 +1108,7 @@ public class Microsoft365Client implements Closeable {
             if (additionalDataManager != null) {
                 final Object jsonObj = additionalDataManager.get("resourceProvisioningOptions");
                 // Handle both JsonElement (SDK v5 style) and native List/Collection (SDK v6 style)
-                if (jsonObj instanceof JsonElement jsonElement && jsonElement.isJsonArray()) {
+                if (jsonObj instanceof final JsonElement jsonElement && jsonElement.isJsonArray()) {
                     final JsonArray array = jsonElement.getAsJsonArray();
                     for (int i = 0; i < array.size(); i++) {
                         if ("Team".equals(array.get(i).getAsString())) {
@@ -1136,17 +1116,17 @@ public class Microsoft365Client implements Closeable {
                             return;
                         }
                     }
-                } else if (jsonObj instanceof java.util.Collection<?> collection) {
+                } else if (jsonObj instanceof final java.util.Collection<?> collection) {
                     // Handle native collection objects (SDK v6 may provide List<String> directly)
-                    for (Object item : collection) {
+                    for (final Object item : collection) {
                         if ("Team".equals(String.valueOf(item))) {
                             consumer.accept(g);
                             return;
                         }
                     }
-                } else if (jsonObj instanceof Object[] array) {
+                } else if (jsonObj instanceof final Object[] array) {
                     // Handle object arrays (another possible format)
-                    for (Object item : array) {
+                    for (final Object item : array) {
                         if ("Team".equals(String.valueOf(item))) {
                             consumer.accept(g);
                             return;
@@ -1161,13 +1141,12 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(filter);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.groups().withUrl(response.getOdataNextLink()).get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.groups().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -1192,13 +1171,12 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.teams().byTeamId(teamId).channels().withUrl(response.getOdataNextLink()).get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.teams().byTeamId(teamId).channels().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -1250,19 +1228,13 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.teams()
-                        .byTeamId(teamId)
-                        .channels()
-                        .byChannelId(channelId)
-                        .messages()
-                        .withUrl(response.getOdataNextLink())
-                        .get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response =
+                    client.teams().byTeamId(teamId).channels().byChannelId(channelId).messages().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -1286,21 +1258,20 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.teams()
-                        .byTeamId(teamId)
-                        .channels()
-                        .byChannelId(channelId)
-                        .messages()
-                        .byChatMessageId(messageId)
-                        .replies()
-                        .withUrl(response.getOdataNextLink())
-                        .get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.teams()
+                    .byTeamId(teamId)
+                    .channels()
+                    .byChannelId(channelId)
+                    .messages()
+                    .byChatMessageId(messageId)
+                    .replies()
+                    .withUrl(response.getOdataNextLink())
+                    .get();
         }
     }
 
@@ -1321,19 +1292,13 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.teams()
-                        .byTeamId(teamId)
-                        .channels()
-                        .byChannelId(channelId)
-                        .members()
-                        .withUrl(response.getOdataNextLink())
-                        .get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response =
+                    client.teams().byTeamId(teamId).channels().byChannelId(channelId).members().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -1351,13 +1316,12 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.chats().withUrl(response.getOdataNextLink()).get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.chats().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -1410,13 +1374,7 @@ public class Microsoft365Client implements Closeable {
                 messages.forEach(consumer::accept);
 
                 // Check if there's a next page
-                if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("Found next link for chat messages, continuing to page {} for chat: {}", pageCount + 1, chatId);
-                    }
-                    // Request the next page using the nextLink URL
-                    response = client.chats().byChatId(chatId).messages().withUrl(response.getOdataNextLink()).get();
-                } else {
+                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
                     if (logger.isDebugEnabled()) {
                         logger.debug("Chat message pagination completed for chat {} - processed {} pages with total {} messages", chatId,
@@ -1424,6 +1382,11 @@ public class Microsoft365Client implements Closeable {
                     }
                     break;
                 }
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Found next link for chat messages, continuing to page {} for chat: {}", pageCount + 1, chatId);
+                }
+                // Request the next page using the nextLink URL
+                response = client.chats().byChatId(chatId).messages().withUrl(response.getOdataNextLink()).get();
             }
         } catch (final Exception e) {
             logger.warn("Failed to get chat messages for chat: {}", chatId, e);
@@ -1449,19 +1412,18 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.chats()
-                        .byChatId(chatId)
-                        .messages()
-                        .byChatMessageId(messageId)
-                        .replies()
-                        .withUrl(response.getOdataNextLink())
-                        .get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.chats()
+                    .byChatId(chatId)
+                    .messages()
+                    .byChatMessageId(messageId)
+                    .replies()
+                    .withUrl(response.getOdataNextLink())
+                    .get();
         }
     }
 
@@ -1502,13 +1464,12 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if (response.getOdataNextLink() != null && !response.getOdataNextLink().isEmpty()) {
-                // Request the next page using the nextLink URL
-                response = client.chats().byChatId(chatId).members().withUrl(response.getOdataNextLink()).get();
-            } else {
+            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
+            // Request the next page using the nextLink URL
+            response = client.chats().byChatId(chatId).members().withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -1564,9 +1525,11 @@ public class Microsoft365Client implements Closeable {
             return id;
         }
         try {
-            return upnCache.get(id);
-        } catch (final ExecutionException e) {
-            logger.warn("Failed to resolve UPN for id={}", id, e);
+            return upnCache.getIfPresent(id);
+        } catch (final Exception e) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Failed to resolve UPN for id={}", id, e);
+            }
             return null;
         }
     }
@@ -1637,9 +1600,11 @@ public class Microsoft365Client implements Closeable {
             return id;
         }
         try {
-            return groupNameCache.get(id);
-        } catch (ExecutionException e) {
-            logger.warn("Failed to resolve group name for id={}", id, e);
+            return groupNameCache.getIfPresent(id);
+        } catch (final Exception e) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Failed to resolve group name for id={}", id, e);
+            }
             return null;
         }
     }
@@ -1662,13 +1627,13 @@ public class Microsoft365Client implements Closeable {
                 return g.getDisplayName();
             }
             return null;
-        } catch (ApiException e) {
+        } catch (final ApiException e) {
             if (e.getResponseStatusCode() == 404) {
                 return null;
             }
             logger.warn("Failed to resolve group name for id={}", objectId, e);
             return null;
-        } catch (Exception e) {
+        } catch (final Exception e) {
             logger.warn("Failed to resolve group name for id={}", objectId, e);
             return null;
         }
@@ -1703,6 +1668,266 @@ public class Microsoft365Client implements Closeable {
             Thread.sleep(ms);
         } catch (final InterruptedException ie) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Retrieves all attachments for a specific list item, processing each attachment with the provided consumer.
+     * Implements pagination to handle list items with many attachments.
+     *
+     * @param siteId The ID of the SharePoint site.
+     * @param listId The ID of the SharePoint list.
+     * @param itemId The ID of the list item.
+     * @param consumer A consumer to process each Attachment object.
+     */
+    public void getListItemAttachments(final String siteId, final String listId, final String itemId, final Consumer<DriveItem> consumer) {
+        if (StringUtil.isBlank(siteId) || StringUtil.isBlank(listId) || StringUtil.isBlank(itemId)) {
+            logger.warn("siteId, listId, and itemId cannot be null or empty - Site: {}, List: {}, Item: {}", siteId, listId, itemId);
+            return;
+        }
+
+        try {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Checking for attachments in list item - Site: {}, List: {}, Item: {}", siteId, listId, itemId);
+            }
+
+            // Get the list item to check for attachments field
+            final ListItem listItem = getListItem(siteId, listId, itemId, true);
+            if (listItem == null) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("List item {} not found in list {}", itemId, listId);
+                }
+                return;
+            }
+
+            // Check if the list item has attachments
+            boolean hasAttachments = false;
+            if (listItem.getFields() != null && listItem.getFields().getAdditionalData() != null) {
+                final Object attachmentsField = listItem.getFields().getAdditionalData().get("Attachments");
+                if (attachmentsField instanceof Boolean) {
+                    hasAttachments = (Boolean) attachmentsField;
+                } else if (attachmentsField instanceof String) {
+                    hasAttachments = "true".equalsIgnoreCase((String) attachmentsField);
+                }
+            }
+
+            if (hasAttachments) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("List item {} has attachments - creating virtual DriveItem", itemId);
+                }
+
+                // Create a virtual DriveItem for list attachment
+                // Since we can't get actual attachment details via Graph API, we create a placeholder
+                final DriveItem virtualAttachment = new DriveItem();
+
+                // Set basic properties with fallback values
+                virtualAttachment.setName("ListAttachment_" + itemId); // Generic name since actual filename unknown
+                virtualAttachment.setId("attachment_" + itemId); // Virtual ID
+
+                // Set timestamps from list item
+                virtualAttachment.setCreatedDateTime(listItem.getCreatedDateTime());
+                virtualAttachment.setLastModifiedDateTime(listItem.getLastModifiedDateTime());
+
+                // Create virtual web URL pointing to list item
+                final Site site = getSite(siteId);
+                if (site != null && site.getWebUrl() != null) {
+                    final String attachmentUrl = String.format("%s/Lists/%s/DispForm.aspx?ID=%s", site.getWebUrl(), listId, itemId);
+                    virtualAttachment.setWebUrl(attachmentUrl);
+                }
+
+                // Mark as attachment with additional metadata
+                final Map<String, Object> additionalData = new HashMap<>();
+                additionalData.put("sourceType", "ListAttachment");
+                additionalData.put("siteId", siteId);
+                additionalData.put("listId", listId);
+                additionalData.put("listItemId", itemId);
+                // For now, using a placeholder name since we can't get actual attachment names via Graph API
+                additionalData.put("attachmentName", "attachment_" + itemId);
+
+                // Add list item title if available
+                if (listItem.getFields() != null && listItem.getFields().getAdditionalData() != null) {
+                    final Object titleObj = listItem.getFields().getAdditionalData().get("Title");
+                    if (titleObj != null) {
+                        additionalData.put("listItemTitle", titleObj.toString());
+                    }
+                }
+
+                virtualAttachment.setAdditionalData(additionalData);
+
+                // Pass the virtual attachment to consumer
+                consumer.accept(virtualAttachment);
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Created virtual DriveItem for list item {} attachments", itemId);
+                }
+            } else {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("No attachments found for list item {} in list {}", itemId, listId);
+                }
+            }
+
+        } catch (final Exception e) {
+            logger.warn("Failed to check attachments for list item {} in list {} on site {}: {}", itemId, listId, siteId, e.getMessage());
+            if (logger.isDebugEnabled()) {
+                logger.debug("Full exception for list item attachments check", e);
+            }
+            // Don't throw exception to avoid breaking the crawling process
+        }
+    }
+
+    /**
+     * Retrieves the content of a specific attachment from a list item as an InputStream.
+     *
+     * @param siteId The ID of the SharePoint site.
+     * @param listId The ID of the SharePoint list.
+     * @param itemId The ID of the list item.
+     * @param attachmentName The name of the attachment.
+     * @return An InputStream containing the attachment content.
+     */
+    public InputStream getListItemAttachmentContent(final String siteId, final String listId, final String itemId,
+            final String attachmentName) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Attempting to get content for list attachment {} in item {} of list {} on site {}", attachmentName, itemId,
+                    listId, siteId);
+        }
+
+        // For now, return placeholder content as Microsoft Graph API doesn't provide direct access to list attachments
+        // In a full implementation, this would use SharePoint REST API or other approaches
+        final String placeholderContent = String.format(
+                "List Attachment Placeholder\n" + "Site ID: %s\n" + "List ID: %s\n" + "Item ID: %s\n" + "Attachment: %s\n"
+                        + "Note: Actual content retrieval requires SharePoint REST API integration.",
+                siteId, listId, itemId, attachmentName);
+
+        return new java.io.ByteArrayInputStream(placeholderContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Retrieves all pages in a SharePoint site.
+     *
+     * @param siteId The ID of the SharePoint site
+     * @param consumer Consumer to process each page
+     */
+    public void getSitePages(final String siteId, final Consumer<BaseSitePage> consumer) {
+        try {
+            SitePageCollectionResponse response = client.sites().bySiteId(siteId).pages().graphSitePage().get();
+
+            while (response != null && response.getValue() != null) {
+                response.getValue().forEach(consumer::accept);
+
+                // Check if there's a next page
+                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+                    // No more pages, exit loop
+                    break;
+                }
+                // Request the next page using the nextLink URL
+                response = client.sites().bySiteId(siteId).pages().graphSitePage().withUrl(response.getOdataNextLink()).get();
+            }
+        } catch (final Exception e) {
+            logger.warn("Failed to get pages for site: {} - {}", siteId, e.getMessage());
+            if (logger.isDebugEnabled()) {
+                logger.debug("Exception details for getSitePages:", e);
+            }
+        }
+    }
+
+    /**
+     * Retrieves a specific page with full content including canvasLayout.
+     *
+     * @param siteId The ID of the SharePoint site
+     * @param pageId The ID of the page
+     * @return BaseSitePage with full content
+     */
+    public BaseSitePage getPageWithContent(final String siteId, final String pageId) {
+        try {
+            // Retrieve page with expanded canvasLayout
+            return client.sites().bySiteId(siteId).pages().byBaseSitePageId(pageId).graphSitePage().get(requestConfiguration -> {
+                requestConfiguration.queryParameters.expand = new String[] { "canvasLayout" };
+            });
+        } catch (final Exception e) {
+            logger.warn("Failed to get page content for page: {} in site: {} - {}", pageId, siteId, e.getMessage());
+            if (logger.isDebugEnabled()) {
+                logger.debug("Exception details for getPageWithContent:", e);
+            }
+            // Fall back to basic page info without content
+            try {
+                return client.sites().bySiteId(siteId).pages().byBaseSitePageId(pageId).graphSitePage().get();
+            } catch (final Exception ex) {
+                logger.error("Failed to get basic page info for page: {} in site: {} - {}", pageId, siteId, ex.getMessage());
+                throw new RuntimeException("Unable to retrieve page: " + pageId, ex);
+            }
+        }
+    }
+
+    /**
+     * Retrieves permissions for a specific page.
+     *
+     * @param siteId The ID of the SharePoint site
+     * @param pageId The ID of the page
+     * @return List of permission principals
+     */
+    public List<String> getPagePermissions(final String siteId, final String pageId) {
+        final List<String> permissions = new ArrayList<>();
+        // Page-specific permissions are not directly available through Graph API
+        // Fall back to site permissions
+        try {
+            final List<String> sitePerms = getSitePermissionsAsList(siteId);
+            if (sitePerms != null) {
+                permissions.addAll(sitePerms);
+            }
+        } catch (final Exception ex) {
+            logger.warn("Failed to get site permissions for site: {} - {}", siteId, ex.getMessage());
+        }
+        return permissions;
+    }
+
+    /**
+     * Helper method to get site permissions as a list of strings.
+     *
+     * @param siteId The ID of the SharePoint site
+     * @return List of permission principals
+     */
+    public List<String> getSitePermissionsAsList(final String siteId) {
+        final List<String> permissions = new ArrayList<>();
+        try {
+            final PermissionCollectionResponse response = getSitePermissions(siteId);
+            if (response != null && response.getValue() != null) {
+                response.getValue().forEach(permission -> {
+                    // Extract permission information manually since assignPermission is not available here
+                    if (permission.getGrantedToV2() != null && permission.getGrantedToV2().getUser() != null
+                            && permission.getGrantedToV2().getUser().getDisplayName() != null) {
+                        permissions.add(permission.getGrantedToV2().getUser().getDisplayName());
+                    } else if (permission.getGrantedToV2() != null && permission.getGrantedToV2().getGroup() != null
+                            && permission.getGrantedToV2().getGroup().getDisplayName() != null) {
+                        permissions.add(permission.getGrantedToV2().getGroup().getDisplayName());
+                    }
+                });
+            }
+        } catch (final Exception e) {
+            logger.warn("Failed to get site permissions for site: {} - {}", siteId, e.getMessage());
+        }
+        return permissions;
+    }
+
+    /**
+     * Retrieves the next page of site pages using pagination.
+     *
+     * @param siteId The ID of the SharePoint site
+     * @param nextLink The next link URL for pagination
+     * @return SitePageCollectionResponse containing the next page of site pages
+     */
+    public SitePageCollectionResponse getSitePagesByNextLink(final String siteId, final String nextLink) {
+        if (StringUtil.isBlank(nextLink)) {
+            return null;
+        }
+
+        try {
+            return client.sites().bySiteId(siteId).pages().graphSitePage().withUrl(nextLink).get();
+        } catch (final Exception e) {
+            logger.warn("Failed to get next page of site pages using nextLink for site: {} - {}", siteId, e.getMessage());
+            if (logger.isDebugEnabled()) {
+                logger.debug("Exception details for getSitePagesByNextLink:", e);
+            }
+            return null;
         }
     }
 }
