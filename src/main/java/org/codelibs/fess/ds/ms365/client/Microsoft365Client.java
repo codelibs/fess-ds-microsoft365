@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365.client;
 
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.*;
+
 import java.io.Closeable;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -1737,18 +1739,18 @@ public class Microsoft365Client implements Closeable {
 
                 // Mark as attachment with additional metadata
                 final Map<String, Object> additionalData = new HashMap<>();
-                additionalData.put("sourceType", "ListAttachment");
-                additionalData.put("siteId", siteId);
-                additionalData.put("listId", listId);
-                additionalData.put("listItemId", itemId);
+                additionalData.put(SOURCE_TYPE_KEY, LIST_ATTACHMENT_SOURCE_TYPE);
+                additionalData.put(SITE_ID_KEY, siteId);
+                additionalData.put(LIST_ID_KEY, listId);
+                additionalData.put(LIST_ITEM_ID_KEY, itemId);
                 // For now, using a placeholder name since we can't get actual attachment names via Graph API
-                additionalData.put("attachmentName", "attachment_" + itemId);
+                additionalData.put(ATTACHMENT_NAME_KEY, "attachment_" + itemId);
 
                 // Add list item title if available
                 if (listItem.getFields() != null && listItem.getFields().getAdditionalData() != null) {
                     final Object titleObj = listItem.getFields().getAdditionalData().get("Title");
                     if (titleObj != null) {
-                        additionalData.put("listItemTitle", titleObj.toString());
+                        additionalData.put(LIST_ITEM_TITLE_KEY, titleObj.toString());
                     }
                 }
 

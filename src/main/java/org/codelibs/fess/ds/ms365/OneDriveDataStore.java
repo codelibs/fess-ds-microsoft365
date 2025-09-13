@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.*;
+
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
@@ -727,20 +729,20 @@ public class OneDriveDataStore extends Microsoft365DataStore {
 
             // Add list attachment specific metadata if this is a virtual DriveItem for list attachment
             final Map<String, Object> additionalData = item.getAdditionalData();
-            if (additionalData != null && "ListAttachment".equals(additionalData.get("sourceType"))) {
+            if (additionalData != null && LIST_ATTACHMENT_SOURCE_TYPE.equals(additionalData.get(SOURCE_TYPE_KEY))) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Adding list attachment metadata for item: {} from site: {}, list: {}, listItem: {}", item.getName(),
-                            additionalData.get("siteId"), additionalData.get("listId"), additionalData.get("listItemId"));
+                            additionalData.get(SITE_ID_KEY), additionalData.get(LIST_ID_KEY), additionalData.get(LIST_ITEM_ID_KEY));
                 }
                 filesMap.put("source_type", "ListAttachment");
-                filesMap.put("sharepoint_site_id", additionalData.get("siteId"));
-                filesMap.put("sharepoint_list_id", additionalData.get("listId"));
-                filesMap.put("sharepoint_list_item_id", additionalData.get("listItemId"));
-                if (additionalData.get("listTitle") != null) {
-                    filesMap.put("sharepoint_list_title", additionalData.get("listTitle"));
+                filesMap.put(SHAREPOINT_SITE_ID_FIELD, additionalData.get(SITE_ID_KEY));
+                filesMap.put(SHAREPOINT_LIST_ID_FIELD, additionalData.get(LIST_ID_KEY));
+                filesMap.put(SHAREPOINT_LIST_ITEM_ID_FIELD, additionalData.get(LIST_ITEM_ID_KEY));
+                if (additionalData.get(LIST_TITLE_KEY) != null) {
+                    filesMap.put(SHAREPOINT_LIST_TITLE_FIELD, additionalData.get(LIST_TITLE_KEY));
                 }
-                if (additionalData.get("listItemTitle") != null) {
-                    filesMap.put("sharepoint_list_item_title", additionalData.get("listItemTitle"));
+                if (additionalData.get(LIST_ITEM_TITLE_KEY) != null) {
+                    filesMap.put(SHAREPOINT_LIST_ITEM_TITLE_FIELD, additionalData.get(LIST_ITEM_TITLE_KEY));
                 }
             }
 
@@ -1199,9 +1201,9 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 new HashMap<>(virtualAttachment.getAdditionalData() != null ? virtualAttachment.getAdditionalData() : new HashMap<>());
 
         // Add enhanced metadata
-        additionalData.put("siteName", site.getDisplayName());
-        additionalData.put("listName", list.getDisplayName());
-        additionalData.put("listTemplate", list.getList() != null ? list.getList().getTemplate() : "unknown");
+        additionalData.put(SITE_NAME_KEY, site.getDisplayName());
+        additionalData.put(LIST_NAME_KEY, list.getDisplayName());
+        additionalData.put(LIST_TEMPLATE_KEY, list.getList() != null ? list.getList().getTemplate() : UNKNOWN_TEMPLATE);
 
         // Try to get more list item details
         if (item.getFields() != null && item.getFields().getAdditionalData() != null) {
@@ -1209,16 +1211,16 @@ public class OneDriveDataStore extends Microsoft365DataStore {
 
             // Add commonly available fields
             if (fields.get("Title") != null) {
-                additionalData.put("listItemTitle", fields.get("Title").toString());
+                additionalData.put(LIST_ITEM_TITLE_KEY, fields.get(TITLE_FIELD).toString());
             }
             if (fields.get("Created") != null) {
-                additionalData.put("listItemCreated", fields.get("Created"));
+                additionalData.put(LIST_ITEM_CREATED_KEY, fields.get(CREATED_FIELD));
             }
             if (fields.get("Modified") != null) {
-                additionalData.put("listItemModified", fields.get("Modified"));
+                additionalData.put(LIST_ITEM_MODIFIED_KEY, fields.get(MODIFIED_FIELD));
             }
             if (fields.get("Author") != null) {
-                additionalData.put("listItemAuthor", fields.get("Author"));
+                additionalData.put(LIST_ITEM_AUTHOR_KEY, fields.get(AUTHOR_FIELD));
             }
         }
 
