@@ -15,14 +15,6 @@
  */
 package org.codelibs.fess.ds.ms365.client;
 
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.ATTACHMENT_NAME_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ATTACHMENT_SOURCE_TYPE;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ID_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_ID_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_TITLE_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SITE_ID_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SOURCE_TYPE_KEY;
-
 import java.io.Closeable;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -39,8 +31,8 @@ import java.util.stream.Collectors;
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codelibs.core.CoreLibConstants;
 import org.codelibs.core.lang.StringUtil;
-import org.codelibs.fess.Constants;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
@@ -155,14 +147,14 @@ public class Microsoft365Client implements Closeable {
 
         try {
             // Add multi-tenant authentication support for Azure Identity v1.16.3
-            final ClientSecretCredential clientSecretCredential = new ClientSecretCredentialBuilder().clientId(clientId)
+            final ClientSecretCredential credential = new ClientSecretCredentialBuilder().clientId(clientId)
                     .clientSecret(clientSecret)
                     .tenantId(tenant)
                     .additionallyAllowedTenants("*") // Allow all tenants for backward compatibility
                     .build();
 
             // Initialize GraphServiceClient with new v6 API
-            client = new GraphServiceClient(clientSecretCredential);
+            client = new GraphServiceClient(credential);
         } catch (final Exception e) {
             throw new DataStoreException("Failed to create a client.", e);
         }
@@ -424,7 +416,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -468,7 +460,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -500,7 +492,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -565,7 +557,7 @@ public class Microsoft365Client implements Closeable {
             sections.addAll(response.getValue());
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -607,7 +599,7 @@ public class Microsoft365Client implements Closeable {
             pages.addAll(response.getValue());
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -741,7 +733,7 @@ public class Microsoft365Client implements Closeable {
                 sites.forEach(consumer::accept);
 
                 // Check if there's a next page
-                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
                     if (logger.isDebugEnabled()) {
                         logger.debug("Site pagination completed - processed {} pages with total {} sites", pageCount, totalSites);
@@ -807,7 +799,7 @@ public class Microsoft365Client implements Closeable {
                 lists.forEach(consumer::accept);
 
                 // Check if there's a next page
-                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
                     if (logger.isDebugEnabled()) {
                         logger.debug("List pagination completed for site {} - processed {} pages with total {} lists", siteId, pageCount,
@@ -899,7 +891,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -978,7 +970,7 @@ public class Microsoft365Client implements Closeable {
                 response.getValue().forEach(child -> getDriveItemChildren(driveId, consumer, child));
 
                 // Check if there's a next page
-                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
                     break;
                 }
@@ -1039,7 +1031,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -1063,7 +1055,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -1149,7 +1141,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(filter);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -1179,7 +1171,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -1236,7 +1228,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -1266,7 +1258,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -1300,7 +1292,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -1324,7 +1316,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -1382,7 +1374,7 @@ public class Microsoft365Client implements Closeable {
                 messages.forEach(consumer::accept);
 
                 // Check if there's a next page
-                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
                     if (logger.isDebugEnabled()) {
                         logger.debug("Chat message pagination completed for chat {} - processed {} pages with total {} messages", chatId,
@@ -1420,7 +1412,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -1472,7 +1464,7 @@ public class Microsoft365Client implements Closeable {
             response.getValue().forEach(consumer::accept);
 
             // Check if there's a next page
-            if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                 // No more pages, exit loop
                 break;
             }
@@ -1493,7 +1485,7 @@ public class Microsoft365Client implements Closeable {
         }
         // https://learn.microsoft.com/en-us/answers/questions/1072289/download-directly-chat-attachment-using-contenturl
         final String id = "u!" + Base64.getUrlEncoder()
-                .encodeToString(attachment.getContentUrl().getBytes(Constants.CHARSET_UTF_8))
+                .encodeToString(attachment.getContentUrl().getBytes(CoreLibConstants.CHARSET_UTF_8))
                 .replaceFirst("=+$", StringUtil.EMPTY)
                 .replace('/', '_')
                 .replace('+', '-');
@@ -1680,133 +1672,406 @@ public class Microsoft365Client implements Closeable {
     }
 
     /**
-     * Retrieves all attachments for a specific list item, processing each attachment with the provided consumer.
-     * Implements pagination to handle list items with many attachments.
+     * Retrieves attachments for a SharePoint list item using Microsoft Graph API.
+     * This method uses the driveItem relationship to access attachments as DriveItem objects.
      *
-     * @param siteId The ID of the SharePoint site.
-     * @param listId The ID of the SharePoint list.
-     * @param itemId The ID of the list item.
-     * @param consumer A consumer to process each Attachment object.
+     * @param siteId The SharePoint site ID
+     * @param listId The SharePoint list ID
+     * @param itemId The SharePoint list item ID
+     * @param consumer Consumer to process each attachment DriveItem
      */
     public void getListItemAttachments(final String siteId, final String listId, final String itemId, final Consumer<DriveItem> consumer) {
-        if (StringUtil.isBlank(siteId) || StringUtil.isBlank(listId) || StringUtil.isBlank(itemId)) {
-            logger.warn("siteId, listId, and itemId cannot be null or empty - Site: {}, List: {}, Item: {}", siteId, listId, itemId);
+        if (siteId == null || listId == null || itemId == null || consumer == null) {
             return;
         }
 
+        // Stage 1: Try DriveItem approach (for documentLibrary and similar templates)
+        // Stage 2: Try Attachments field approach (for genericList and other standard templates)
+        if (tryDriveItemAttachments(siteId, listId, itemId, consumer) || tryFieldsAttachments(siteId, listId, itemId, consumer)) {
+            return;
+        }
+
+        // Stage 3: Fallback - no attachments found
+        logger.debug("No attachments found for list item: siteId={}, listId={}, itemId={}", siteId, listId, itemId);
+    }
+
+    /**
+     * Attempts to retrieve attachments using driveItem relationship (for document libraries).
+     *
+     * @param siteId The SharePoint site ID
+     * @param listId The SharePoint list ID
+     * @param itemId The SharePoint list item ID
+     * @param consumer Consumer to process each attachment DriveItem
+     * @return true if successful, false if this list item doesn't have driveItem
+     */
+    private boolean tryDriveItemAttachments(final String siteId, final String listId, final String itemId,
+            final Consumer<DriveItem> consumer) {
         try {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Checking for attachments in list item - Site: {}, List: {}, Item: {}", siteId, listId, itemId);
-            }
+            // First get the list item to check if it has a driveItem
+            final ListItem listItem =
+                    client.sites().bySiteId(siteId).lists().byListId(listId).items().byListItemId(itemId).get(requestConfiguration -> {
+                        requestConfiguration.queryParameters.expand = new String[] { "driveItem" };
+                    });
 
-            // Get the list item to check for attachments field
-            final ListItem listItem = getListItem(siteId, listId, itemId, true);
             if (listItem == null) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("List item {} not found in list {}", itemId, listId);
-                }
-                return;
+                logger.debug("List item not found: siteId={}, listId={}, itemId={}", siteId, listId, itemId);
+                return false;
             }
 
-            // Check if the list item has attachments
-            boolean hasAttachments = false;
-            if (listItem.getFields() != null && listItem.getFields().getAdditionalData() != null) {
-                final Object attachmentsField = listItem.getFields().getAdditionalData().get("Attachments");
-                if (attachmentsField instanceof Boolean) {
-                    hasAttachments = (Boolean) attachmentsField;
-                } else if (attachmentsField instanceof String) {
-                    hasAttachments = "true".equalsIgnoreCase((String) attachmentsField);
-                }
+            final DriveItem driveItem = listItem.getDriveItem();
+            if (driveItem == null) {
+                logger.debug("No driveItem found for list item (likely generic list): siteId={}, listId={}, itemId={}", siteId, listId,
+                        itemId);
+                return false;
             }
 
-            if (hasAttachments) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("List item {} has attachments - creating virtual DriveItem", itemId);
-                }
+            // Get the drive ID from the driveItem
+            final String driveId = driveItem.getParentReference() != null ? driveItem.getParentReference().getDriveId() : null;
 
-                // Create a virtual DriveItem for list attachment
-                // Since we can't get actual attachment details via Graph API, we create a placeholder
-                final DriveItem virtualAttachment = new DriveItem();
+            if (driveId == null) {
+                logger.debug("No drive ID found in driveItem for list item: siteId={}, listId={}, itemId={}", siteId, listId, itemId);
+                return false;
+            }
 
-                // Set basic properties with fallback values
-                virtualAttachment.setName("ListAttachment_" + itemId); // Generic name since actual filename unknown
-                virtualAttachment.setId("attachment_" + itemId); // Virtual ID
+            final String driveItemId = driveItem.getId();
+            if (driveItemId == null) {
+                logger.debug("No driveItem ID found for list item: siteId={}, listId={}, itemId={}", siteId, listId, itemId);
+                return false;
+            }
 
-                // Set timestamps from list item
-                virtualAttachment.setCreatedDateTime(listItem.getCreatedDateTime());
-                virtualAttachment.setLastModifiedDateTime(listItem.getLastModifiedDateTime());
+            // Get children (attachments) of the driveItem
+            try {
+                final DriveItemCollectionResponse childrenResponse =
+                        client.drives().byDriveId(driveId).items().byDriveItemId(driveItemId).children().get();
 
-                // Create virtual web URL pointing to list item
-                final Site site = getSite(siteId);
-                if (site != null && site.getWebUrl() != null) {
-                    final String attachmentUrl = String.format("%s/Lists/%s/DispForm.aspx?ID=%s", site.getWebUrl(), listId, itemId);
-                    virtualAttachment.setWebUrl(attachmentUrl);
-                }
+                if (childrenResponse != null && childrenResponse.getValue() != null) {
+                    for (final DriveItem attachment : childrenResponse.getValue()) {
+                        if (attachment != null) {
+                            logger.debug("Processing driveItem attachment: {}", attachment.getName());
+                            consumer.accept(attachment);
+                        }
+                    }
 
-                // Mark as attachment with additional metadata
-                final Map<String, Object> additionalData = new HashMap<>();
-                additionalData.put(SOURCE_TYPE_KEY, LIST_ATTACHMENT_SOURCE_TYPE);
-                additionalData.put(SITE_ID_KEY, siteId);
-                additionalData.put(LIST_ID_KEY, listId);
-                additionalData.put(LIST_ITEM_ID_KEY, itemId);
-                // For now, using a placeholder name since we can't get actual attachment names via Graph API
-                additionalData.put(ATTACHMENT_NAME_KEY, "attachment_" + itemId);
+                    // Handle pagination if there are more attachments
+                    String nextLink = childrenResponse.getOdataNextLink();
+                    while (nextLink != null) {
+                        final DriveItemCollectionResponse nextResponse =
+                                client.drives().byDriveId(driveId).items().byDriveItemId(driveItemId).children().withUrl(nextLink).get();
 
-                // Add list item title if available
-                if (listItem.getFields() != null && listItem.getFields().getAdditionalData() != null) {
-                    final Object titleObj = listItem.getFields().getAdditionalData().get("Title");
-                    if (titleObj != null) {
-                        additionalData.put(LIST_ITEM_TITLE_KEY, titleObj.toString());
+                        if (nextResponse != null && nextResponse.getValue() != null) {
+                            for (final DriveItem attachment : nextResponse.getValue()) {
+                                if (attachment != null) {
+                                    logger.debug("Processing paginated driveItem attachment: {}", attachment.getName());
+                                    consumer.accept(attachment);
+                                }
+                            }
+                        }
+                        nextLink = nextResponse != null ? nextResponse.getOdataNextLink() : null;
                     }
                 }
-
-                virtualAttachment.setAdditionalData(additionalData);
-
-                // Pass the virtual attachment to consumer
-                consumer.accept(virtualAttachment);
-
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Created virtual DriveItem for list item {} attachments", itemId);
+                return true; // Successfully processed driveItem attachments
+            } catch (final ApiException e) {
+                if (e.getResponseStatusCode() == 404) {
+                    logger.debug("No driveItem attachments found for list item: siteId={}, listId={}, itemId={}", siteId, listId, itemId);
+                } else {
+                    logger.warn("Failed to retrieve driveItem attachments for list item: siteId={}, listId={}, itemId={}", siteId, listId,
+                            itemId, e);
                 }
-            } else {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("No attachments found for list item {} in list {}", itemId, listId);
-                }
+                return true; // We successfully tried driveItem approach, even if no attachments found
             }
 
+        } catch (final ApiException e) {
+            // Handle the specific error when list item is not in a document library (doesn't have driveItem)
+            if (e.getMessage() != null
+                    && e.getMessage().contains("Cannot request driveItem for an item that is not in a document library")) {
+                logger.debug("List item is not a document library item (no driveItem available): siteId={}, listId={}, itemId={}", siteId,
+                        listId, itemId);
+                return false;
+            }
+            logger.warn("Failed to access list item for driveItem attachments: siteId={}, listId={}, itemId={}", siteId, listId, itemId, e);
+            return false;
         } catch (final Exception e) {
-            logger.warn("Failed to check attachments for list item {} in list {} on site {}: {}", itemId, listId, siteId, e.getMessage());
-            if (logger.isDebugEnabled()) {
-                logger.debug("Full exception for list item attachments check", e);
-            }
-            // Don't throw exception to avoid breaking the crawling process
+            logger.warn("Unexpected error while retrieving driveItem attachments: siteId={}, listId={}, itemId={}", siteId, listId, itemId,
+                    e);
+            return false;
         }
     }
 
     /**
-     * Retrieves the content of a specific attachment from a list item as an InputStream.
+     * Attempts to retrieve attachments using fields approach (for generic lists and other standard templates).
      *
-     * @param siteId The ID of the SharePoint site.
-     * @param listId The ID of the SharePoint list.
-     * @param itemId The ID of the list item.
-     * @param attachmentName The name of the attachment.
-     * @return An InputStream containing the attachment content.
+     * @param siteId The SharePoint site ID
+     * @param listId The SharePoint list ID
+     * @param itemId The SharePoint list item ID
+     * @param consumer Consumer to process each attachment DriveItem (created from field data)
+     * @return true if successfully processed, false if no attachments or failed
+     */
+    private boolean tryFieldsAttachments(final String siteId, final String listId, final String itemId,
+            final Consumer<DriveItem> consumer) {
+        try {
+            // Get the list item with expanded fields
+            final ListItem listItem =
+                    client.sites().bySiteId(siteId).lists().byListId(listId).items().byListItemId(itemId).get(requestConfiguration -> {
+                        requestConfiguration.queryParameters.expand = new String[] { "fields" };
+                    });
+
+            if (listItem == null) {
+                logger.debug("List item not found for fields attachment processing: siteId={}, listId={}, itemId={}", siteId, listId,
+                        itemId);
+                return false;
+            }
+
+            final com.microsoft.graph.models.FieldValueSet fieldValueSet = listItem.getFields();
+            if (fieldValueSet == null || fieldValueSet.getAdditionalData() == null) {
+                logger.debug("No fields found for list item: siteId={}, listId={}, itemId={}", siteId, listId, itemId);
+                return false;
+            }
+
+            final Map<String, Object> fields = fieldValueSet.getAdditionalData();
+
+            // Check for Attachments field (standard SharePoint field for generic lists)
+            final Object attachmentsField = fields.get("Attachments");
+            if (attachmentsField == null) {
+                logger.debug("No Attachments field found for list item: siteId={}, listId={}, itemId={}", siteId, listId, itemId);
+                return false;
+            }
+
+            // Parse attachments field value
+            if (!hasAttachments(attachmentsField)) {
+                logger.debug("Attachments field indicates no attachments for list item: siteId={}, listId={}, itemId={}", siteId, listId,
+                        itemId);
+                return true; // Successfully processed (no attachments)
+            }
+
+            // Try to get attachment details from other fields or item metadata
+            final List<String> attachmentNames = extractAttachmentNames(fields);
+            if (attachmentNames.isEmpty()) {
+                logger.debug("No attachment names found for list item with attachments: siteId={}, listId={}, itemId={}", siteId, listId,
+                        itemId);
+                return true; // Successfully processed (no attachment names available)
+            }
+
+            // Create virtual DriveItems for each attachment
+            int attachmentCount = 0;
+            for (final String attachmentName : attachmentNames) {
+                if (attachmentName != null && !attachmentName.trim().isEmpty()) {
+                    final DriveItem virtualDriveItem =
+                            createVirtualDriveItemFromFieldAttachment(attachmentName, siteId, listId, itemId, attachmentCount);
+                    attachmentCount++;
+                    if (virtualDriveItem != null) {
+                        logger.debug("Processing fields-based attachment: {}", attachmentName);
+                        consumer.accept(virtualDriveItem);
+                    }
+                }
+            }
+
+            logger.debug("Successfully processed {} field-based attachments for list item: siteId={}, listId={}, itemId={}",
+                    attachmentCount, siteId, listId, itemId);
+            return true;
+
+        } catch (final ApiException e) {
+            if (e.getResponseStatusCode() == 404) {
+                logger.debug("List item not found for fields attachment processing: siteId={}, listId={}, itemId={}", siteId, listId,
+                        itemId);
+            } else {
+                logger.info("Failed to retrieve fields-based attachments for list item: siteId={}, listId={}, itemId={}", siteId, listId,
+                        itemId, e);
+            }
+            return false;
+        } catch (final Exception e) {
+            logger.info("Unexpected error while retrieving fields-based attachments: siteId={}, listId={}, itemId={}", siteId, listId,
+                    itemId, e);
+            return false;
+        }
+    }
+
+    /**
+     * Checks if the Attachments field indicates that attachments exist.
+     *
+     * @param attachmentsField The value of the Attachments field
+     * @return true if attachments exist, false otherwise
+     */
+    private boolean hasAttachments(final Object attachmentsField) {
+        if (attachmentsField == null) {
+            return false;
+        }
+
+        final String attachmentsValue = attachmentsField.toString().trim();
+
+        // SharePoint Attachments field typically contains:
+        // "1" or "true" = has attachments
+        // "0" or "false" = no attachments
+        // Or actual attachment filenames
+        return "1".equals(attachmentsValue) || "true".equalsIgnoreCase(attachmentsValue)
+                || !attachmentsValue.isEmpty() && !"0".equals(attachmentsValue) && !"false".equalsIgnoreCase(attachmentsValue);
+    }
+
+    /**
+     * Extracts attachment names from SharePoint list item fields.
+     * This is a best-effort approach as different list templates may store attachment info differently.
+     *
+     * @param fields The field values map
+     * @return List of attachment names (may be empty if names cannot be determined)
+     */
+    private List<String> extractAttachmentNames(final Map<String, Object> fields) {
+        final List<String> attachmentNames = new ArrayList<>();
+
+        // Try various field patterns that might contain attachment names
+        final String[] attachmentFields = { "AttachmentFiles", "Attachments", "FileRef", "FileLeafRef", "File_x0020_Name" };
+
+        for (final String fieldName : attachmentFields) {
+            final Object fieldValue = fields.get(fieldName);
+            if (fieldValue != null) {
+                final String value = fieldValue.toString().trim();
+                if (!value.isEmpty() && !"0".equals(value) && !"false".equalsIgnoreCase(value)) {
+                    // If it looks like a filename or list of filenames, add them
+                    if (value.contains(".") || value.contains(";") || value.contains(",")) {
+                        // Split potential multiple filenames
+                        final String[] names = value.split("[;,]");
+                        for (final String name : names) {
+                            final String cleanName = name.trim();
+                            if (!cleanName.isEmpty() && cleanName.contains(".")) {
+                                attachmentNames.add(cleanName);
+                            }
+                        }
+                    } else if (value.contains(".")) {
+                        // Single filename
+                        attachmentNames.add(value);
+                    }
+                }
+            }
+        }
+
+        // If no specific attachment names found but attachments exist, create generic names
+        if (attachmentNames.isEmpty()) {
+            final Object attachmentsField = fields.get("Attachments");
+            if (hasAttachments(attachmentsField)) {
+                // Create a generic attachment entry
+                attachmentNames.add("attachment.bin");
+            }
+        }
+
+        return attachmentNames;
+    }
+
+    /**
+     * Creates a virtual DriveItem from SharePoint list field-based attachment information.
+     *
+     * @param attachmentName The name of the attachment
+     * @param siteId The SharePoint site ID
+     * @param listId The SharePoint list ID
+     * @param listItemId The SharePoint list item ID
+     * @param attachmentIndex The index of this attachment (for unique IDs)
+     * @return Virtual DriveItem representing the attachment
+     */
+    private DriveItem createVirtualDriveItemFromFieldAttachment(final String attachmentName, final String siteId, final String listId,
+            final String listItemId, final int attachmentIndex) {
+        if (attachmentName == null || attachmentName.trim().isEmpty()) {
+            return null;
+        }
+
+        try {
+            final DriveItem virtualDriveItem = new DriveItem();
+
+            // Generate a unique ID for the virtual attachment
+            final String virtualId = String.format("field-attachment-%s-%s-%s-%d", siteId, listId, listItemId, attachmentIndex);
+            virtualDriveItem.setId(virtualId);
+            virtualDriveItem.setName(attachmentName);
+
+            // Create a File object to indicate this is a file
+            final com.microsoft.graph.models.File file = new com.microsoft.graph.models.File();
+            file.setMimeType("application/octet-stream"); // Default mime type, will be detected during processing
+            virtualDriveItem.setFile(file);
+
+            // Add metadata to identify this as a fields-based attachment
+            final Map<String, Object> additionalData = new HashMap<>();
+            additionalData.put("sourceType", "Fields");
+            additionalData.put("siteId", siteId);
+            additionalData.put("listId", listId);
+            additionalData.put("listItemId", listItemId);
+            additionalData.put("attachmentName", attachmentName);
+            additionalData.put("attachmentIndex", attachmentIndex);
+            virtualDriveItem.setAdditionalData(additionalData);
+
+            // Create a web URL for the attachment (approximation)
+            final String webUrl = String.format("https://graph.microsoft.com/v1.0/sites/%s/lists/%s/items/%s/attachments/%s", siteId,
+                    listId, listItemId, attachmentName);
+            virtualDriveItem.setWebUrl(webUrl);
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("Created virtual DriveItem for field-based attachment: {} (ID: {})", attachmentName, virtualId);
+            }
+
+            return virtualDriveItem;
+
+        } catch (final Exception e) {
+            logger.warn("Failed to create virtual DriveItem from field attachment: {}", attachmentName, e);
+            return null;
+        }
+    }
+
+    /**
+     * Retrieves the content of a specific SharePoint list item attachment using Microsoft Graph API.
+     * This method accesses the attachment through the driveItem relationship.
+     *
+     * @param siteId The SharePoint site ID
+     * @param listId The SharePoint list ID
+     * @param itemId The SharePoint list item ID
+     * @param attachmentName The name of the attachment to retrieve
+     * @return InputStream containing the attachment content, or null if not found
      */
     public InputStream getListItemAttachmentContent(final String siteId, final String listId, final String itemId,
             final String attachmentName) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("Attempting to get content for list attachment {} in item {} of list {} on site {}", attachmentName, itemId,
-                    listId, siteId);
+        if (siteId == null || listId == null || itemId == null || attachmentName == null) {
+            return null;
         }
 
-        // For now, return placeholder content as Microsoft Graph API doesn't provide direct access to list attachments
-        // In a full implementation, this would use SharePoint REST API or other approaches
-        final String placeholderContent = String.format(
-                "List Attachment Placeholder\n" + "Site ID: %s\n" + "List ID: %s\n" + "Item ID: %s\n" + "Attachment: %s\n"
-                        + "Note: Actual content retrieval requires SharePoint REST API integration.",
-                siteId, listId, itemId, attachmentName);
+        try {
+            // First get the list item to access its driveItem
+            final ListItem listItem =
+                    client.sites().bySiteId(siteId).lists().byListId(listId).items().byListItemId(itemId).get(requestConfiguration -> {
+                        requestConfiguration.queryParameters.expand = new String[] { "driveItem" };
+                    });
 
-        return new java.io.ByteArrayInputStream(placeholderContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            if (listItem == null || listItem.getDriveItem() == null) {
+                logger.debug("List item or driveItem not found: siteId={}, listId={}, itemId={}", siteId, listId, itemId);
+                return null;
+            }
+
+            final DriveItem driveItem = listItem.getDriveItem();
+            final String driveId = driveItem.getParentReference() != null ? driveItem.getParentReference().getDriveId() : null;
+
+            if (driveId == null || driveItem.getId() == null) {
+                logger.debug("Drive ID or driveItem ID not found: siteId={}, listId={}, itemId={}", siteId, listId, itemId);
+                return null;
+            }
+
+            // Search for the attachment by name in the driveItem children
+            final DriveItemCollectionResponse childrenResponse =
+                    client.drives().byDriveId(driveId).items().byDriveItemId(driveItem.getId()).children().get();
+
+            if (childrenResponse != null && childrenResponse.getValue() != null) {
+                for (final DriveItem attachment : childrenResponse.getValue()) {
+                    if (attachment != null && attachmentName.equals(attachment.getName())) {
+                        // Found the attachment, get its content
+                        return client.drives().byDriveId(driveId).items().byDriveItemId(attachment.getId()).content().get();
+                    }
+                }
+            }
+
+            logger.debug("Attachment not found: siteId={}, listId={}, itemId={}, attachmentName={}", siteId, listId, itemId,
+                    attachmentName);
+            return null;
+
+        } catch (final ApiException e) {
+            logger.warn("Failed to retrieve attachment content: siteId={}, listId={}, itemId={}, attachmentName={}", siteId, listId, itemId,
+                    attachmentName, e);
+            return null;
+        } catch (final Exception e) {
+            logger.warn("Unexpected error retrieving attachment content: siteId={}, listId={}, itemId={}, attachmentName={}", siteId,
+                    listId, itemId, attachmentName, e);
+            return null;
+        }
     }
 
     /**
@@ -1823,7 +2088,7 @@ public class Microsoft365Client implements Closeable {
                 response.getValue().forEach(consumer::accept);
 
                 // Check if there's a next page
-                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
                     break;
                 }

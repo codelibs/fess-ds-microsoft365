@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import static org.codelibs.fess.ds.ms365.Microsoft365Constants.UNKNOWN_TEMPLATE;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -28,12 +30,14 @@ import java.util.function.Consumer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.lang.StringUtil;
+import org.codelibs.fess.Constants;
 import org.codelibs.fess.ds.AbstractDataStore;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.util.ComponentUtil;
 
+import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.Permission;
@@ -48,6 +52,14 @@ import com.microsoft.graph.models.User;
 public abstract class Microsoft365DataStore extends AbstractDataStore {
 
     private static final Logger logger = LogManager.getLogger(Microsoft365DataStore.class);
+
+    // Common parameter constants
+    /** Parameter name for ignoring errors. */
+    protected static final String IGNORE_ERROR = "ignore_error";
+    /** Parameter name for ignoring system document libraries. */
+    protected static final String IGNORE_SYSTEM_LIBRARIES = "ignore_system_libraries";
+    /** Parameter name for ignoring system lists. */
+    protected static final String IGNORE_SYSTEM_LISTS = "ignore_system_lists";
 
     /**
      * Default constructor.
@@ -252,7 +264,7 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 response.getValue().forEach(consumer);
 
                 // Check if there's a next page
-                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
                     break;
                 }
@@ -300,7 +312,7 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 response.getValue().forEach(consumer);
 
                 // Check if there's a next page
-                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
                     break;
                 }
@@ -371,4 +383,118 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         }
     }
 
+    /**
+     * Gets the user email from a permission.
+     *
+     * @param permission The permission.
+     * @return The user email.
+     */
+    protected String getUserEmail(final Permission permission) {
+        if (permission.getGrantedToV2() != null && permission.getGrantedToV2().getUser() != null) {
+            final var user = permission.getGrantedToV2().getUser();
+
+            // In Microsoft Graph SDK v6, Identity object has id and displayName properties
+            // The id is often in email format for user identities
+            // Check if the id looks like an email address
+            if (user.getId() != null && !user.getId().isEmpty() && user.getId().contains("@")) {
+                return user.getId();
+            }
+
+            // Fallback to displayName if available
+            if (user.getDisplayName() != null && !user.getDisplayName().isEmpty()) {
+                return user.getDisplayName();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Checks if a drive is a system library.
+     *
+     * @param drive document library drive to check
+     * @return true if the drive is a system library, false otherwise
+     */
+    protected boolean isSystemLibrary(final Drive drive) {
+        if (drive.getWebUrl() == null) {
+            return false;
+        }
+
+        final String webUrl = drive.getWebUrl().toLowerCase();
+        return webUrl.contains("/_catalogs/") || webUrl.contains("/forms/") || webUrl.contains("/style%20library/")
+                || webUrl.contains("/style library/") || webUrl.contains("/formservertemplates/");
+    }
+
+    /**
+     * Checks if system libraries should be ignored during crawling.
+     *
+     * @param paramMap the data store parameters
+     * @return true if system libraries should be ignored, false otherwise
+     */
+    protected boolean isIgnoreSystemLibraries(final DataStoreParams paramMap) {
+        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_LIBRARIES, Constants.TRUE));
+    }
+
+    /**
+     * Checks if errors should be ignored during crawling.
+     *
+     * @param paramMap the data store parameters
+     * @return true if errors should be ignored, false otherwise
+     */
+    protected boolean isIgnoreError(final DataStoreParams paramMap) {
+        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.FALSE));
+    }
+
+    /**
+     * Checks if system lists should be ignored during crawling.
+     *
+     * @param paramMap the data store parameters
+     * @return true if system lists should be ignored, false otherwise
+     */
+    protected boolean isIgnoreSystemLists(final DataStoreParams paramMap) {
+        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_LISTS, Constants.TRUE));
+    }
+
+    /**
+     * Checks if the list is a system list.
+     *
+     * @param list the SharePoint list to check
+     * @return true if the list is a system list, false otherwise
+     */
+    protected boolean isSystemList(final com.microsoft.graph.models.List list) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Checking if list is system list - Name: {}, ID: {}, Template: {}, WebUrl: {}", list.getDisplayName(),
+                    list.getId(), list.getList() != null ? list.getList().getTemplate() : "unknown", list.getWebUrl());
+        }
+
+        // Use URL-based detection for better reliability when available
+        if (list.getWebUrl() != null) {
+            final String url = list.getWebUrl().toLowerCase();
+            return url.contains("/_catalogs/") || url.contains("/lists/userinformationlist") || url.contains("/lists/workflowtasks")
+                    || url.contains("/lists/accessrequests") || url.contains("/sitepages/") || url.contains("/siteassets/")
+                    || url.contains("/lists/masterpage") || url.contains("/lists/stylelibrary") || url.contains("/lists/formtemplates")
+                    || url.contains("/_layouts/") || url.contains("/workflowhistory") || url.contains("/_private/");
+        }
+
+        // Fallback to name-based detection when URL is not available
+        if (list.getDisplayName() == null) {
+            return false;
+        }
+        final String name = list.getDisplayName().toLowerCase();
+        return name.contains("master page") || name.contains("style library") || name.contains("_catalogs") || name.contains("workflow")
+                || name.contains("user information") || name.contains("access requests") || name.startsWith("_")
+                || name.contains("form templates");
+    }
+
+    /**
+     * Gets the template type of a SharePoint list.
+     *
+     * @param list the SharePoint list
+     * @return the template type of the list, or "unknown" if not available
+     */
+    protected String getListTemplateType(final com.microsoft.graph.models.List list) {
+        if (list.getList() != null && list.getList().getTemplate() != null) {
+            return list.getList().getTemplate();
+        }
+        return UNKNOWN_TEMPLATE;
+    }
 }

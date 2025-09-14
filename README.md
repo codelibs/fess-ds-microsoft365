@@ -16,7 +16,7 @@ This plugin extends [Fess](https://fess.codelibs.org/) enterprise search capabil
 - **OneDrive**: User drives, group drives, shared documents, specific drives, and list attachments with metadata extraction
 - **OneNote**: Complete notebooks with aggregated content from all sections and pages, supporting site, user, and group notebooks
 - **Teams**: Channels, messages, chats with conversation context
-- **SharePoint Document Libraries**: Sites and document libraries with enhanced content aggregation
+- **SharePoint Document Libraries**: Document library metadata indexing (libraries crawled as searchable entities, not individual files)
 - **SharePoint Lists**: Custom lists and list items with dynamic field mapping
 - **SharePoint Pages**: Site pages, news articles, and wiki pages with full content extraction
 
@@ -113,7 +113,7 @@ The plugin provides six specialized data store types, each optimized for differe
 | `oneDriveDataStore` | OneDrive | Files, Folders, Metadata | Document search, file discovery |
 | `oneNoteDataStore` | OneNote | Notebooks (with sections & pages content) | Knowledge base search, note finding, documentation search |
 | `teamsDataStore` | Teams | Channels, Messages, Chats | Conversation search, team communication |
-| `sharePointDocLibDataStore` | SharePoint | Document Libraries, Files | Document management, content discovery |
+| `sharePointDocLibDataStore` | SharePoint | Document Libraries (metadata only) | Document library discovery and metadata search |
 | `sharePointListDataStore` | SharePoint | Lists, List Items, Custom Fields | Structured data search, business process content |
 | `sharePointPageDataStore` | SharePoint | Site Pages, News Articles, Wiki Pages | Web content search, intranet portal search |
 
@@ -259,7 +259,7 @@ role=doclib.roles
 | doclib.site_url | The web URL of the SharePoint site. |
 | doclib.roles | Users/groups who can access the document library. |
 
-**Note**: SharePointDocLibDataStore indexes document libraries as individual searchable entities, combining library metadata with site information to provide comprehensive search content. The `doclib.content` field aggregates the library name, description, and parent site name for enhanced discoverability.
+**Important**: SharePointDocLibDataStore indexes document libraries themselves as searchable entities (not the files within them). Each document library becomes one search result containing aggregated metadata including library name, description, and parent site information. For individual file indexing within SharePoint document libraries, use the OneDriveDataStore which handles SharePoint document library files through the Microsoft Graph Drive API.
 
 #### SharePoint Lists
 
@@ -360,15 +360,75 @@ role=page.roles
 | Parameter | Description | Default | Notes |
 |-----------|-------------|---------|-------|
 | `team_id` | Specific team ID to crawl | All teams | Microsoft 365 group ID |
-| `exclude_team_ids` | Comma-separated team IDs to exclude | - | Multiple teams to skip |
-| `include_visibility` | Team visibility levels to include | All | `public`, `private` |
+| `exclude_team_id` | Comma-separated team IDs to exclude | - | Multiple teams to skip |
+| `include_visibility` | Team visibility levels to include | All | Comma-separated: `public`, `private` |
 | `channel_id` | Specific channel ID to crawl | All channels | Within specified team |
 | `chat_id` | Specific chat ID to crawl | - | For 1:1 or group chats |
 | `ignore_replies` | Skip reply messages | `false` | Process only root messages |
 | `append_attachment` | Include attachments in content | `true` | Append attachment text to message body |
 | `ignore_system_events` | Skip system event messages | `true` | Filter out system notifications |
 | `title_dateformat` | Date format for message titles | `yyyy/MM/dd'T'HH:mm:ss` | Java date pattern |
-| `title_timezone_offset` | Timezone offset for titles | `Z` | e.g., `+09:00`, `-05:00` |
+| `title_timezone` | Timezone for message titles | `Z` | e.g., `UTC`, `Asia/Tokyo`, `America/New_York` |
+| `number_of_threads` | Number of processing threads | `1` | Concurrent message processing |
+| `default_permissions` | Default role assignments | - | Additional permissions for all messages |
+| `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed messages |
+
+#### Teams Implementation Details
+
+The TeamsDataStore provides comprehensive Microsoft Teams content crawling with the following capabilities:
+
+**Core Functionality:**
+- **Team-based Crawling**: Processes teams, channels, and messages hierarchically
+- **Chat Support**: Crawls 1:1 and group chat conversations when chat_id is specified
+- **Message Aggregation**: Consolidates chat messages into searchable conversation threads
+- **Permission Mapping**: Extracts team/channel membership and maps to Fess role-based access control
+
+**Crawling Modes:**
+- **All Teams**: Leave `team_id` empty to crawl all accessible teams
+- **Specific Team**: Set `team_id` to crawl only that team's channels and messages
+- **Team Filtering**: Use `exclude_team_id` to skip specific teams (comma-separated IDs)
+- **Visibility Filtering**: Use `include_visibility` to filter by team visibility (public/private)
+- **Specific Channel**: Set both `team_id` and `channel_id` to crawl a single channel
+- **Chat Conversations**: Set `chat_id` to crawl specific chat conversations
+
+**Content Processing:**
+- **Message Title Generation**: Creates searchable titles using sender name and formatted timestamp
+- **Content Extraction**: Extracts message body content (text/HTML) with proper formatting
+- **Attachment Handling**: Optionally includes attachment information in message content
+- **Reply Threading**: Supports crawling of reply messages with parent message context
+- **System Event Filtering**: Automatically filters out system-generated messages
+
+**Message Metadata Fields:**
+The implementation extracts comprehensive message metadata including:
+- Basic properties: id, subject, body, created/modified timestamps
+- Sender information: from user/application details
+- Conversation context: team, channel, parent message references
+- Interaction data: mentions, reactions, importance level
+- Rich content: attachments, hosted contents, web URLs
+- Permission data: role-based access control from team/channel membership
+
+**Performance Optimizations:**
+- **Multi-threaded Processing**: Configurable thread pool for parallel message processing
+- **Efficient Pagination**: Uses Microsoft Graph PageIterator for handling large message sets
+- **Selective Field Expansion**: Expands only necessary fields to reduce API calls
+- **Permission Caching**: Caches group membership data to optimize permission mapping
+
+**Error Handling & Resilience:**
+- **Configurable Error Handling**: `ignore_error` parameter controls continuation on failures
+- **Comprehensive Logging**: Debug and info level logging for monitoring progress
+- **Thread Pool Management**: Proper executor service shutdown and cleanup
+- **Interruption Handling**: Graceful handling of thread interruption
+
+**Content Filtering:**
+- **Reply Message Filtering**: Option to skip reply messages and process only root messages
+- **System Event Filtering**: Automatic detection and filtering of system-generated events
+- **URL Pattern Matching**: Support for include/exclude patterns on message content
+
+**Use Cases:**
+- **Team Communication Search**: Find conversations across teams and channels
+- **Knowledge Discovery**: Search team discussions for solutions and decisions
+- **Compliance Monitoring**: Index team communications for compliance requirements
+- **Chat History Search**: Search through direct and group chat conversations
 
 **Crawling Modes**:
 - **Shared Documents Drive**: Enable `shared_documents_drive_crawler` to crawl the current user's OneDrive
@@ -394,6 +454,59 @@ When `list_attachments_crawler` is enabled, the plugin crawls file attachments f
 | `group_note_crawler` | Enable crawling of group notebooks | `true` | Crawls shared notebooks in Microsoft 365 groups |
 | `number_of_threads` | Number of processing threads | `1` | Controls concurrent notebook processing |
 
+#### OneNote Implementation Details
+
+The OneNoteDataStore provides comprehensive OneNote notebook crawling with the following implementation features:
+
+**Core Functionality:**
+- **Multi-Source Notebook Crawling**: Processes notebooks from three distinct sources in a systematic order
+- **Aggregated Content Extraction**: Consolidates all sections and pages within each notebook into searchable content
+- **Permission Mapping**: Extracts notebook access permissions and maps them to Fess role-based access control
+
+**Crawling Modes (Processing Order):**
+1. **Site Notebooks**: Crawls notebooks at the root SharePoint site level (`/sites/root/onenote/notebooks`)
+2. **User Notebooks**: Iterates through all licensed users and crawls their personal notebooks (`/users/{userId}/onenote/notebooks`)
+3. **Group Notebooks**: Crawls shared notebooks associated with Microsoft 365 groups (`/groups/{groupId}/onenote/notebooks`)
+
+**Content Processing Pipeline:**
+1. **Notebook Discovery**: Uses Microsoft Graph API to enumerate notebooks based on enabled crawling modes
+2. **Section Traversal**: For each notebook, retrieves all sections within it
+3. **Page Content Extraction**: For each section, fetches all pages and extracts their HTML content
+4. **Content Aggregation**: Combines all page content using Tika to extract plain text from HTML
+5. **Metadata Enrichment**: Captures notebook metadata including creation/modification times and access URLs
+
+**Configuration Flexibility:**
+- **Selective Crawling**: Enable/disable specific notebook sources independently
+- **Boolean Parameter Handling**: Case-insensitive boolean values (`true`, `True`, `TRUE`, `false`, `False`, `FALSE`)
+- **Invalid Value Handling**: Invalid boolean values default to `false` for safety
+- **Null Value Handling**: Null or missing parameters use default values (all crawlers enabled by default)
+
+**Performance Optimizations:**
+- **Concurrent Processing**: Configurable thread pool for parallel notebook processing
+- **Efficient API Usage**: Batches API calls where possible to reduce Graph API quota consumption
+- **Content Size Tracking**: Monitors and reports content size for each notebook
+
+**Error Handling & Resilience:**
+- **Graceful Degradation**: Handles invalid parameter values by defaulting to safe configurations
+- **Thread Pool Management**: Proper executor service lifecycle management with shutdown handling
+- **Comprehensive Logging**: Debug-level logging for monitoring crawling progress and troubleshooting
+
+**Content Metadata Fields:**
+The implementation extracts and indexes the following notebook metadata:
+- `notebook.name`: The display name of the notebook
+- `notebook.contents`: Aggregated text content from all sections and pages
+- `notebook.size`: Total size of the extracted content in characters
+- `notebook.created`: Notebook creation timestamp
+- `notebook.last_modified`: Last modification timestamp
+- `notebook.web_url`: Direct link to open the notebook in OneNote
+- `notebook.roles`: Users/groups with access permissions
+
+**Use Cases:**
+- **Knowledge Base Search**: Search across organizational OneNote documentation
+- **Personal Note Discovery**: Find information in personal OneNote notebooks
+- **Team Collaboration Search**: Search shared team notebooks for meeting notes and project documentation
+- **Cross-Platform Content**: Index OneNote content created from web, desktop, and mobile applications
+
 ### OneDrive-Specific Parameters
 
 | Parameter | Description | Default | Notes |
@@ -409,15 +522,56 @@ When `list_attachments_crawler` is enabled, the plugin crawls file attachments f
 | `site_id` | Specific site ID for list attachments | - | Full site ID format for list attachments |
 | `list_template_filter` | Filter lists by template type | `documentLibrary,genericList` | Comma-separated template types |
 
+#### OneDrive Crawling Implementation
+
+The OneDriveDataStore provides comprehensive Microsoft 365 file crawling capabilities with the following implementation features:
+
+**Multi-Mode Crawling Support:**
+- **Shared Documents Drive**: Crawls the current authenticated user's OneDrive (`/me/drive`)
+- **User Drives**: Iterates through all licensed users and crawls their OneDrive (`/users/{userId}/drive`)
+- **Group Drives**: Crawls Microsoft 365 group-associated drives (`/groups/{groupId}/drive`)
+- **Specific Drive**: Targets a single drive by ID (`/drives/{driveId}`)
+- **List Attachments**: Extracts file attachments from SharePoint list items across sites
+
+**Content Processing Pipeline:**
+1. **Drive Discovery**: Uses Microsoft Graph API to enumerate drives based on crawling mode
+2. **Hierarchical Traversal**: Recursively processes drive items starting from root, handling both files and folders
+3. **Content Extraction**: Leverages Tika for text extraction from supported file types with configurable size limits
+4. **Metadata Enrichment**: Extracts comprehensive file metadata including creation/modification times, permissions, parent folder information
+5. **Permission Mapping**: Converts Microsoft 365 access permissions to Fess role-based access control
+
+**Performance Optimizations:**
+- **Drive ID Caching**: Maintains thread-safe cache of user drive IDs to reduce API calls (`cachedUserDriveId` with `driveIdCacheLock`)
+- **Concurrent Processing**: Configurable thread pool for parallel processing of multiple drives/users
+- **Pagination Support**: Handles Microsoft Graph API pagination seamlessly using PageIterator
+- **Efficient Filtering**: Supports regex patterns for include/exclude files and MIME type filtering
+
+**Error Handling & Resilience:**
+- **Configurable Error Handling**: `ignore_error` parameter controls whether to continue on individual item failures
+- **Interruption Detection**: Proper handling of thread interruption during long-running crawling operations
+- **Comprehensive Logging**: Debug and info level logging for monitoring crawling progress and troubleshooting
+
+**Content Metadata Fields:**
+The implementation extracts and indexes 30+ metadata fields per file including:
+- Basic properties: name, description, size, MIME type, creation/modification timestamps
+- Location data: web URLs, WebDAV URLs, parent folder paths and names
+- Version tracking: ETag, CTag for change detection
+- Creator/modifier information: user, application, and device details
+- Rich metadata: image/photo/video properties, geographic location, file hashes
+- Permission data: role-based access control compatible with Fess security model
+
 ### SharePoint Document Library Parameters
 
 | Parameter | Description | Default | Notes |
 |-----------|-------------|---------|-------|
-| `site_id` | Specific site ID to crawl | All sites | Can be site URL or GUID |
+| `site_id` | Specific site ID to crawl | All sites | Full site ID format: `hostname,siteCollectionId,siteId` |
 | `exclude_site_id` | Site IDs to exclude | - | See format guide below |
-| `site_type_filter` | Filter by type | - | `root`, `subsite` |
-| `ignore_system_libraries` | Skip system libraries | `true` | Excludes Form Templates, etc. |
-| `ignore_folder` | Skip folder documents | `true` | Index folder structure |
+| `ignore_system_libraries` | Skip system libraries | `true` | Excludes Form Templates, Style Library, etc. |
+| `number_of_threads` | Number of processing threads | `1` | Concurrent document library processing |
+| `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed libraries |
+| `include_pattern` | Regex pattern for library names to include | - | Filter libraries by name matching |
+| `exclude_pattern` | Regex pattern for library names to exclude | - | Skip libraries with matching names |
+| `default_permissions` | Default role assignments | - | Additional permissions for all libraries |
 
 ##### exclude_site_id Format
 
@@ -438,6 +592,61 @@ SharePoint site IDs contain commas as part of their format (`hostname,siteCollec
   exclude_site_id=site1,site2,site3
   ```
 
+#### SharePoint Document Library Implementation Details
+
+The SharePointDocLibDataStore provides comprehensive metadata indexing for SharePoint document libraries across your organization with the following key features:
+
+**Core Functionality:**
+- **Library-Level Indexing**: Each SharePoint document library becomes a single searchable entity in the Fess index, combining library metadata with site context for enhanced discoverability
+- **Site Traversal**: Supports crawling all accessible sites or targeting specific sites using the `site_id` parameter
+- **System Library Filtering**: Automatically excludes system document libraries (Form Templates, Style Library, etc.) unless explicitly configured otherwise
+- **Permission Integration**: Extracts and maps SharePoint access permissions to Fess role-based access control
+
+**Content Aggregation:**
+The implementation creates rich, searchable content by combining:
+- Document library name and description
+- Parent SharePoint site name and context
+- Library creation and modification timestamps
+- Access permission information
+- Standardized URLs for both Graph API access and user navigation
+
+**URL Generation Strategy:**
+- **Graph API URL**: Preserved from Microsoft Graph response for API compatibility (`doclib.web_url`)
+- **Canonical URL**: Generated standardized SharePoint URLs for user navigation (`doclib.url`)
+  - Standard "Documents" libraries: `{siteUrl}/Shared%20Documents`
+  - Custom libraries: `{siteUrl}/{encodedLibraryName}`
+
+**Multi-Threading Support:**
+- Configurable concurrent processing using `number_of_threads` parameter
+- Thread-safe execution with proper resource cleanup
+- Graceful handling of thread interruption during long-running operations
+
+**Error Handling & Resilience:**
+- Comprehensive error tracking with integration into Fess failure URL service
+- Configurable error handling via `ignore_error` parameter
+- Detailed logging for monitoring and troubleshooting crawling operations
+- Statistical tracking for performance monitoring and reporting
+
+**Performance Optimizations:**
+- Efficient site and drive enumeration using Microsoft Graph API pagination
+- Drive type filtering to process only document library drives
+- Parallel processing of multiple document libraries within sites
+- Memory-efficient processing with proper resource management
+
+**Integration with Fess Security Model:**
+- Automatic extraction of SharePoint permissions using Microsoft Graph API
+- Conversion of Microsoft 365 access permissions to Fess role format
+- Support for default permission assignment via configuration
+- Inheritance of site-level permissions for document libraries
+
+**Use Cases:**
+- **Document Library Discovery**: Find and access specific SharePoint document libraries across the organization
+- **Content Organization**: Search for document libraries by name, description, or site context
+- **Permission Auditing**: Identify document libraries and their access permissions
+- **Site Navigation**: Discover available document libraries within SharePoint sites
+
+**Important Note**: This data store focuses on document library metadata indexing. For indexing individual files within SharePoint document libraries, use the OneDriveDataStore which handles SharePoint document library files through the Microsoft Graph Drive API.
+
 ### SharePoint List Parameters
 
 | Parameter | Description | Default | Notes |
@@ -453,7 +662,78 @@ SharePoint site IDs contain commas as part of their format (`hostname,siteCollec
 | `number_of_threads` | Number of processing threads | `1` | Concurrent list processing |
 | `default_permissions` | Default role assignments | - | Additional permissions for all items |
 
-**Recent Improvements**: SharePoint List crawling now includes enhanced statistical tracking, improved error handling with configurable failure recording, comprehensive URL filtering support, and robust permission processing to ensure secure and efficient list item indexing.
+#### SharePoint List Implementation Details
+
+The SharePointListDataStore provides comprehensive crawling and indexing of SharePoint lists and list items with the following capabilities:
+
+**Core Functionality:**
+- **List Item Indexing**: Each SharePoint list item becomes a searchable entity with dynamic field extraction and content aggregation
+- **Site-Specific Crawling**: Requires a `site_id` parameter to target lists within a specific SharePoint site
+- **List Filtering**: Supports crawling all lists or specific lists using `list_id`, with exclusion capabilities via `exclude_list_id`
+- **Template-Based Filtering**: Filter lists by SharePoint template types (e.g., 100 for Generic List, 101 for Document Library)
+- **System List Exclusion**: Automatically skips system lists unless explicitly configured otherwise
+
+**Content Extraction Strategy:**
+The implementation intelligently extracts content from list items:
+- **Title Extraction**: Searches for title in common fields (Title, LinkTitle, FileLeafRef)
+- **Content Building**: Aggregates text from content fields (Body, Description, Comments, Notes)
+- **Dynamic Field Mapping**: Captures all custom SharePoint fields in the `item.fields` map
+- **Field Expansion**: Automatically expands field data if not initially available via `$expand=fields`
+- **System Field Filtering**: Excludes internal SharePoint system fields from content aggregation
+
+**Multi-Threading Support:**
+- Configurable concurrent processing using `number_of_threads` parameter
+- Thread pool management with proper resource cleanup
+- Parallel processing of multiple lists and list items
+- Graceful handling of thread interruption
+
+**Error Handling & Resilience:**
+- **Failure Tracking**: Integration with Fess failure URL service for error monitoring
+- **Configurable Error Handling**: `ignore_error` parameter controls continuation on failures
+- **Statistical Tracking**: Monitors crawling progress with document counts and timing metrics
+- **Comprehensive Logging**: Debug and info level logging for troubleshooting
+
+**Permission Management:**
+- Extracts SharePoint list and item permissions via Microsoft Graph API
+- Maps Microsoft 365 access control to Fess role-based security model
+- Supports default permission assignment through configuration
+- Inherits site and list-level permissions for items
+
+**Attachment Support:**
+- Detects and processes file attachments on list items
+- Extracts attachment metadata including names and URLs
+- Includes attachment information in indexed content
+
+**URL Filtering:**
+- **Include Pattern**: Regex-based filtering to include specific items by title
+- **Exclude Pattern**: Regex-based filtering to exclude items by title
+- Efficient pattern matching with pre-compiled regex patterns
+
+**Use Cases:**
+- **Structured Data Search**: Index and search custom business data stored in SharePoint lists
+- **Task and Issue Tracking**: Search across task lists, issue trackers, and project lists
+- **Document Metadata**: Index document libraries managed as SharePoint lists
+- **Custom Applications**: Search data from Power Apps and custom SharePoint solutions
+- **Business Process Content**: Index workflow-related lists and approval items
+
+**List Template Types:**
+Common SharePoint list template IDs for filtering:
+- `100`: Generic List (Custom Lists)
+- `101`: Document Library
+- `102`: Survey
+- `103`: Links
+- `104`: Announcements
+- `105`: Contacts
+- `106`: Events
+- `107`: Tasks
+- `108`: Discussion Board
+- `109`: Picture Library
+
+**Performance Optimizations:**
+- Efficient list enumeration with pagination support
+- Lazy loading of list items with Microsoft Graph PageIterator
+- Memory-efficient processing of large lists
+- Caching of compiled regex patterns for filtering
 
 ### SharePoint Pages Parameters
 
@@ -644,10 +924,18 @@ ignore_replies=true
 ignore_system_events=true
 append_attachment=true
 number_of_threads=2
+title_dateformat=yyyy/MM/dd'T'HH:mm:ss
+title_timezone=Asia/Tokyo
 
 # Exclude multiple teams
-exclude_team_ids=team1-id,team2-id,team3-id
-include_visibility=public
+exclude_team_id=team1-id,team2-id,team3-id
+include_visibility=public,private
+
+# Crawl specific channel in a team
+# channel_id=19:channel-id@thread.tacv2
+
+# Crawl specific chat conversation
+# chat_id=19:chat-id@thread.v2
 ```
 
 ### Example 5: SharePoint Pages Content Search

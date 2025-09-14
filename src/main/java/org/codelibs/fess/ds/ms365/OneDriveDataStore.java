@@ -56,6 +56,7 @@ import java.util.stream.Stream;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codelibs.core.CoreLibConstants;
 import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
@@ -83,7 +84,6 @@ import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.DriveItemCollectionResponse;
 import com.microsoft.graph.models.Hashes;
 import com.microsoft.graph.models.ListItem;
-import com.microsoft.graph.models.Permission;
 import com.microsoft.graph.models.Site;
 import com.microsoft.kiota.ApiException;
 
@@ -251,9 +251,10 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         configMap.put(URL_FILTER, getUrlFilter(paramMap));
         if (logger.isDebugEnabled()) {
             logger.debug(
-                    "OneDrive crawling started with configuration - MaxSize: {}, IgnoreFolder: {}, IgnoreError: {}, MimeTypes: {}, Threads: {}",
+                    "OneDrive crawling started with configuration - MaxSize: {}, IgnoreFolder: {}, IgnoreError: {}, MimeTypes: {}, Threads: {}, IgnoreSystemLists: {}, IgnoreSystemLibraries: {}",
                     configMap.get(MAX_CONTENT_LENGTH), configMap.get(IGNORE_FOLDER), configMap.get(IGNORE_ERROR),
-                    java.util.Arrays.toString((String[]) configMap.get(SUPPORTED_MIMETYPES)), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
+                    java.util.Arrays.toString((String[]) configMap.get(SUPPORTED_MIMETYPES)), paramMap.getAsString(NUMBER_OF_THREADS, "1"),
+                    isIgnoreSystemLists(paramMap), isIgnoreSystemLibraries(paramMap));
         }
 
         final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
@@ -338,7 +339,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 configMap.put(CURRENT_CRAWLER, "list_attachments");
 
                 // Initialize list template types filter
-                final String templateFilter = paramMap.getAsString(LIST_TEMPLATE_FILTER, "documentLibrary,genericList");
+                final String templateFilter = paramMap.getAsString(LIST_TEMPLATE_FILTER,
+                        Microsoft365Constants.DOCUMENT_LIBRARY + "," + Microsoft365Constants.GENERIC_LIST);
                 final String[] templateTypes = templateFilter.split(",");
                 for (int i = 0; i < templateTypes.length; i++) {
                     templateTypes[i] = templateTypes[i].trim();
@@ -442,16 +444,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Checks if errors should be ignored.
-     *
-     * @param paramMap The data store parameters.
-     * @return true if errors should be ignored, false otherwise.
-     */
-    protected boolean isIgnoreError(final DataStoreParams paramMap) {
-        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.TRUE));
-    }
-
-    /**
      * Gets the maximum content length from the data store parameters.
      *
      * @param paramMap The data store parameters.
@@ -509,10 +501,23 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         }
 
         try {
-            getDriveItemsInDrive(client, actualDriveId, item -> executorService.execute(() -> processDriveItem(dataConfig, callback,
-                    configMap, paramMap, scriptMap, defaultDataMap, client, actualDriveId, item, Collections.emptyList())));
+            // Get drive information to check if it's a system library
+            final Drive drive = client.getDrive(actualDriveId);
             if (logger.isDebugEnabled()) {
-                logger.debug("Successfully initiated drive items processing for drive: {}", actualDriveId);
+                logger.debug("Retrieved drive info - Name: {}, DriveType: {}, System: {}", drive.getName(), drive.getDriveType(),
+                        isSystemLibrary(drive));
+            }
+
+            if (Microsoft365Constants.DOCUMENT_LIBRARY.equals(drive.getDriveType())
+                    && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive))) {
+                getDriveItemsInDrive(client, actualDriveId, item -> executorService.execute(() -> processDriveItem(dataConfig, callback,
+                        configMap, paramMap, scriptMap, defaultDataMap, client, actualDriveId, item, Collections.emptyList())));
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Successfully initiated drive items processing for drive: {}", actualDriveId);
+                }
+            } else if (logger.isDebugEnabled()) {
+                logger.debug("Skipping shared documents drive: {} - Type: {}, System: {}", drive.getName(), drive.getDriveType(),
+                        isSystemLibrary(drive));
             }
         } catch (final Exception e) {
             logger.warn("Failed to process shared documents drive: {}", actualDriveId, e);
@@ -549,12 +554,19 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             try {
                 final Drive userDrive = client.getUserDrive(userId);
                 if (logger.isDebugEnabled()) {
-                    logger.debug("Retrieved drive for user {} - Drive Name: {}, Drive ID: {}", displayName, userDrive.getName(),
-                            userDrive.getId());
+                    logger.debug("Retrieved drive for user {} - Drive Name: {}, Drive ID: {}, DriveType: {}, System: {}", displayName,
+                            userDrive.getName(), userDrive.getId(), userDrive.getDriveType(), isSystemLibrary(userDrive));
                 }
 
-                getDriveItemsInDrive(client, userDrive.getId(), item -> executorService.execute(() -> processDriveItem(dataConfig, callback,
-                        configMap, paramMap, scriptMap, defaultDataMap, client, userDrive.getId(), item, getUserRoles(user))));
+                if (Microsoft365Constants.DOCUMENT_LIBRARY.equals(userDrive.getDriveType())
+                        && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(userDrive))) {
+                    getDriveItemsInDrive(client, userDrive.getId(),
+                            item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap,
+                                    defaultDataMap, client, userDrive.getId(), item, getUserRoles(user))));
+                } else if (logger.isDebugEnabled()) {
+                    logger.debug("Skipping user drive: {} - Type: {}, System: {}", userDrive.getName(), userDrive.getDriveType(),
+                            isSystemLibrary(userDrive));
+                }
 
                 if (logger.isDebugEnabled()) {
                     logger.debug("Successfully initiated processing for user {}'s drive", displayName);
@@ -605,12 +617,19 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             try {
                 final Drive groupDrive = client.getGroupDrive(groupId);
                 if (logger.isDebugEnabled()) {
-                    logger.debug("Retrieved drive for group {} - Drive Name: {}, Drive ID: {}", displayName, groupDrive.getName(),
-                            groupDrive.getId());
+                    logger.debug("Retrieved drive for group {} - Drive Name: {}, Drive ID: {}, DriveType: {}, System: {}", displayName,
+                            groupDrive.getName(), groupDrive.getId(), groupDrive.getDriveType(), isSystemLibrary(groupDrive));
                 }
 
-                getDriveItemsInDrive(client, groupDrive.getId(), item -> executorService.execute(() -> processDriveItem(dataConfig,
-                        callback, configMap, paramMap, scriptMap, defaultDataMap, client, groupDrive.getId(), item, getGroupRoles(group))));
+                if (Microsoft365Constants.DOCUMENT_LIBRARY.equals(groupDrive.getDriveType())
+                        && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(groupDrive))) {
+                    getDriveItemsInDrive(client, groupDrive.getId(),
+                            item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap,
+                                    defaultDataMap, client, groupDrive.getId(), item, getGroupRoles(group))));
+                } else if (logger.isDebugEnabled()) {
+                    logger.debug("Skipping group drive: {} - Type: {}, System: {}", groupDrive.getName(), groupDrive.getDriveType(),
+                            isSystemLibrary(groupDrive));
+                }
 
                 if (logger.isDebugEnabled()) {
                     logger.debug("Successfully initiated processing for group {}'s drive", displayName);
@@ -694,7 +713,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             final Map<String, Object> resultMap = new LinkedHashMap<>(paramMap.asMap());
             final Map<String, Object> filesMap = new HashMap<>();
 
-            long maxContentLength = ((Long) configMap.get(MAX_CONTENT_LENGTH));
+            long maxContentLength = (Long) configMap.get(MAX_CONTENT_LENGTH);
             if (maxContentLength < 0) {
                 try {
                     final ContentLengthHelper contentLengthHelper = ComponentUtil.getComponent("contentLengthHelper");
@@ -841,31 +860,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Gets the user email from a permission.
-     *
-     * @param permission The permission.
-     * @return The user email.
-     */
-    protected String getUserEmail(final Permission permission) {
-        if (permission.getGrantedToV2() != null && permission.getGrantedToV2().getUser() != null) {
-            final var user = permission.getGrantedToV2().getUser();
-
-            // In Microsoft Graph SDK v6, Identity object has id and displayName properties
-            // The id is often in email format for user identities
-            // Check if the id looks like an email address
-            if ((user.getId() != null && !user.getId().isEmpty()) && user.getId().contains("@")) {
-                return user.getId();
-            }
-
-            // Fallback to displayName if available
-            if (user.getDisplayName() != null && !user.getDisplayName().isEmpty()) {
-                return user.getDisplayName();
-            }
-        }
-        return null;
-    }
-
-    /**
      * Gets the URL for a drive item.
      *
      * @param configMap The configuration map.
@@ -914,7 +908,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             return s;
         }
         try {
-            return URLEncoder.encode(s, Constants.UTF_8).replace("+", "%20");
+            return URLEncoder.encode(s, CoreLibConstants.UTF_8).replace("+", "%20");
         } catch (final UnsupportedEncodingException e) {
             // ignore
             return s;
@@ -933,21 +927,43 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      */
     protected String getDriveItemContents(final Microsoft365Client client, final String driveId, final DriveItem item,
             final long maxContentLength, final boolean ignoreError) {
-        // Check if this is a ListAttachment virtual item
-        if (item.getAdditionalData() != null && "ListAttachment".equals(item.getAdditionalData().get("sourceType"))) {
-            final String siteId = (String) item.getAdditionalData().get("siteId");
-            final String listId = (String) item.getAdditionalData().get("listId");
-            final String listItemId = (String) item.getAdditionalData().get("listItemId");
-            final String attachmentName = (String) item.getAdditionalData().get("attachmentName");
+        // Check if this is a virtual item (ListAttachment or Fields-based)
+        if (item.getAdditionalData() != null) {
+            final String sourceType = (String) item.getAdditionalData().get("sourceType");
 
-            if (siteId != null && listId != null && listItemId != null && attachmentName != null) {
-                return getListAttachmentContents(client, siteId, listId, listItemId, attachmentName, maxContentLength, ignoreError);
+            if ("ListAttachment".equals(sourceType)) {
+                // Legacy ListAttachment handling
+                final String siteId = (String) item.getAdditionalData().get("siteId");
+                final String listId = (String) item.getAdditionalData().get("listId");
+                final String listItemId = (String) item.getAdditionalData().get("listItemId");
+                final String attachmentName = (String) item.getAdditionalData().get("attachmentName");
+
+                if (siteId != null && listId != null && listItemId != null && attachmentName != null) {
+                    return getListAttachmentContents(client, siteId, listId, listItemId, attachmentName, maxContentLength, ignoreError);
+                }
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Missing required metadata for ListAttachment: siteId={}, listId={}, listItemId={}, attachmentName={}",
+                            siteId, listId, listItemId, attachmentName);
+                }
+                return StringUtil.EMPTY;
             }
-            if (logger.isDebugEnabled()) {
-                logger.debug("Missing required metadata for ListAttachment: siteId={}, listId={}, listItemId={}, attachmentName={}", siteId,
-                        listId, listItemId, attachmentName);
+
+            if ("Fields".equals(sourceType)) {
+                // Fields-based attachment handling - use the same method as ListAttachment
+                final String siteId = (String) item.getAdditionalData().get("siteId");
+                final String listId = (String) item.getAdditionalData().get("listId");
+                final String listItemId = (String) item.getAdditionalData().get("listItemId");
+                final String attachmentName = (String) item.getAdditionalData().get("attachmentName");
+
+                if (siteId != null && listId != null && listItemId != null && attachmentName != null) {
+                    return getListAttachmentContents(client, siteId, listId, listItemId, attachmentName, maxContentLength, ignoreError);
+                }
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Missing required metadata for Fields attachment: siteId={}, listId={}, listItemId={}, attachmentName={}",
+                            siteId, listId, listItemId, attachmentName);
+                }
+                return StringUtil.EMPTY;
             }
-            return StringUtil.EMPTY;
         }
 
         // Original DriveItem processing
@@ -1018,7 +1034,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 response.getValue().forEach(child -> getDriveItemChildren(client, driveId, consumer, child));
 
                 // Check if there's a next page
-                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                     // No more pages, exit loop
                     break;
                 }
@@ -1158,17 +1174,25 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         // Get all lists in the site
         client.getSiteLists(site.getId(), list -> {
             final boolean targetType = isTargetListType(configMap, list);
+            final boolean systemList = isSystemList(list);
+            final boolean ignoreSystem = isIgnoreSystemLists(paramMap);
 
             if (logger.isDebugEnabled()) {
-                final String template =
-                        (list.getList() != null && list.getList().getTemplate() != null) ? list.getList().getTemplate() : "unknown";
-                logger.debug("Evaluating list: {} (ID: {}, Template: {}) - TargetType: {}", list.getDisplayName(), list.getId(), template,
-                        targetType);
+                logger.debug("Evaluating list: {} (ID: {}, Template: {}) - TargetType: {}, SystemList: {}, IgnoreSystem: {}",
+                        list.getDisplayName(), list.getId(), getListTemplateType(list), targetType, systemList, ignoreSystem);
             }
 
             if (!targetType) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Skipping list {} - doesn't match template filter", list.getDisplayName());
+                }
+                return;
+            }
+
+            if (ignoreSystem && systemList) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Skipping system list {} (ID: {}) because ignore_system_lists is enabled", list.getDisplayName(),
+                            list.getId());
                 }
                 return;
             }
@@ -1255,10 +1279,58 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             logger.debug("Calling processDriveItem for list attachment: {} with {} roles", virtualAttachment.getName(), roles.size());
         }
 
-        // Process as a regular drive item using the site ID as driveId
+        // Extract the correct drive ID from the virtual attachment's parentReference
+        String driveId = null;
+        if (virtualAttachment.getParentReference() != null) {
+            driveId = virtualAttachment.getParentReference().getDriveId();
+        }
+
+        // For Fields-based attachments, use a placeholder drive ID if none exists
+        if (driveId == null) {
+            final String sourceType = (String) virtualAttachment.getAdditionalData().get("sourceType");
+            if (!"Fields".equals(sourceType)) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("No drive ID found in virtual attachment parentReference for: {} - cannot process as drive item",
+                            virtualAttachment.getName());
+                }
+                return;
+            }
+            // Use the site ID as a placeholder drive ID for Fields-based attachments
+            driveId = site.getId();
+            if (logger.isDebugEnabled()) {
+                logger.debug("Using site ID as placeholder drive ID for Fields-based attachment: {} (driveId={})",
+                        virtualAttachment.getName(), driveId);
+            }
+        }
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Validating drive ID: {} for list attachment: {} in list: {} for item: {}", driveId, virtualAttachment.getName(),
+                    list.getName(), item.getName());
+        }
+        if (Microsoft365Constants.DOCUMENT_LIBRARY.equals(getListTemplateType(list)) && driveId != null) {
+            try {
+                final Drive drive = client.getDrive(driveId);
+                if (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive)) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Skipping system library {} (ID: {}) because ignore_system_libraries is enabled", drive.getName(),
+                                drive.getId());
+                    }
+                    return;
+                }
+            } catch (final Exception e) {
+                logger.warn("Failed to validate drive ID {} for attachment: {}", driveId, virtualAttachment.getName(), e);
+                return;
+            }
+        }
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Processing virtual attachment as drive item with drive ID: {} for attachment: {}", driveId,
+                    virtualAttachment.getName());
+        }
+
+        // Process as a regular drive item using the correct drive ID from parentReference
         // This will trigger the full indexing pipeline
-        processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site.getId(), virtualAttachment,
-                roles);
+        processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, driveId, virtualAttachment, roles);
 
         if (logger.isDebugEnabled()) {
             logger.debug("Completed processing list attachment: {} for item: {}", virtualAttachment.getName(), item.getId());
@@ -1313,19 +1385,16 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             return true;
         }
 
-        if (list.getList() != null && list.getList().getTemplate() != null) {
-            final String template = list.getList().getTemplate();
-            if (logger.isDebugEnabled()) {
-                logger.debug("List {} has template type: {} : {}", list.getDisplayName(), template, templateTypes);
-            }
-            for (final String targetTemplate : templateTypes) {
-                if (template.equals(targetTemplate)) {
-                    return true;
-                }
-            }
-            return false;
+        final String template = getListTemplateType(list);
+        if (logger.isDebugEnabled()) {
+            logger.debug("List {} has template type: {} : {}", list.getDisplayName(), template, templateTypes);
         }
-        return true;
+        for (final String targetTemplate : templateTypes) {
+            if (template.equals(targetTemplate)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

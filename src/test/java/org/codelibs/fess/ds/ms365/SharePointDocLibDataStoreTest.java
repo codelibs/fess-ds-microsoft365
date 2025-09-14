@@ -178,20 +178,6 @@ public class SharePointDocLibDataStoreTest extends LastaFluteTestCase {
         assertFalse(dataStore.isIgnoreError(paramMap3)); // default is false
     }
 
-    public void test_isIgnoreFolder() {
-        final DataStoreParams paramMap1 = new DataStoreParams();
-        paramMap1.put("ignore_folder", "true");
-
-        final DataStoreParams paramMap2 = new DataStoreParams();
-        paramMap2.put("ignore_folder", "false");
-
-        final DataStoreParams paramMap3 = new DataStoreParams();
-
-        assertTrue(dataStore.isIgnoreFolder(paramMap1));
-        assertFalse(dataStore.isIgnoreFolder(paramMap2));
-        assertTrue(dataStore.isIgnoreFolder(paramMap3)); // default is true
-    }
-
     public void test_isExcludedSite_multipleSites() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_site_id", "site1,site2, site3 ");
