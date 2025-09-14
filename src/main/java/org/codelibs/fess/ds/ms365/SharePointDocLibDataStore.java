@@ -64,16 +64,12 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     protected static final String SITE_ID = "site_id";
     /** Comma-separated list of site IDs to exclude from crawling */
     protected static final String EXCLUDE_SITE_ID = "exclude_site_id";
-    /** Flag to ignore system document libraries */
-    protected static final String IGNORE_SYSTEM_LIBRARIES = "ignore_system_libraries";
     /** Number of concurrent threads for processing */
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
     /** Default permissions to assign to crawled documents */
     protected static final String DEFAULT_PERMISSIONS = "default_permissions";
     /** Flag to continue crawling on errors */
     protected static final String IGNORE_ERROR = "ignore_error";
-    /** Flag to skip folder documents */
-    protected static final String IGNORE_FOLDER = "ignore_folder";
     /** Regular expression pattern for files to include */
     protected static final String INCLUDE_PATTERN = "include_pattern";
     /** Regular expression pattern for files to exclude */
@@ -127,11 +123,10 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
 
         final Map<String, Object> configMap = new LinkedHashMap<>();
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
-        configMap.put(IGNORE_FOLDER, isIgnoreFolder(paramMap));
 
         if (logger.isDebugEnabled()) {
-            logger.debug("SharePoint Document Library crawling started - Configuration: IgnoreError={}, IgnoreFolder={}, Threads={}",
-                    configMap.get(IGNORE_ERROR), configMap.get(IGNORE_FOLDER), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
+            logger.debug("SharePoint Document Library crawling started - Configuration: IgnoreError={}, Threads={}",
+                    configMap.get(IGNORE_ERROR), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
         final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
@@ -226,7 +221,8 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             if (logger.isDebugEnabled()) {
                 logger.debug("Evaluating drive: {} - Type: {}, System: {}", drive.getName(), drive.getDriveType(), isSystemLibrary(drive));
             }
-            if ("documentLibrary".equals(drive.getDriveType()) && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive))) {
+            if (Microsoft365Constants.DOCUMENT_LIBRARY.equals(drive.getDriveType())
+                    && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive))) {
 
                 executorService.execute(() -> {
                     try {
@@ -416,7 +412,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                 }
                 // For now, we'll accept all document library drives
                 // In a more sophisticated implementation, we could check if the drive belongs to this site
-                if ("documentLibrary".equals(drive.getDriveType())) {
+                if (Microsoft365Constants.DOCUMENT_LIBRARY.equals(drive.getDriveType())) {
                     consumer.accept(drive);
                 }
             });
@@ -445,7 +441,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                     assignPermission(client, permissions, permission);
                 });
 
-                if ((response.getOdataNextLink() == null) || response.getOdataNextLink().isEmpty()) {
+                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
                     break;
                 }
                 response = client.getDrivePermissionsByNextLink(driveId, "root", response.getOdataNextLink());
@@ -454,27 +450,6 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             logger.warn("Failed to get permissions for drive: {}", driveId, e);
         }
         return permissions;
-    }
-
-    /**
-     * Gets the user email from a permission.
-     *
-     * @param permission the permission object containing user information
-     * @return user email or display name, or null if not found
-     */
-    protected String getUserEmail(final com.microsoft.graph.models.Permission permission) {
-        if (permission.getGrantedToV2() != null && permission.getGrantedToV2().getUser() != null) {
-            final var user = permission.getGrantedToV2().getUser();
-
-            if ((user.getId() != null && !user.getId().isEmpty()) && user.getId().contains("@")) {
-                return user.getId();
-            }
-
-            if (user.getDisplayName() != null && !user.getDisplayName().isEmpty()) {
-                return user.getDisplayName();
-            }
-        }
-        return null;
     }
 
     // Configuration helper methods
@@ -523,52 +498,6 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
         }
 
         return false;
-    }
-
-    /**
-     * Checks if a drive is a system library.
-     *
-     * @param drive document library drive to check
-     * @return true if the drive is a system library, false otherwise
-     */
-    protected boolean isSystemLibrary(final Drive drive) {
-        if (drive.getWebUrl() == null) {
-            return false;
-        }
-
-        final String webUrl = drive.getWebUrl().toLowerCase();
-        return webUrl.contains("/_catalogs/") || webUrl.contains("/forms/") || webUrl.contains("/style%20library/")
-                || webUrl.contains("/style library/") || webUrl.contains("/formservertemplates/");
-    }
-
-    /**
-     * Checks if system libraries should be ignored.
-     *
-     * @param paramMap data store parameters
-     * @return true if system libraries should be ignored, false otherwise
-     */
-    protected boolean isIgnoreSystemLibraries(final DataStoreParams paramMap) {
-        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_LIBRARIES, Constants.TRUE));
-    }
-
-    /**
-     * Checks if errors should be ignored during crawling.
-     *
-     * @param paramMap data store parameters
-     * @return true if errors should be ignored, false otherwise
-     */
-    protected boolean isIgnoreError(final DataStoreParams paramMap) {
-        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.FALSE));
-    }
-
-    /**
-     * Checks if folder documents should be ignored.
-     *
-     * @param paramMap data store parameters
-     * @return true if folders should be ignored, false otherwise
-     */
-    protected boolean isIgnoreFolder(final DataStoreParams paramMap) {
-        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_FOLDER, Constants.TRUE));
     }
 
     /**

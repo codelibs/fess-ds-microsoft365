@@ -71,8 +71,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
     /** The parameter name for default permissions. */
     protected static final String DEFAULT_PERMISSIONS = "default_permissions";
-    /** The parameter name for ignoring system lists. */
-    protected static final String IGNORE_SYSTEM_LISTS = "ignore_system_lists";
     /** The parameter name for ignoring errors. */
     protected static final String IGNORE_ERROR = "ignore_error";
     /** The parameter name for the include pattern. */
@@ -308,14 +306,14 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             final Microsoft365Client client, final Site site, final com.microsoft.graph.models.List list, final ListItem item) {
 
         final String listTemplate;
-        if ((list.getList() == null) || (list.getList().getTemplate() == null)) {
+        if (list.getList() == null || list.getList().getTemplate() == null) {
             logger.warn("List template type is unknown for list: {} (ID: {}) - skipping item ID: {}", list.getDisplayName(), list.getId(),
                     item.getId());
             return;
         }
         listTemplate = list.getList().getTemplate();
 
-        if (!"genericList".equals(listTemplate)) {
+        if (!Microsoft365Constants.GENERIC_LIST.equals(listTemplate)) {
             if (logger.isDebugEnabled()) {
                 logger.debug("Skipping non-generic list item - List: {} (ID: {}, Template: {}), Item ID: {}", list.getDisplayName(),
                         list.getId(), listTemplate, item.getId());
@@ -673,37 +671,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Checks if the list is a system list.
-     *
-     * @param list the SharePoint list to check
-     * @return true if the list is a system list, false otherwise
-     */
-    protected boolean isSystemList(final com.microsoft.graph.models.List list) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("Checking if list is system list - Name: {}, ID: {}, Template: {}, WebUrl: {}", list.getDisplayName(),
-                    list.getId(), list.getList() != null ? list.getList().getTemplate() : "unknown", list.getWebUrl());
-        }
-
-        // Use URL-based detection for better reliability when available
-        if (list.getWebUrl() != null) {
-            final String url = list.getWebUrl().toLowerCase();
-            return url.contains("/_catalogs/") || url.contains("/lists/userinformationlist") || url.contains("/lists/workflowtasks")
-                    || url.contains("/lists/accessrequests") || url.contains("/sitepages/") || url.contains("/siteassets/")
-                    || url.contains("/lists/masterpage") || url.contains("/lists/stylelibrary") || url.contains("/lists/formtemplates")
-                    || url.contains("/_layouts/") || url.contains("/workflowhistory") || url.contains("/_private/");
-        }
-
-        // Fallback to name-based detection when URL is not available
-        if (list.getDisplayName() == null) {
-            return false;
-        }
-        final String name = list.getDisplayName().toLowerCase();
-        return name.contains("master page") || name.contains("style library") || name.contains("_catalogs") || name.contains("workflow")
-                || name.contains("user information") || name.contains("access requests") || name.startsWith("_")
-                || name.contains("form templates");
-    }
-
-    /**
      * Checks if the list item should be crawled based on include/exclude patterns.
      *
      * @param paramMap the data store parameters
@@ -742,26 +709,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         }
 
         return true;
-    }
-
-    /**
-     * Checks if errors should be ignored during crawling.
-     *
-     * @param paramMap the data store parameters
-     * @return true if errors should be ignored, false otherwise
-     */
-    protected boolean isIgnoreError(final DataStoreParams paramMap) {
-        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.FALSE));
-    }
-
-    /**
-     * Checks if system lists should be ignored during crawling.
-     *
-     * @param paramMap the data store parameters
-     * @return true if system lists should be ignored, false otherwise
-     */
-    protected boolean isIgnoreSystemLists(final DataStoreParams paramMap) {
-        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_LISTS, Constants.TRUE));
     }
 
     /**

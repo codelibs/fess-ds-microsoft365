@@ -258,10 +258,8 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     logger.debug("Successfully processed consolidated chat message for chat: {} with {} individual messages", chatId,
                             msgList.size());
                 }
-            } else {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("No messages found for chat: {}", chatId);
-                }
+            } else if (logger.isDebugEnabled()) {
+                logger.debug("No messages found for chat: {}", chatId);
             }
         } else if (logger.isDebugEnabled()) {
             logger.debug("No specific chat ID configured - skipping chat message processing");
@@ -721,10 +719,9 @@ public class TeamsDataStore extends Microsoft365DataStore {
      * @return true if the message is a system event and should be ignored, false otherwise.
      */
     protected boolean isSystemEvent(final Map<String, Object> configMap, final ChatMessage message) {
-        if (((Boolean) configMap.get(IGNORE_SYSTEM_EVENTS))) {
-            if (message.getBody() != null && "<systemEventMessage/>".equals(message.getBody().getContent())) {
-                return true;
-            }
+        if ((Boolean) configMap.get(IGNORE_SYSTEM_EVENTS) && message.getBody() != null
+                && "<systemEventMessage/>".equals(message.getBody().getContent())) {
+            return true;
         }
         return false;
     }

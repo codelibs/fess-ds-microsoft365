@@ -41,6 +41,8 @@ public final class Microsoft365Constants {
     public static final String LIST_ITEM_TITLE_KEY = "listItemTitle";
     /** Key for storing the SharePoint site name in additional data. */
     public static final String SITE_NAME_KEY = "siteName";
+    /** Key for storing the SharePoint site URL in additional data. */
+    public static final String SITE_URL_KEY = "siteUrl";
     /** Key for storing the SharePoint list name in additional data. */
     public static final String LIST_NAME_KEY = "listName";
     /** Key for storing the SharePoint list template type in additional data. */
@@ -83,4 +85,27 @@ public final class Microsoft365Constants {
     // Default values
     /** Default value used when the list template type is unknown. */
     public static final String UNKNOWN_TEMPLATE = "unknown";
+    /** SharePoint list template type for document libraries. */
+    public static final String DOCUMENT_LIBRARY = "documentLibrary";
+    /** SharePoint list template type for generic lists. */
+    public static final String GENERIC_LIST = "genericList";
+
+    // SharePoint Authentication Notes
+    /**
+     * For SharePoint list attachments access, the Azure App Registration requires:
+     *
+     * 1. Microsoft Graph API Permissions (for basic site/list operations):
+     *    - Sites.Read.All or Sites.ReadWrite.All
+     *    - Files.Read.All (if accessing files)
+     *
+     * 2. SharePoint Permissions (for REST API access to attachments):
+     *    - The app must be granted access to the specific SharePoint tenant
+     *    - Scope: https://{tenant}.sharepoint.com/.default
+     *    - Note: Some endpoints may require delegated permissions rather than app-only
+     *
+     * 3. Authentication Flow:
+     *    - Use Microsoft Graph SDK for site/list metadata
+     *    - Use SharePoint REST API with proper scopes for attachments
+     *    - Token scope must match the target API (Graph vs SharePoint)
+     */
 }

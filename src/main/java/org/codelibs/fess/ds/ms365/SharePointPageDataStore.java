@@ -238,12 +238,11 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                     try {
                         processPage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site, page);
                     } catch (final Exception e) {
-                        if (isIgnoreError(paramMap)) {
-                            logger.warn("Failed to process page: {} in site: {}", page.getTitle(), site.getDisplayName(), e);
-                        } else {
+                        if (!isIgnoreError(paramMap)) {
                             throw new DataStoreCrawlingException(page.getTitle(),
                                     "Failed to process page: " + page.getTitle() + " in site: " + site.getDisplayName(), e);
                         }
+                        logger.warn("Failed to process page: {} in site: {}", page.getTitle(), site.getDisplayName(), e);
                     }
                 });
             } else if (logger.isDebugEnabled()) {
@@ -312,11 +311,8 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
             final String pageType = determinePageType(fullPage);
             pageMap.put(PAGE_TYPE, pageType);
 
-            if (fullPage instanceof SitePage) {
-                final SitePage sitePage = (SitePage) fullPage;
-                if (sitePage.getPromotionKind() != null) {
-                    pageMap.put(PAGE_PROMOTION_STATE, sitePage.getPromotionKind().toString());
-                }
+            if ((fullPage instanceof final SitePage sitePage) && (sitePage.getPromotionKind() != null)) {
+                pageMap.put(PAGE_PROMOTION_STATE, sitePage.getPromotionKind().toString());
             }
 
             // Description
@@ -464,16 +460,13 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
         // Extract content from canvasLayout (if available in specific implementations)
         CanvasLayout layout = null;
-        if (page instanceof SitePage) {
-            final SitePage sitePage = (SitePage) page;
+        if (page instanceof final SitePage sitePage) {
             layout = sitePage.getCanvasLayout();
             if (logger.isDebugEnabled()) {
                 logger.debug("Retrieved canvas layout for SitePage: {}", layout != null);
             }
-        } else {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Page is not a SitePage, cannot access canvas layout: {}", page.getClass().getSimpleName());
-            }
+        } else if (logger.isDebugEnabled()) {
+            logger.debug("Page is not a SitePage, cannot access canvas layout: {}", page.getClass().getSimpleName());
         }
 
         if (layout != null) {
@@ -515,10 +508,8 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
             if (logger.isDebugEnabled()) {
                 logger.debug("Processed {} web parts from canvas layout", webPartCount);
             }
-        } else {
-            if (logger.isDebugEnabled()) {
-                logger.debug("No canvas layout available for page: {}", page.getId());
-            }
+        } else if (logger.isDebugEnabled()) {
+            logger.debug("No canvas layout available for page: {}", page.getId());
         }
 
         final String result = content.toString().trim();
@@ -544,19 +535,18 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
             logger.debug("Processing web part type: {}", webpart.getClass().getSimpleName());
         }
 
-        if (webpart instanceof TextWebPart) {
-            final TextWebPart textPart = (TextWebPart) webpart;
+        if (webpart instanceof final TextWebPart textPart) {
             if (textPart.getInnerHtml() != null) {
                 // Improved HTML tag removal and text cleanup
-                String text = textPart.getInnerHtml()
+                final String text = textPart.getInnerHtml()
                         .replaceAll("(?i)<br[^>]*>", "\n") // Convert <br> to newlines
                         .replaceAll("(?i)<p[^>]*>", "\n") // Convert <p> to newlines
                         .replaceAll("(?i)</p>", "\n") // Convert </p> to newlines
                         .replaceAll("<[^>]+>", " ") // Remove remaining HTML tags
-                        .replaceAll("&nbsp;", " ") // Replace &nbsp; with spaces
-                        .replaceAll("&lt;", "<") // HTML entity decoding
-                        .replaceAll("&gt;", ">")
-                        .replaceAll("&amp;", "&")
+                        .replace("&nbsp;", " ") // Replace &nbsp; with spaces
+                        .replace("&lt;", "<") // HTML entity decoding
+                        .replace("&gt;", ">")
+                        .replace("&amp;", "&")
                         .replaceAll("\\s+", " ") // Normalize whitespace
                         .trim();
 
@@ -567,8 +557,7 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                     }
                 }
             }
-        } else if (webpart instanceof StandardWebPart) {
-            final StandardWebPart stdPart = (StandardWebPart) webpart;
+        } else if (webpart instanceof final StandardWebPart stdPart) {
             if (stdPart.getData() != null) {
                 final int beforeLength = content.length();
                 extractDataFromObject(stdPart.getData(), content);
@@ -576,10 +565,8 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                     logger.debug("Extracted from StandardWebPart: {} characters", content.length() - beforeLength);
                 }
             }
-        } else {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Unsupported web part type: {}", webpart.getClass().getSimpleName());
-            }
+        } else if (logger.isDebugEnabled()) {
+            logger.debug("Unsupported web part type: {}", webpart.getClass().getSimpleName());
         }
     }
 
@@ -609,10 +596,10 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                     if (!text.isEmpty() && text.length() > 5 && !isGuidOrId(text)) {
 
                         // Clean up HTML entities and tags if present
-                        String cleanText = text.replaceAll("&nbsp;", " ")
-                                .replaceAll("&lt;", "<")
-                                .replaceAll("&gt;", ">")
-                                .replaceAll("&amp;", "&")
+                        final String cleanText = text.replace("&nbsp;", " ")
+                                .replace("&lt;", "<")
+                                .replace("&gt;", ">")
+                                .replace("&amp;", "&")
                                 .replaceAll("<[^>]+>", " ")
                                 .replaceAll("\\s+", " ")
                                 .trim();
@@ -633,10 +620,10 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         } else if (data instanceof String) {
             final String text = ((String) data).trim();
             if (!text.isEmpty() && text.length() > 5 && !isGuidOrId(text)) {
-                String cleanText = text.replaceAll("&nbsp;", " ")
-                        .replaceAll("&lt;", "<")
-                        .replaceAll("&gt;", ">")
-                        .replaceAll("&amp;", "&")
+                final String cleanText = text.replace("&nbsp;", " ")
+                        .replace("&lt;", "<")
+                        .replace("&gt;", ">")
+                        .replace("&amp;", "&")
                         .replaceAll("<[^>]+>", " ")
                         .replaceAll("\\s+", " ")
                         .trim();
@@ -660,17 +647,11 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         }
 
         // Check for GUID pattern
-        if (text.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")) {
-            return true;
-        }
 
         // Check for numeric IDs
-        if (text.matches("\\d+")) {
-            return true;
-        }
-
         // Check for short alphanumeric IDs
-        if (text.length() < 10 && text.matches("[a-zA-Z0-9]+")) {
+        if (text.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}") || text.matches("\\d+")
+                || text.length() < 10 && text.matches("[a-zA-Z0-9]+")) {
             return true;
         }
 
@@ -723,13 +704,10 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
      * @return the page type as a string
      */
     protected String determinePageType(final BaseSitePage page) {
-        if (page instanceof SitePage) {
-            final SitePage sitePage = (SitePage) page;
-            if (sitePage.getPromotionKind() != null) {
-                // Check if it's a news post
-                if ("newsPost".equalsIgnoreCase(sitePage.getPromotionKind().toString())) {
-                    return "news";
-                }
+        if (page instanceof final SitePage sitePage) {
+            // Check if it's a news post
+            if (sitePage.getPromotionKind() != null && "newsPost".equalsIgnoreCase(sitePage.getPromotionKind().toString())) {
+                return "news";
             }
             // For now, assume it's an article since page layout type is not readily available
             return "article";
@@ -768,10 +746,8 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         // Check URL patterns
         final String pageUrl = page.getWebUrl();
         if (pageUrl != null) {
-            if (excludePattern != null && excludePattern.matcher(pageUrl).find()) {
-                return false;
-            }
-            if (includePattern != null && !includePattern.matcher(pageUrl).find()) {
+            if (excludePattern != null && excludePattern.matcher(pageUrl).find()
+                    || includePattern != null && !includePattern.matcher(pageUrl).find()) {
                 return false;
             }
         }
@@ -822,12 +798,9 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                 .get(stream -> stream.map(String::trim).filter(StringUtil::isNotBlank).collect(Collectors.toList()));
 
         // Check by site ID
-        if (excludeList.contains(site.getId())) {
-            return true;
-        }
-
         // Check by site name
-        if (site.getDisplayName() != null && excludeList.stream().anyMatch(pattern -> site.getDisplayName().matches(pattern))) {
+        if (excludeList.contains(site.getId())
+                || site.getDisplayName() != null && excludeList.stream().anyMatch(pattern -> site.getDisplayName().matches(pattern))) {
             return true;
         }
 
@@ -855,6 +828,7 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
      * @param paramMap data store parameters
      * @return true if errors should be ignored, false otherwise
      */
+    @Override
     protected boolean isIgnoreError(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.FALSE));
     }
