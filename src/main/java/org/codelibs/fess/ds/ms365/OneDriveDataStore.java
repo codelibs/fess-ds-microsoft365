@@ -1318,7 +1318,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                     return;
                 }
             } catch (final Exception e) {
-                logger.warn("Failed to validate drive ID {} for attachment: {}}", driveId, virtualAttachment.getName(), e);
+                logger.warn("Failed to validate drive ID {} for attachment: {}", driveId, virtualAttachment.getName(), e);
                 return;
             }
         }
