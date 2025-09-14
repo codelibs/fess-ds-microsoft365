@@ -13,7 +13,7 @@ This plugin extends [Fess](https://fess.codelibs.org/) enterprise search capabil
 ## ✨ Key Features
 
 ### 📁 **Comprehensive Content Crawling**
-- **OneDrive**: User and group files, folders with metadata extraction
+- **OneDrive**: User drives, group drives, shared documents, specific drives, and list attachments with metadata extraction
 - **OneNote**: Complete notebooks with aggregated content from all sections and pages, supporting site, user, and group notebooks
 - **Teams**: Channels, messages, chats with conversation context
 - **SharePoint Document Libraries**: Sites and document libraries with enhanced content aggregation
@@ -175,6 +175,12 @@ role=file.roles
 | file.search_result | Search result metadata (if file was found via search). |
 | file.special_folder | Special folder name (if file is in a special folder). |
 | file.video | Video metadata (for video files). |
+| file.source_type | Source type (e.g., "ListAttachment" for list attachments). |
+| file.site_id | SharePoint site ID (for list attachments). |
+| file.list_id | SharePoint list ID (for list attachments). |
+| file.list_item_id | SharePoint list item ID (for list attachments). |
+| file.list_title | SharePoint list title (for list attachments). |
+| file.list_item_title | SharePoint list item title (for list attachments). |
 
 #### OneNote
 
@@ -365,10 +371,19 @@ role=page.roles
 | `title_timezone_offset` | Timezone offset for titles | `Z` | e.g., `+09:00`, `-05:00` |
 
 **Crawling Modes**:
-- **All Teams**: Leave `team_id` empty to crawl all accessible teams
-- **Specific Team**: Set `team_id` to crawl only that team's channels
-- **Specific Channel**: Set both `team_id` and `channel_id`
-- **Chat Messages**: Set `chat_id` to crawl a specific chat (messages are aggregated)
+- **Shared Documents Drive**: Enable `shared_documents_drive_crawler` to crawl the current user's OneDrive
+- **User Drives**: Enable `user_drive_crawler` to crawl all licensed users' OneDrive
+- **Group Drives**: Enable `group_drive_crawler` to crawl Microsoft 365 group drives
+- **Specific Drive**: Set `drive_id` to crawl only that specific drive
+- **List Attachments**: Enable `list_attachments_crawler` to crawl SharePoint list item attachments
+
+**List Attachments Crawling**:
+When `list_attachments_crawler` is enabled, the plugin crawls file attachments from SharePoint list items:
+- Crawls all sites or a specific site (using `site_id` parameter)
+- Filters lists by template type using `list_template_filter`
+- Processes each list item's attachments as virtual DriveItems
+- Includes additional metadata like site name, list title, and item information
+- Inherits site-level permissions for secure access
 
 ### OneNote-Specific Parameters
 
@@ -390,6 +405,9 @@ role=page.roles
 | `shared_documents_drive_crawler` | Enable shared documents crawling | `true` | Crawl default user's OneDrive |
 | `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
+| `list_attachments_crawler` | Enable list attachments crawling | `false` | Crawl SharePoint list item attachments |
+| `site_id` | Specific site ID for list attachments | - | Full site ID format for list attachments |
+| `list_template_filter` | Filter lists by template type | `documentLibrary,genericList` | Comma-separated template types |
 
 ### SharePoint Document Library Parameters
 

@@ -101,15 +101,25 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
 
     /**
      * Creates a new fixed-size thread pool for executing tasks concurrently.
+     * Thread pool size is capped to prevent excessive resource usage.
      *
      * @param nThreads The number of threads in the pool.
      * @return A new ExecutorService with a fixed thread pool.
      */
     protected ExecutorService newFixedThreadPool(final int nThreads) {
+        // Cap thread pool size to prevent system resource exhaustion
+        final int maxThreads = Runtime.getRuntime().availableProcessors() * 2;
+        final int actualThreads = Math.min(nThreads, maxThreads);
+
         if (logger.isDebugEnabled()) {
-            logger.debug("Executor Thread Pool: {}", nThreads);
+            if (actualThreads != nThreads) {
+                logger.debug("Executor Thread Pool capped: requested={}, actual={}, max={}", nThreads, actualThreads, maxThreads);
+            } else {
+                logger.debug("Executor Thread Pool: {}", actualThreads);
+            }
         }
-        return new ThreadPoolExecutor(nThreads, nThreads, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(nThreads),
+
+        return new ThreadPoolExecutor(actualThreads, actualThreads, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(actualThreads),
                 new ThreadPoolExecutor.CallerRunsPolicy());
     }
 

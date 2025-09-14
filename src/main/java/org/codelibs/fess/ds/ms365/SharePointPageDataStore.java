@@ -210,6 +210,16 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Stores all pages in the specified SharePoint site.
+     *
+     * @param dataConfig the data configuration
+     * @param callback the index update callback
+     * @param configMap configuration parameters map
+     * @param paramMap data store parameters
+     * @param scriptMap script parameters map
+     * @param defaultDataMap default data values map
+     * @param executorService executor service for concurrent processing
+     * @param client Microsoft 365 client instance
+     * @param site SharePoint site to crawl
      */
     protected void storePagesInSite(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
@@ -244,6 +254,16 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Processes an individual SharePoint page and stores it in the index.
+     *
+     * @param dataConfig the data configuration
+     * @param callback the index update callback
+     * @param configMap configuration parameters map
+     * @param paramMap data store parameters
+     * @param scriptMap script parameters map
+     * @param defaultDataMap default data values map
+     * @param client Microsoft 365 client instance
+     * @param site SharePoint site containing the page
+     * @param page SharePoint page to process
      */
     protected void processPage(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
@@ -416,6 +436,9 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Extracts text content from a SharePoint page's canvas layout.
+     *
+     * @param page the SharePoint page to extract content from
+     * @return extracted text content as a string
      */
     protected String extractPageContent(final BaseSitePage page) {
         final StringBuilder content = new StringBuilder();
@@ -508,6 +531,9 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Extracts content from a web part.
+     *
+     * @param webpart the web part to extract content from
+     * @param content StringBuilder to append extracted content to
      */
     protected void extractWebPartContent(final WebPart webpart, final StringBuilder content) {
         if (webpart == null) {
@@ -559,6 +585,9 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Recursively extracts text content from web part data.
+     *
+     * @param data the data object to extract content from
+     * @param content StringBuilder to append extracted content to
      */
     protected void extractDataFromObject(final Object data, final StringBuilder content) {
         if (data == null) {
@@ -621,6 +650,9 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Checks if a string appears to be a GUID or ID.
+     *
+     * @param text the text to check
+     * @return true if the text appears to be a GUID or ID, false otherwise
      */
     protected boolean isGuidOrId(final String text) {
         if (StringUtil.isBlank(text)) {
@@ -647,6 +679,12 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Gets permissions for a specific page.
+     *
+     * @param client Microsoft 365 client instance
+     * @param siteId SharePoint site ID
+     * @param pageId SharePoint page ID
+     * @param paramMap data store parameters
+     * @return list of permission strings for the page
      */
     protected List<String> getPagePermissions(final Microsoft365Client client, final String siteId, final String pageId,
             final DataStoreParams paramMap) {
@@ -680,6 +718,9 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Determines the type of the page (news, wiki, article, etc.).
+     *
+     * @param page the SharePoint page to determine type for
+     * @return the page type as a string
      */
     protected String determinePageType(final BaseSitePage page) {
         if (page instanceof SitePage) {
@@ -698,6 +739,12 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Checks if a page should be processed based on filter criteria.
+     *
+     * @param paramMap data store parameters
+     * @param page the SharePoint page to check
+     * @param includePattern pattern for including pages
+     * @param excludePattern pattern for excluding pages
+     * @return true if the page should be processed, false otherwise
      */
     protected boolean isTargetPage(final DataStoreParams paramMap, final BaseSitePage page, final Pattern includePattern,
             final Pattern excludePattern) {
@@ -734,6 +781,9 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Checks if a page is a system page.
+     *
+     * @param page the SharePoint page to check
+     * @return true if the page is a system page, false otherwise
      */
     protected boolean isSystemPage(final BaseSitePage page) {
         if (page.getWebUrl() != null) {
@@ -747,6 +797,9 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Gets the site ID from parameters.
+     *
+     * @param paramMap data store parameters
+     * @return the site ID string
      */
     protected String getSiteId(final DataStoreParams paramMap) {
         return paramMap.getAsString(SITE_ID);
@@ -754,6 +807,10 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Checks if a site is excluded from crawling.
+     *
+     * @param paramMap data store parameters
+     * @param site the SharePoint site to check
+     * @return true if the site is excluded, false otherwise
      */
     protected boolean isExcludedSite(final DataStoreParams paramMap, final Site site) {
         final String excludeSiteIds = paramMap.getAsString(EXCLUDE_SITE_ID);
@@ -784,6 +841,9 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Checks if system pages should be ignored.
+     *
+     * @param paramMap data store parameters
+     * @return true if system pages should be ignored, false otherwise
      */
     protected boolean isIgnoreSystemPages(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_PAGES, Constants.TRUE));
@@ -791,6 +851,9 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Checks if errors should be ignored during crawling.
+     *
+     * @param paramMap data store parameters
+     * @return true if errors should be ignored, false otherwise
      */
     protected boolean isIgnoreError(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.FALSE));
@@ -798,6 +861,10 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Gets a compiled regex pattern from parameters.
+     *
+     * @param paramMap data store parameters
+     * @param key the parameter key for the pattern
+     * @return compiled Pattern or null if pattern is blank or invalid
      */
     protected Pattern getPattern(final DataStoreParams paramMap, final String key) {
         final String pattern = paramMap.getAsString(key);
@@ -813,6 +880,11 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Gets the field name with proper mapping.
+     *
+     * @param paramMap data store parameters
+     * @param prefix the prefix for the field
+     * @param field the field name
+     * @return the mapped field name
      */
     protected String getFieldName(final DataStoreParams paramMap, final String prefix, final String field) {
         final String key = prefix + "." + field;
@@ -821,11 +893,19 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
     /**
      * Gets crawler stats key for the site.
+     *
+     * @param siteName the name of the SharePoint site
+     * @return statistics key object for tracking crawl metrics
      */
     protected StatsKeyObject getCrawlerStats(final String siteName) {
         return new StatsKeyObject("SharePointPage#" + siteName);
     }
 
+    /**
+     * Sets the extractor name for content extraction.
+     *
+     * @param extractorName the name of the extractor to use
+     */
     public void setExtractorName(final String extractorName) {
         this.extractorName = extractorName;
     }
