@@ -13,7 +13,7 @@ This plugin extends [Fess](https://fess.codelibs.org/) enterprise search capabil
 ## ✨ Key Features
 
 ### 📁 **Comprehensive Content Crawling**
-- **OneDrive**: User drives, group drives, shared documents, specific drives, and list attachments with metadata extraction
+- **OneDrive**: User drives, group drives, shared documents, and specific drives with metadata extraction
 - **OneNote**: Complete notebooks with aggregated content from all sections and pages, supporting site, user, and group notebooks
 - **Teams**: Channels, messages, chats with conversation context
 - **SharePoint Document Libraries**: Document library metadata indexing (libraries crawled as searchable entities, not individual files)
@@ -175,12 +175,6 @@ role=file.roles
 | file.search_result | Search result metadata (if file was found via search). |
 | file.special_folder | Special folder name (if file is in a special folder). |
 | file.video | Video metadata (for video files). |
-| file.source_type | Source type (e.g., "ListAttachment" for list attachments). |
-| file.site_id | SharePoint site ID (for list attachments). |
-| file.list_id | SharePoint list ID (for list attachments). |
-| file.list_item_id | SharePoint list item ID (for list attachments). |
-| file.list_title | SharePoint list title (for list attachments). |
-| file.list_item_title | SharePoint list item title (for list attachments). |
 
 #### OneNote
 
@@ -435,15 +429,6 @@ The implementation extracts comprehensive message metadata including:
 - **User Drives**: Enable `user_drive_crawler` to crawl all licensed users' OneDrive
 - **Group Drives**: Enable `group_drive_crawler` to crawl Microsoft 365 group drives
 - **Specific Drive**: Set `drive_id` to crawl only that specific drive
-- **List Attachments**: Enable `list_attachments_crawler` to crawl SharePoint list item attachments
-
-**List Attachments Crawling**:
-When `list_attachments_crawler` is enabled, the plugin crawls file attachments from SharePoint list items:
-- Crawls all sites or a specific site (using `site_id` parameter)
-- Filters lists by template type using `list_template_filter`
-- Processes each list item's attachments as virtual DriveItems
-- Includes additional metadata like site name, list title, and item information
-- Inherits site-level permissions for secure access
 
 ### OneNote-Specific Parameters
 
@@ -518,9 +503,6 @@ The implementation extracts and indexes the following notebook metadata:
 | `shared_documents_drive_crawler` | Enable shared documents crawling | `true` | Crawl default user's OneDrive |
 | `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
-| `list_attachments_crawler` | Enable list attachments crawling | `false` | Crawl SharePoint list item attachments |
-| `site_id` | Specific site ID for list attachments | - | Full site ID format for list attachments |
-| `list_template_filter` | Filter lists by template type | `documentLibrary,genericList` | Comma-separated template types |
 
 #### OneDrive Crawling Implementation
 
@@ -531,7 +513,6 @@ The OneDriveDataStore provides comprehensive Microsoft 365 file crawling capabil
 - **User Drives**: Iterates through all licensed users and crawls their OneDrive (`/users/{userId}/drive`)
 - **Group Drives**: Crawls Microsoft 365 group-associated drives (`/groups/{groupId}/drive`)
 - **Specific Drive**: Targets a single drive by ID (`/drives/{driveId}`)
-- **List Attachments**: Extracts file attachments from SharePoint list items across sites
 
 **Content Processing Pipeline:**
 1. **Drive Discovery**: Uses Microsoft Graph API to enumerate drives based on crawling mode
@@ -700,9 +681,10 @@ The implementation intelligently extracts content from list items:
 - Inherits site and list-level permissions for items
 
 **Attachment Support:**
-- Detects and processes file attachments on list items
-- Extracts attachment metadata including names and URLs
-- Includes attachment information in indexed content
+- **List Item Attachments**: Detects and processes file attachments on SharePoint list items
+- **Attachment Metadata**: Extracts attachment metadata including names, URLs, and file information
+- **Content Integration**: Includes attachment information in indexed content for comprehensive search
+- **Secure Access**: Inherits SharePoint permissions for proper access control to attached files
 
 **URL Filtering:**
 - **Include Pattern**: Regex-based filtering to include specific items by title
@@ -713,6 +695,7 @@ The implementation intelligently extracts content from list items:
 - **Structured Data Search**: Index and search custom business data stored in SharePoint lists
 - **Task and Issue Tracking**: Search across task lists, issue trackers, and project lists
 - **Document Metadata**: Index document libraries managed as SharePoint lists
+- **List Attachments**: Search file attachments uploaded to SharePoint list items
 - **Custom Applications**: Search data from Power Apps and custom SharePoint solutions
 - **Business Process Content**: Index workflow-related lists and approval items
 
