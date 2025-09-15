@@ -143,18 +143,6 @@ public class OneDriveDataStoreTest extends LastaFluteTestCase {
         assertTrue(dataStore.isGroupDriveCrawler(paramMap));
     }
 
-    public void test_isListAttachmentsCrawler() {
-        DataStoreParams paramMap = new DataStoreParams();
-
-        assertFalse(dataStore.isListAttachmentsCrawler(paramMap)); // default is false
-
-        paramMap.put(OneDriveDataStore.LIST_ATTACHMENTS_CRAWLER, "false");
-        assertFalse(dataStore.isListAttachmentsCrawler(paramMap));
-
-        paramMap.put(OneDriveDataStore.LIST_ATTACHMENTS_CRAWLER, "true");
-        assertTrue(dataStore.isListAttachmentsCrawler(paramMap));
-    }
-
     public void test_isIgnoreFolder() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -331,17 +319,6 @@ public class OneDriveDataStoreTest extends LastaFluteTestCase {
         // Test custom value
         paramMap.put(OneDriveDataStore.NUMBER_OF_THREADS, "5");
         assertEquals("5", paramMap.getAsString(OneDriveDataStore.NUMBER_OF_THREADS));
-    }
-
-    public void test_siteIdParameter() {
-        DataStoreParams paramMap = new DataStoreParams();
-
-        // Test with no site ID
-        assertNull(paramMap.getAsString(OneDriveDataStore.SITE_ID));
-
-        // Test with site ID
-        paramMap.put(OneDriveDataStore.SITE_ID, "site456");
-        assertEquals("site456", paramMap.getAsString(OneDriveDataStore.SITE_ID));
     }
 
     /*

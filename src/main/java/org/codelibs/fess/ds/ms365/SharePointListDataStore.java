@@ -156,84 +156,23 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         try (final Microsoft365Client client = createClient(paramMap)) {
             final String siteId = getSiteId(paramMap);
             if (StringUtil.isBlank(siteId)) {
-                logger.error("site_id parameter is required for SharePoint list crawling - operation aborted");
-                return;
-            }
-
-            if (logger.isDebugEnabled()) {
-                logger.debug("Retrieving site information for site ID: {}", siteId);
-            }
-
-            final Site site = client.getSite(siteId);
-            if (logger.isDebugEnabled()) {
-                logger.debug("Retrieved site: {} (ID: {}, WebUrl: {})", site.getDisplayName(), site.getId(), site.getWebUrl());
-            }
-
-            final String listId = getListId(paramMap);
-
-            if (StringUtil.isNotBlank(listId)) {
-                // Crawl specific list
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Crawling specific list with ID: {} in site: {}", listId, site.getDisplayName());
-                }
-
-                final com.microsoft.graph.models.List list = client.getList(siteId, listId);
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Retrieved list: {} (ID: {}, Template: {}, IsSystem: {})", list.getDisplayName(), list.getId(),
-                            list.getList() != null ? list.getList().getTemplate() : "unknown", isSystemList(list));
-                }
-
-                // Check ignore_system_lists setting even for specific list ID
-                if (!isIgnoreSystemLists(paramMap) || !isSystemList(list)) {
-                    storeList(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site, list);
-                } else if (logger.isDebugEnabled()) {
-                    logger.debug("Skipping system list {} (ID: {}) because ignore_system_lists is enabled", list.getDisplayName(),
-                            list.getId());
-                }
-            } else {
-                // Crawl all lists in the site
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Crawling all lists in site: {} with filtering", site.getDisplayName());
-                }
-
-                client.getSiteLists(siteId, list -> {
-
-                    final boolean excluded = isExcludedList(paramMap, list);
-                    final boolean targetType = isTargetListType(paramMap, list);
-                    final boolean systemList = isSystemList(list);
-                    final boolean ignoreSystem = isIgnoreSystemLists(paramMap);
-
-                    if (logger.isDebugEnabled()) {
-                        logger.debug(
-                                "Evaluating list: {} (ID: {}, Template: {}) - Excluded: {}, TargetType: {}, SystemList: {}, IgnoreSystem: {}",
-                                list.getDisplayName(), list.getId(), list.getList() != null ? list.getList().getTemplate() : "unknown",
-                                excluded, targetType, systemList, ignoreSystem);
-                    }
-
-                    if (!excluded && targetType && (!ignoreSystem || !systemList)) {
-                        try {
-                            if (logger.isDebugEnabled()) {
-                                logger.debug("Processing list: {} (ID: {}) in site: {}", list.getDisplayName(), list.getId(),
-                                        site.getDisplayName());
-                            }
-                            storeList(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site,
-                                    list);
-                            if (logger.isDebugEnabled()) {
-                                logger.debug("Successfully processed list: {} (ID: {})", list.getDisplayName(), list.getId());
-                            }
-                        } catch (final Exception e) {
-                            logger.warn("Failed to process list: {} (ID: {}) in site: {}", list.getDisplayName(), list.getId(),
-                                    site.getDisplayName(), e);
-                            if (!isIgnoreError(paramMap)) {
-                                throw new DataStoreCrawlingException(site.getDisplayName(),
-                                        "Failed to process list: " + list.getDisplayName(), e);
-                            }
+                client.getSites(site -> {
+                    try {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Processing site: {} (ID: {})", site.getDisplayName(), site.getId());
                         }
-                    } else if (logger.isDebugEnabled()) {
-                        logger.debug("Skipped list: {} (ID: {}) - Excluded: {}, TargetType: {}, SystemList: {}", list.getDisplayName(),
-                                list.getId(), excluded, targetType, systemList);
+                        storeListBySite(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, executorService, client,
+                                site.getId());
+                    } catch (final Exception e) {
+                        logger.warn("Failed to process site: {} (ID: {})", site.getDisplayName(), site.getId(), e);
+                        if (!isIgnoreError(paramMap)) {
+                            throw new DataStoreCrawlingException(site.getDisplayName(), "Failed to process site: " + site.getDisplayName(),
+                                    e);
+                        }
                     }
                 });
+            } else {
+                storeListBySite(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, executorService, client, siteId);
             }
             if (logger.isDebugEnabled()) {
                 logger.debug("Shutting down thread executor.");
@@ -244,6 +183,99 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             throw new InterruptedRuntimeException(e);
         } finally {
             executorService.shutdownNow();
+        }
+    }
+
+    /**
+     * Stores lists for a specific SharePoint site.
+     *
+     * @param dataConfig the data configuration
+     * @param callback the index update callback
+     * @param paramMap the data store parameters
+     * @param scriptMap the script map
+     * @param defaultDataMap the default data map
+     * @param configMap the configuration map
+     * @param executorService the executor service for parallel processing
+     * @param client the Microsoft365 client
+     * @param siteId the ID of the SharePoint site to process
+     */
+    protected void storeListBySite(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+            final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Map<String, Object> configMap,
+            final ExecutorService executorService, final Microsoft365Client client, final String siteId) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Retrieving site information for site ID: {}", siteId);
+        }
+
+        final Site site = client.getSite(siteId);
+        if (logger.isDebugEnabled()) {
+            logger.debug("Retrieved site: {} (ID: {}, WebUrl: {})", site.getDisplayName(), site.getId(), site.getWebUrl());
+        }
+
+        final String listId = getListId(paramMap);
+
+        if (StringUtil.isNotBlank(listId)) {
+            // Crawl specific list
+            if (logger.isDebugEnabled()) {
+                logger.debug("Crawling specific list with ID: {} in site: {}", listId, site.getDisplayName());
+            }
+
+            final com.microsoft.graph.models.List list = client.getList(siteId, listId);
+            if (logger.isDebugEnabled()) {
+                logger.debug("Retrieved list: {} (ID: {}, Template: {}, IsSystem: {})", list.getDisplayName(), list.getId(),
+                        list.getList() != null ? list.getList().getTemplate() : "unknown", isSystemList(list));
+            }
+
+            // Check ignore_system_lists setting even for specific list ID
+            if (!isIgnoreSystemLists(paramMap) || !isSystemList(list)) {
+                storeList(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site, list);
+            } else if (logger.isDebugEnabled()) {
+                logger.debug("Skipping system list {} (ID: {}) because ignore_system_lists is enabled", list.getDisplayName(),
+                        list.getId());
+            }
+        } else {
+            // Crawl all lists in the site
+            if (logger.isDebugEnabled()) {
+                logger.debug("Crawling all lists in site: {} with filtering", site.getDisplayName());
+            }
+
+            client.getSiteLists(siteId, list -> {
+
+                final boolean excluded = isExcludedList(paramMap, list);
+                final boolean targetType = isTargetListType(paramMap, list);
+                final boolean systemList = isSystemList(list);
+                final boolean ignoreSystem = isIgnoreSystemLists(paramMap);
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug(
+                            "Evaluating list: {} (ID: {}, Template: {}) - Excluded: {}, TargetType: {}, SystemList: {}, IgnoreSystem: {}",
+                            list.getDisplayName(), list.getId(), list.getList() != null ? list.getList().getTemplate() : "unknown",
+                            excluded, targetType, systemList, ignoreSystem);
+                }
+
+                if (!excluded && targetType && (!ignoreSystem || !systemList)) {
+                    try {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Processing list: {} (ID: {}) in site: {}", list.getDisplayName(), list.getId(),
+                                    site.getDisplayName());
+                        }
+                        storeList(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client, site,
+                                list);
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Successfully processed list: {} (ID: {})", list.getDisplayName(), list.getId());
+                        }
+                    } catch (final Exception e) {
+                        logger.warn("Failed to process list: {} (ID: {}) in site: {}", list.getDisplayName(), list.getId(),
+                                site.getDisplayName(), e);
+                        if (!isIgnoreError(paramMap)) {
+                            throw new DataStoreCrawlingException(site.getDisplayName(), "Failed to process list: " + list.getDisplayName(),
+                                    e);
+                        }
+                    }
+                } else if (logger.isDebugEnabled()) {
+                    logger.debug("Skipped list: {} (ID: {}) - Excluded: {}, TargetType: {}, SystemList: {}", list.getDisplayName(),
+                            list.getId(), excluded, targetType, systemList);
+                }
+            });
         }
     }
 

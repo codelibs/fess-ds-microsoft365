@@ -13,7 +13,7 @@ This plugin extends [Fess](https://fess.codelibs.org/) enterprise search capabil
 ## ✨ Key Features
 
 ### 📁 **Comprehensive Content Crawling**
-- **OneDrive**: User drives, group drives, shared documents, specific drives, and list attachments with metadata extraction
+- **OneDrive**: User drives, group drives, shared documents, and specific drives with metadata extraction
 - **OneNote**: Complete notebooks with aggregated content from all sections and pages, supporting site, user, and group notebooks
 - **Teams**: Channels, messages, chats with conversation context
 - **SharePoint Document Libraries**: Document library metadata indexing (libraries crawled as searchable entities, not individual files)
@@ -175,12 +175,6 @@ role=file.roles
 | file.search_result | Search result metadata (if file was found via search). |
 | file.special_folder | Special folder name (if file is in a special folder). |
 | file.video | Video metadata (for video files). |
-| file.source_type | Source type (e.g., "ListAttachment" for list attachments). |
-| file.site_id | SharePoint site ID (for list attachments). |
-| file.list_id | SharePoint list ID (for list attachments). |
-| file.list_item_id | SharePoint list item ID (for list attachments). |
-| file.list_title | SharePoint list title (for list attachments). |
-| file.list_item_title | SharePoint list item title (for list attachments). |
 
 #### OneNote
 
@@ -250,8 +244,8 @@ role=doclib.roles
 | doclib.name | The name of the document library. |
 | doclib.description | The description of the document library. |
 | doclib.content | Rich content combining document library name, description, and site name for enhanced search. |
-| doclib.url | The Microsoft Graph API web URL for the document library. |
-| doclib.canonical_url | The standardized SharePoint URL for accessing the document library. |
+| doclib.web_url | The Microsoft Graph API web URL for the document library. |
+| doclib.url | The standardized SharePoint URL for accessing the document library. |
 | doclib.created | The time at which the document library was created. |
 | doclib.modified | The last time the document library was modified. |
 | doclib.type | The type of the drive (e.g., "documentLibrary"). |
@@ -435,15 +429,6 @@ The implementation extracts comprehensive message metadata including:
 - **User Drives**: Enable `user_drive_crawler` to crawl all licensed users' OneDrive
 - **Group Drives**: Enable `group_drive_crawler` to crawl Microsoft 365 group drives
 - **Specific Drive**: Set `drive_id` to crawl only that specific drive
-- **List Attachments**: Enable `list_attachments_crawler` to crawl SharePoint list item attachments
-
-**List Attachments Crawling**:
-When `list_attachments_crawler` is enabled, the plugin crawls file attachments from SharePoint list items:
-- Crawls all sites or a specific site (using `site_id` parameter)
-- Filters lists by template type using `list_template_filter`
-- Processes each list item's attachments as virtual DriveItems
-- Includes additional metadata like site name, list title, and item information
-- Inherits site-level permissions for secure access
 
 ### OneNote-Specific Parameters
 
@@ -518,47 +503,67 @@ The implementation extracts and indexes the following notebook metadata:
 | `shared_documents_drive_crawler` | Enable shared documents crawling | `true` | Crawl default user's OneDrive |
 | `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
-| `list_attachments_crawler` | Enable list attachments crawling | `false` | Crawl SharePoint list item attachments |
-| `site_id` | Specific site ID for list attachments | - | Full site ID format for list attachments |
-| `list_template_filter` | Filter lists by template type | `documentLibrary,genericList` | Comma-separated template types |
 
-#### OneDrive Crawling Implementation
+#### OneDrive Implementation Details
 
 The OneDriveDataStore provides comprehensive Microsoft 365 file crawling capabilities with the following implementation features:
 
-**Multi-Mode Crawling Support:**
-- **Shared Documents Drive**: Crawls the current authenticated user's OneDrive (`/me/drive`)
-- **User Drives**: Iterates through all licensed users and crawls their OneDrive (`/users/{userId}/drive`)
-- **Group Drives**: Crawls Microsoft 365 group-associated drives (`/groups/{groupId}/drive`)
-- **Specific Drive**: Targets a single drive by ID (`/drives/{driveId}`)
-- **List Attachments**: Extracts file attachments from SharePoint list items across sites
+**Core Functionality:**
+- **Multi-Drive Type Support**: Processes files from OneDrive personal drives, SharePoint document libraries (via Drive API), and Microsoft 365 group drives
+- **Hierarchical File Traversal**: Recursively crawls drive items starting from root, handling both files and folders with proper parent-child relationships
+- **Content Extraction & Indexing**: Each file becomes a searchable entity with extracted content, metadata, and permission information
+- **Permission Integration**: Extracts and maps Microsoft 365 access permissions to Fess role-based access control
+
+**Crawling Modes (Processing Order):**
+1. **Shared Documents Drive**: Crawls the authenticated user's OneDrive (`/me/drive`) or all SharePoint sites' document libraries
+2. **User Drives**: Iterates through all licensed users and crawls their personal OneDrive (`/users/{userId}/drive`)
+3. **Group Drives**: Crawls Microsoft 365 group-associated drives (`/groups/{groupId}/drive`)
+4. **Specific Drive**: Targets a single drive by ID when `drive_id` parameter is specified (`/drives/{driveId}`)
 
 **Content Processing Pipeline:**
-1. **Drive Discovery**: Uses Microsoft Graph API to enumerate drives based on crawling mode
-2. **Hierarchical Traversal**: Recursively processes drive items starting from root, handling both files and folders
-3. **Content Extraction**: Leverages Tika for text extraction from supported file types with configurable size limits
-4. **Metadata Enrichment**: Extracts comprehensive file metadata including creation/modification times, permissions, parent folder information
-5. **Permission Mapping**: Converts Microsoft 365 access permissions to Fess role-based access control
+1. **Drive Discovery**: Uses Microsoft Graph API to enumerate drives based on enabled crawling modes and site/drive access
+2. **Item Enumeration**: Retrieves drive items using pagination with `DriveItemCollectionResponse` and `@odata.nextLink` handling
+3. **Content Filtering**: Applies MIME type filtering, file size limits, and include/exclude patterns before processing
+4. **Content Extraction**: Uses Tika extractor with configurable name (`extractorName`, default: "tikaExtractor") for text extraction from supported file types
+5. **Metadata Enrichment**: Extracts comprehensive file metadata including timestamps, permissions, and parent folder information
+6. **URL Generation**: Creates user-friendly URLs based on crawler type and SharePoint/OneDrive location patterns
 
 **Performance Optimizations:**
-- **Drive ID Caching**: Maintains thread-safe cache of user drive IDs to reduce API calls (`cachedUserDriveId` with `driveIdCacheLock`)
-- **Concurrent Processing**: Configurable thread pool for parallel processing of multiple drives/users
-- **Pagination Support**: Handles Microsoft Graph API pagination seamlessly using PageIterator
-- **Efficient Filtering**: Supports regex patterns for include/exclude files and MIME type filtering
+- **Drive ID Caching**: Thread-safe caching of user drive IDs using double-checked locking pattern (`cachedUserDriveId` with `driveIdCacheLock`)
+- **Concurrent Processing**: Configurable thread pool (`number_of_threads`) for parallel processing of multiple drives and files
+- **Efficient Pagination**: Handles Microsoft Graph API pagination using `@odata.nextLink` with helper methods
+- **Smart Filtering**: Pre-filters items by MIME type patterns and file size before expensive content extraction
+- **Interruption Handling**: Proper detection and handling of thread interruption during long-running operations
 
 **Error Handling & Resilience:**
-- **Configurable Error Handling**: `ignore_error` parameter controls whether to continue on individual item failures
-- **Interruption Detection**: Proper handling of thread interruption during long-running crawling operations
-- **Comprehensive Logging**: Debug and info level logging for monitoring crawling progress and troubleshooting
+- **Configurable Error Tolerance**: `ignore_error` parameter controls whether to continue crawling on individual item failures
+- **Exception Classification**: Differentiates between access exceptions and general exceptions for appropriate error handling
+- **Failure URL Tracking**: Integration with Fess failure URL service for monitoring and retry capabilities
+- **Comprehensive Logging**: Debug-level logging for detailed crawling progress monitoring and troubleshooting
 
-**Content Metadata Fields:**
-The implementation extracts and indexes 30+ metadata fields per file including:
-- Basic properties: name, description, size, MIME type, creation/modification timestamps
-- Location data: web URLs, WebDAV URLs, parent folder paths and names
-- Version tracking: ETag, CTag for change detection
-- Creator/modifier information: user, application, and device details
-- Rich metadata: image/photo/video properties, geographic location, file hashes
-- Permission data: role-based access control compatible with Fess security model
+**Content Metadata Extraction:**
+The implementation extracts and indexes 30+ metadata fields per file:
+- **Basic Properties**: name, description, size, MIME type, file type, creation/modification timestamps
+- **Location & Access**: web URLs, WebDAV URLs, processed URLs for SharePoint navigation
+- **Version Control**: ETag, CTag for change detection and synchronization
+- **Creator Information**: user, application, and device details for created/modified by tracking
+- **Rich Metadata**: image/photo/video properties, geographic location data, file hash values
+- **Folder Structure**: parent reference information including path, name, and ID
+- **Specialized Data**: publication info, search result metadata, special folder classification
+- **Permission Data**: role-based access control extracted from Microsoft Graph permissions API
+
+**URL Processing Strategy:**
+The implementation generates user-friendly URLs based on crawling context:
+- **SharePoint Libraries**: `{siteUrl}/Shared%20Documents/{path}` for shared/group drives
+- **OneDrive Personal**: `{siteUrl}/Documents/{path}` for user drives
+- **Custom Drives**: `{siteUrl}/{driveName}/{path}` for specific drive crawling
+- **URL Encoding**: Proper encoding of file and folder names with space handling
+
+**Content Size Management:**
+- **Configurable Limits**: `max_content_length` parameter with fallback to Fess content length helper
+- **MIME Type Support**: Regex pattern matching for `supported_mimetypes` (default: all types)
+- **Folder Handling**: Optional folder document creation controlled by `ignore_folder` parameter
+- **Size Validation**: Pre-extraction validation to avoid processing oversized files
 
 ### SharePoint Document Library Parameters
 
@@ -599,7 +604,7 @@ The SharePointDocLibDataStore provides comprehensive metadata indexing for Share
 **Core Functionality:**
 - **Library-Level Indexing**: Each SharePoint document library becomes a single searchable entity in the Fess index, combining library metadata with site context for enhanced discoverability
 - **Site Traversal**: Supports crawling all accessible sites or targeting specific sites using the `site_id` parameter
-- **System Library Filtering**: Automatically excludes system document libraries (Form Templates, Style Library, etc.) unless explicitly configured otherwise
+- **System Library Filtering**: Automatically excludes system document libraries (Form Templates, Style Library, etc.) unless explicitly configured otherwise with `ignore_system_libraries` parameter
 - **Permission Integration**: Extracts and maps SharePoint access permissions to Fess role-based access control
 
 **Content Aggregation:**
@@ -614,30 +619,38 @@ The implementation creates rich, searchable content by combining:
 - **Graph API URL**: Preserved from Microsoft Graph response for API compatibility (`doclib.web_url`)
 - **Canonical URL**: Generated standardized SharePoint URLs for user navigation (`doclib.url`)
   - Standard "Documents" libraries: `{siteUrl}/Shared%20Documents`
-  - Custom libraries: `{siteUrl}/{encodedLibraryName}`
+  - Custom libraries: `{siteUrl}/{encodedLibraryName}` with proper URL encoding
 
 **Multi-Threading Support:**
-- Configurable concurrent processing using `number_of_threads` parameter
-- Thread-safe execution with proper resource cleanup
+- Configurable concurrent processing using `number_of_threads` parameter (default: 1)
+- Thread-safe execution with proper ExecutorService management and resource cleanup
 - Graceful handling of thread interruption during long-running operations
+- 60-second timeout for executor shutdown with forced termination as fallback
 
 **Error Handling & Resilience:**
 - Comprehensive error tracking with integration into Fess failure URL service
-- Configurable error handling via `ignore_error` parameter
+- Configurable error handling via `ignore_error` parameter (default: false)
 - Detailed logging for monitoring and troubleshooting crawling operations
-- Statistical tracking for performance monitoring and reporting
+- Statistical tracking for performance monitoring and reporting using CrawlerStatsHelper
+- Distinction between CrawlingAccessException and general exceptions for appropriate handling
 
 **Performance Optimizations:**
-- Efficient site and drive enumeration using Microsoft Graph API pagination
-- Drive type filtering to process only document library drives
-- Parallel processing of multiple document libraries within sites
-- Memory-efficient processing with proper resource management
+- Efficient site and drive enumeration using Microsoft Graph API with pagination support
+- Drive type filtering to process only document library drives (`documentLibrary` type)
+- Parallel processing of multiple document libraries within sites using ExecutorService
+- Memory-efficient processing with proper resource management and cleanup
+
+**Configuration Flexibility:**
+- **Site Exclusion**: Advanced `exclude_site_id` parameter supporting both simple comma-separated IDs and complex SharePoint site ID format with semicolon separation
+- **Pattern Filtering**: Support for `include_pattern` and `exclude_pattern` regex filtering on library names
+- **Permission Management**: Default permissions assignment via `default_permissions` parameter
+- **Threading Control**: Configurable `number_of_threads` for optimal performance tuning
 
 **Integration with Fess Security Model:**
-- Automatic extraction of SharePoint permissions using Microsoft Graph API
-- Conversion of Microsoft 365 access permissions to Fess role format
-- Support for default permission assignment via configuration
-- Inheritance of site-level permissions for document libraries
+- Automatic extraction of SharePoint permissions using Microsoft Graph API drive permissions endpoint
+- Conversion of Microsoft 365 access permissions to Fess role format with proper encoding
+- Support for default permission assignment via configuration parameters
+- Inheritance of site-level permissions for document libraries with pagination support for large permission sets
 
 **Use Cases:**
 - **Document Library Discovery**: Find and access specific SharePoint document libraries across the organization
@@ -700,9 +713,10 @@ The implementation intelligently extracts content from list items:
 - Inherits site and list-level permissions for items
 
 **Attachment Support:**
-- Detects and processes file attachments on list items
-- Extracts attachment metadata including names and URLs
-- Includes attachment information in indexed content
+- **List Item Attachments**: Detects and processes file attachments on SharePoint list items
+- **Attachment Metadata**: Extracts attachment metadata including names, URLs, and file information
+- **Content Integration**: Includes attachment information in indexed content for comprehensive search
+- **Secure Access**: Inherits SharePoint permissions for proper access control to attached files
 
 **URL Filtering:**
 - **Include Pattern**: Regex-based filtering to include specific items by title
@@ -713,6 +727,7 @@ The implementation intelligently extracts content from list items:
 - **Structured Data Search**: Index and search custom business data stored in SharePoint lists
 - **Task and Issue Tracking**: Search across task lists, issue trackers, and project lists
 - **Document Metadata**: Index document libraries managed as SharePoint lists
+- **List Attachments**: Search file attachments uploaded to SharePoint list items
 - **Custom Applications**: Search data from Power Apps and custom SharePoint solutions
 - **Business Process Content**: Index workflow-related lists and approval items
 

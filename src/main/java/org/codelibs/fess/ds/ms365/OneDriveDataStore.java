@@ -15,30 +15,6 @@
  */
 package org.codelibs.fess.ds.ms365;
 
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.AUTHOR_FIELD;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.CREATED_FIELD;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ATTACHMENT_SOURCE_TYPE;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ID_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_AUTHOR_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_CREATED_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_ID_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_MODIFIED_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_ITEM_TITLE_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_NAME_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_TEMPLATE_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.LIST_TITLE_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.MODIFIED_FIELD;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SHAREPOINT_LIST_ID_FIELD;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SHAREPOINT_LIST_ITEM_ID_FIELD;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SHAREPOINT_LIST_ITEM_TITLE_FIELD;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SHAREPOINT_LIST_TITLE_FIELD;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SHAREPOINT_SITE_ID_FIELD;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SITE_ID_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SITE_NAME_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.SOURCE_TYPE_KEY;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.TITLE_FIELD;
-import static org.codelibs.fess.ds.ms365.Microsoft365Constants.UNKNOWN_TEMPLATE;
-
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
@@ -83,8 +59,6 @@ import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.DriveItemCollectionResponse;
 import com.microsoft.graph.models.Hashes;
-import com.microsoft.graph.models.ListItem;
-import com.microsoft.graph.models.Site;
 import com.microsoft.kiota.ApiException;
 
 /**
@@ -150,14 +124,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected static final String USER_DRIVE_CRAWLER = "user_drive_crawler";
     /** Parameter name for enabling the group drive crawler. */
     protected static final String GROUP_DRIVE_CRAWLER = "group_drive_crawler";
-    /** Parameter name for enabling the list attachments crawler. */
-    protected static final String LIST_ATTACHMENTS_CRAWLER = "list_attachments_crawler";
-    /** Parameter name for the site ID to crawl list attachments from. */
-    protected static final String SITE_ID = "site_id";
-    /** Parameter name for the list template filter. */
-    protected static final String LIST_TEMPLATE_FILTER = "list_template_filter";
-    /** ConfigMap key for the parsed list template types. */
-    protected static final String LIST_TEMPLATE_TYPES = "list_template_types";
 
     // scripts
     /** Key for the file object in the script map. */
@@ -332,32 +298,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 }
             }
 
-            if (isListAttachmentsCrawler(paramMap)) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Starting list attachments crawling");
-                }
-                configMap.put(CURRENT_CRAWLER, "list_attachments");
-
-                // Initialize list template types filter
-                final String templateFilter = paramMap.getAsString(LIST_TEMPLATE_FILTER,
-                        Microsoft365Constants.DOCUMENT_LIBRARY + "," + Microsoft365Constants.GENERIC_LIST);
-                final String[] templateTypes = templateFilter.split(",");
-                for (int i = 0; i < templateTypes.length; i++) {
-                    templateTypes[i] = templateTypes[i].trim();
-                }
-                configMap.put(LIST_TEMPLATE_TYPES, templateTypes);
-
-                try {
-                    storeListAttachments(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client);
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("Completed list attachments crawling");
-                    }
-                } catch (final Exception e) {
-                    logger.warn("Failed to crawl list attachments", e);
-                    throw e;
-                }
-            }
-
             if (logger.isDebugEnabled()) {
                 logger.debug("Shutting down thread executor.");
             }
@@ -424,16 +364,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Checks if the list attachments crawler is enabled.
-     *
-     * @param paramMap The data store parameters.
-     * @return true if the list attachments crawler is enabled, false otherwise.
-     */
-    protected boolean isListAttachmentsCrawler(final DataStoreParams paramMap) {
-        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(LIST_ATTACHMENTS_CRAWLER, Constants.FALSE));
-    }
-
-    /**
      * Checks if folders should be ignored.
      *
      * @param paramMap The data store parameters.
@@ -490,38 +420,38 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             logger.debug("Processing shared documents drive - requested driveId: {}", driveId);
         }
 
-        final String actualDriveId = driveId != null ? driveId : getCachedUserDriveId(client);
-        if (actualDriveId == null) {
-            logger.warn("Unable to get user drive ID, skipping OneDrive crawling");
-            return;
-        }
-
-        if (logger.isDebugEnabled()) {
-            logger.debug("Using actual drive ID: {} for shared documents crawling", actualDriveId);
-        }
-
-        try {
-            // Get drive information to check if it's a system library
-            final Drive drive = client.getDrive(actualDriveId);
-            if (logger.isDebugEnabled()) {
-                logger.debug("Retrieved drive info - Name: {}, DriveType: {}, System: {}", drive.getName(), drive.getDriveType(),
-                        isSystemLibrary(drive));
-            }
-
-            if (Microsoft365Constants.DOCUMENT_LIBRARY.equals(drive.getDriveType())
-                    && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive))) {
-                getDriveItemsInDrive(client, actualDriveId, item -> executorService.execute(() -> processDriveItem(dataConfig, callback,
-                        configMap, paramMap, scriptMap, defaultDataMap, client, actualDriveId, item, Collections.emptyList())));
+        if (driveId != null) {
+            getDriveItemsInDrive(client, driveId, item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap,
+                    paramMap, scriptMap, defaultDataMap, client, driveId, item, Collections.emptyList())));
+        } else {
+            client.getSites(site -> {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("Successfully initiated drive items processing for drive: {}", actualDriveId);
+                    logger.debug("Processing site - Name: {}, ID: {}, WebUrl: {}", site.getName(), site.getId(), site.getWebUrl());
                 }
-            } else if (logger.isDebugEnabled()) {
-                logger.debug("Skipping shared documents drive: {} - Type: {}, System: {}", drive.getName(), drive.getDriveType(),
-                        isSystemLibrary(drive));
-            }
-        } catch (final Exception e) {
-            logger.warn("Failed to process shared documents drive: {}", actualDriveId, e);
-            throw e;
+                try {
+                    client.getSiteDrives(site.getId(), drive -> {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Processing drive in site {} - Name: {}, ID: {}, DriveType: {}, WebUrl: {}", site.getName(),
+                                    drive.getName(), drive.getId(), drive.getDriveType(), drive.getWebUrl());
+                        }
+                        getDriveItemsInDrive(client, drive.getId(), item -> {
+                            if (logger.isDebugEnabled()) {
+                                logger.debug("Processing drive item in drive {} - Name: {}, ID: {}, WebUrl: {}", drive.getName(),
+                                        item.getName(), item.getId(), item.getWebUrl());
+                            }
+                            executorService.execute(() -> {
+                                if (logger.isDebugEnabled()) {
+                                    logger.debug("Starting to process drive item: {} - Name: {}", item.getWebUrl(), item.getName());
+                                }
+                                processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client,
+                                        drive.getId(), item, Collections.emptyList());
+                            });
+                        });
+                    });
+                } catch (final ApiException e) {
+                    logger.warn("Failed to process drive for site: {} (ID: {})", site.getName(), site.getId(), e);
+                }
+            });
         }
     }
 
@@ -557,16 +487,19 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                     logger.debug("Retrieved drive for user {} - Drive Name: {}, Drive ID: {}, DriveType: {}, System: {}", displayName,
                             userDrive.getName(), userDrive.getId(), userDrive.getDriveType(), isSystemLibrary(userDrive));
                 }
-
-                if (Microsoft365Constants.DOCUMENT_LIBRARY.equals(userDrive.getDriveType())
-                        && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(userDrive))) {
-                    getDriveItemsInDrive(client, userDrive.getId(),
-                            item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap,
-                                    defaultDataMap, client, userDrive.getId(), item, getUserRoles(user))));
-                } else if (logger.isDebugEnabled()) {
-                    logger.debug("Skipping user drive: {} - Type: {}, System: {}", userDrive.getName(), userDrive.getDriveType(),
-                            isSystemLibrary(userDrive));
-                }
+                getDriveItemsInDrive(client, userDrive.getId(), item -> {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Processing drive item in user {}'s drive - Name: {}, ID: {}, WebUrl: {}", displayName, item.getName(),
+                                item.getId(), item.getWebUrl());
+                    }
+                    executorService.execute(() -> {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Starting to process drive item: {} - Name: {}", item.getWebUrl(), item.getName());
+                        }
+                        processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, userDrive.getId(),
+                                item, getUserRoles(user));
+                    });
+                });
 
                 if (logger.isDebugEnabled()) {
                     logger.debug("Successfully initiated processing for user {}'s drive", displayName);
@@ -620,16 +553,19 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                     logger.debug("Retrieved drive for group {} - Drive Name: {}, Drive ID: {}, DriveType: {}, System: {}", displayName,
                             groupDrive.getName(), groupDrive.getId(), groupDrive.getDriveType(), isSystemLibrary(groupDrive));
                 }
-
-                if (Microsoft365Constants.DOCUMENT_LIBRARY.equals(groupDrive.getDriveType())
-                        && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(groupDrive))) {
-                    getDriveItemsInDrive(client, groupDrive.getId(),
-                            item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap,
-                                    defaultDataMap, client, groupDrive.getId(), item, getGroupRoles(group))));
-                } else if (logger.isDebugEnabled()) {
-                    logger.debug("Skipping group drive: {} - Type: {}, System: {}", groupDrive.getName(), groupDrive.getDriveType(),
-                            isSystemLibrary(groupDrive));
-                }
+                getDriveItemsInDrive(client, groupDrive.getId(), item -> {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Processing drive item in group {}'s drive - Name: {}, ID: {}, WebUrl: {}", displayName,
+                                item.getName(), item.getId(), item.getWebUrl());
+                    }
+                    executorService.execute(() -> {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Starting to process drive item: {} - Name: {}", item.getWebUrl(), item.getName());
+                        }
+                        processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, groupDrive.getId(),
+                                item, getGroupRoles(group));
+                    });
+                });
 
                 if (logger.isDebugEnabled()) {
                     logger.debug("Successfully initiated processing for group {}'s drive", displayName);
@@ -703,10 +639,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             }
 
             final Long size = item.getSize();
-            if (logger.isInfoEnabled()) {
-                logger.info("Crawling OneDrive item - URL: {}, Name: {}, Size: {} bytes, MimeType: {}", url, item.getName(), size,
-                        mimetype);
-            }
+            logger.info("Crawling OneDrive item - URL: {}, Name: {}, Size: {} bytes, MimeType: {}", url, item.getName(), size, mimetype);
 
             final boolean ignoreError = (Boolean) configMap.get(IGNORE_ERROR);
 
@@ -767,25 +700,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             filesMap.put(FILE_SEARCH_RESULT, item.getSearchResult());
             filesMap.put(FILE_SPECIAL_FOLDER, item.getSpecialFolder() != null ? item.getSpecialFolder().getName() : null);
             filesMap.put(FILE_VIDEO, item.getVideo());
-
-            // Add list attachment specific metadata if this is a virtual DriveItem for list attachment
-            final Map<String, Object> additionalData = item.getAdditionalData();
-            if (additionalData != null && LIST_ATTACHMENT_SOURCE_TYPE.equals(additionalData.get(SOURCE_TYPE_KEY))) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Adding list attachment metadata for item: {} from site: {}, list: {}, listItem: {}", item.getName(),
-                            additionalData.get(SITE_ID_KEY), additionalData.get(LIST_ID_KEY), additionalData.get(LIST_ITEM_ID_KEY));
-                }
-                filesMap.put("source_type", "ListAttachment");
-                filesMap.put(SHAREPOINT_SITE_ID_FIELD, additionalData.get(SITE_ID_KEY));
-                filesMap.put(SHAREPOINT_LIST_ID_FIELD, additionalData.get(LIST_ID_KEY));
-                filesMap.put(SHAREPOINT_LIST_ITEM_ID_FIELD, additionalData.get(LIST_ITEM_ID_KEY));
-                if (additionalData.get(LIST_TITLE_KEY) != null) {
-                    filesMap.put(SHAREPOINT_LIST_TITLE_FIELD, additionalData.get(LIST_TITLE_KEY));
-                }
-                if (additionalData.get(LIST_ITEM_TITLE_KEY) != null) {
-                    filesMap.put(SHAREPOINT_LIST_ITEM_TITLE_FIELD, additionalData.get(LIST_ITEM_TITLE_KEY));
-                }
-            }
 
             final List<String> fileRoles = getDriveItemPermissions(client, driveId, item);
             roles.forEach(fileRoles::add);
@@ -927,46 +841,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      */
     protected String getDriveItemContents(final Microsoft365Client client, final String driveId, final DriveItem item,
             final long maxContentLength, final boolean ignoreError) {
-        // Check if this is a virtual item (ListAttachment or Fields-based)
-        if (item.getAdditionalData() != null) {
-            final String sourceType = (String) item.getAdditionalData().get("sourceType");
-
-            if ("ListAttachment".equals(sourceType)) {
-                // Legacy ListAttachment handling
-                final String siteId = (String) item.getAdditionalData().get("siteId");
-                final String listId = (String) item.getAdditionalData().get("listId");
-                final String listItemId = (String) item.getAdditionalData().get("listItemId");
-                final String attachmentName = (String) item.getAdditionalData().get("attachmentName");
-
-                if (siteId != null && listId != null && listItemId != null && attachmentName != null) {
-                    return getListAttachmentContents(client, siteId, listId, listItemId, attachmentName, maxContentLength, ignoreError);
-                }
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Missing required metadata for ListAttachment: siteId={}, listId={}, listItemId={}, attachmentName={}",
-                            siteId, listId, listItemId, attachmentName);
-                }
-                return StringUtil.EMPTY;
-            }
-
-            if ("Fields".equals(sourceType)) {
-                // Fields-based attachment handling - use the same method as ListAttachment
-                final String siteId = (String) item.getAdditionalData().get("siteId");
-                final String listId = (String) item.getAdditionalData().get("listId");
-                final String listItemId = (String) item.getAdditionalData().get("listItemId");
-                final String attachmentName = (String) item.getAdditionalData().get("attachmentName");
-
-                if (siteId != null && listId != null && listItemId != null && attachmentName != null) {
-                    return getListAttachmentContents(client, siteId, listId, listItemId, attachmentName, maxContentLength, ignoreError);
-                }
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Missing required metadata for Fields attachment: siteId={}, listId={}, listItemId={}, attachmentName={}",
-                            siteId, listId, listItemId, attachmentName);
-                }
-                return StringUtil.EMPTY;
-            }
-        }
-
-        // Original DriveItem processing
+        // Only process real DriveItems with file content
         if (item.getFile() != null) {
             try (final InputStream in = client.getDriveContent(driveId, item.getId())) {
                 return ComponentUtil.getExtractorFactory()
@@ -1093,308 +968,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             }
         }
         return cachedUserDriveId;
-    }
-
-    /**
-     * Stores list attachments from SharePoint sites.
-     *
-     * @param dataConfig The data configuration.
-     * @param callback The index update callback.
-     * @param configMap The configuration map.
-     * @param paramMap The data store parameters.
-     * @param scriptMap The script map.
-     * @param defaultDataMap The default data map.
-     * @param executorService The executor service.
-     * @param client The Microsoft365Client.
-     */
-    protected void storeListAttachments(final DataConfig dataConfig, final IndexUpdateCallback callback,
-            final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
-            final Map<String, Object> defaultDataMap, final ExecutorService executorService, final Microsoft365Client client) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("Starting list attachments crawling");
-        }
-
-        final String specificSiteId = paramMap.getAsString(SITE_ID);
-
-        if (StringUtil.isNotBlank(specificSiteId)) {
-            // Crawl specific site only
-            if (logger.isDebugEnabled()) {
-                logger.debug("Crawling list attachments for specific site: {}", specificSiteId);
-            }
-            try {
-                final Site site = client.getSite(specificSiteId);
-                processListAttachmentsInSite(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService, client,
-                        site);
-            } catch (final Exception e) {
-                logger.warn("Failed to process list attachments for site: {}", specificSiteId, e);
-                if (!isIgnoreError(paramMap)) {
-                    throw e;
-                }
-            }
-        } else {
-            // Crawl all sites
-            if (logger.isDebugEnabled()) {
-                logger.debug("Crawling list attachments for all sites");
-            }
-            client.getSites(site -> {
-                try {
-                    processListAttachmentsInSite(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, executorService,
-                            client, site);
-                } catch (final Exception e) {
-                    logger.warn("Failed to process list attachments for site: {} ({})", site.getDisplayName(), site.getId(), e);
-                    if (!isIgnoreError(paramMap)) {
-                        throw new RuntimeException(e);
-                    }
-                }
-            });
-        }
-    }
-
-    /**
-     * Processes list attachments in a specific site.
-     *
-     * @param dataConfig The data configuration.
-     * @param callback The index update callback.
-     * @param configMap The configuration map.
-     * @param paramMap The data store parameters.
-     * @param scriptMap The script map.
-     * @param defaultDataMap The default data map.
-     * @param executorService The executor service.
-     * @param client The Microsoft365Client.
-     * @param site The SharePoint site.
-     */
-    protected void processListAttachmentsInSite(final DataConfig dataConfig, final IndexUpdateCallback callback,
-            final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
-            final Map<String, Object> defaultDataMap, final ExecutorService executorService, final Microsoft365Client client,
-            final Site site) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("Processing list attachments in site: {} ({})", site.getDisplayName(), site.getId());
-        }
-
-        // Get all lists in the site
-        client.getSiteLists(site.getId(), list -> {
-            final boolean targetType = isTargetListType(configMap, list);
-            final boolean systemList = isSystemList(list);
-            final boolean ignoreSystem = isIgnoreSystemLists(paramMap);
-
-            if (logger.isDebugEnabled()) {
-                logger.debug("Evaluating list: {} (ID: {}, Template: {}) - TargetType: {}, SystemList: {}, IgnoreSystem: {}",
-                        list.getDisplayName(), list.getId(), getListTemplateType(list), targetType, systemList, ignoreSystem);
-            }
-
-            if (!targetType) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Skipping list {} - doesn't match template filter", list.getDisplayName());
-                }
-                return;
-            }
-
-            if (ignoreSystem && systemList) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Skipping system list {} (ID: {}) because ignore_system_lists is enabled", list.getDisplayName(),
-                            list.getId());
-                }
-                return;
-            }
-
-            // Get all items in the list
-            client.getListItems(site.getId(), list.getId(), item -> {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Processing list item: {} in list: {}", item.getId(), list.getDisplayName());
-                }
-
-                // Get attachments for this list item and process them
-                client.getListItemAttachments(site.getId(), list.getId(), item.getId(), virtualAttachment -> {
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("Processing virtual attachment: {} for item: {} in list: {}", virtualAttachment.getName(),
-                                item.getId(), list.getDisplayName());
-                    }
-
-                    executorService.execute(() -> processListAttachment(dataConfig, callback, configMap, paramMap, scriptMap,
-                            defaultDataMap, client, site, list, item, virtualAttachment));
-                });
-            });
-        });
-    }
-
-    /**
-     * Processes a single list attachment by creating additional metadata and calling processDriveItem.
-     *
-     * @param dataConfig The data configuration.
-     * @param callback The index update callback.
-     * @param configMap The configuration map.
-     * @param paramMap The data store parameters.
-     * @param scriptMap The script map.
-     * @param defaultDataMap The default data map.
-     * @param client The Microsoft365Client.
-     * @param site The SharePoint site.
-     * @param list The SharePoint list.
-     * @param item The list item.
-     * @param virtualAttachment The virtual DriveItem representing the attachment.
-     */
-    protected void processListAttachment(final DataConfig dataConfig, final IndexUpdateCallback callback,
-            final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
-            final Map<String, Object> defaultDataMap, final Microsoft365Client client, final Site site,
-            final com.microsoft.graph.models.List list, final ListItem item, final DriveItem virtualAttachment) {
-
-        if (logger.isDebugEnabled()) {
-            logger.debug("Processing list attachment: {} for item: {} in list: {} on site: {}", virtualAttachment.getName(), item.getId(),
-                    list.getDisplayName(), site.getDisplayName());
-        }
-
-        // Enhance the virtual attachment with additional metadata
-        final Map<String, Object> additionalData =
-                new HashMap<>(virtualAttachment.getAdditionalData() != null ? virtualAttachment.getAdditionalData() : new HashMap<>());
-
-        // Add enhanced metadata
-        additionalData.put(SITE_NAME_KEY, site.getDisplayName());
-        additionalData.put(LIST_NAME_KEY, list.getDisplayName());
-        additionalData.put(LIST_TEMPLATE_KEY, list.getList() != null ? list.getList().getTemplate() : UNKNOWN_TEMPLATE);
-
-        // Try to get more list item details
-        if (item.getFields() != null && item.getFields().getAdditionalData() != null) {
-            final Map<String, Object> fields = item.getFields().getAdditionalData();
-
-            // Add commonly available fields
-            if (fields.get("Title") != null) {
-                additionalData.put(LIST_ITEM_TITLE_KEY, fields.get(TITLE_FIELD).toString());
-            }
-            if (fields.get("Created") != null) {
-                additionalData.put(LIST_ITEM_CREATED_KEY, fields.get(CREATED_FIELD));
-            }
-            if (fields.get("Modified") != null) {
-                additionalData.put(LIST_ITEM_MODIFIED_KEY, fields.get(MODIFIED_FIELD));
-            }
-            if (fields.get("Author") != null) {
-                additionalData.put(LIST_ITEM_AUTHOR_KEY, fields.get(AUTHOR_FIELD));
-            }
-        }
-
-        virtualAttachment.setAdditionalData(additionalData);
-
-        // Get site permissions for this attachment
-        final List<String> roles = getSitePermissions(client, site.getId());
-
-        if (logger.isDebugEnabled()) {
-            logger.debug("Calling processDriveItem for list attachment: {} with {} roles", virtualAttachment.getName(), roles.size());
-        }
-
-        // Extract the correct drive ID from the virtual attachment's parentReference
-        String driveId = null;
-        if (virtualAttachment.getParentReference() != null) {
-            driveId = virtualAttachment.getParentReference().getDriveId();
-        }
-
-        // For Fields-based attachments, use a placeholder drive ID if none exists
-        if (driveId == null) {
-            final String sourceType = (String) virtualAttachment.getAdditionalData().get("sourceType");
-            if (!"Fields".equals(sourceType)) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("No drive ID found in virtual attachment parentReference for: {} - cannot process as drive item",
-                            virtualAttachment.getName());
-                }
-                return;
-            }
-            // Use the site ID as a placeholder drive ID for Fields-based attachments
-            driveId = site.getId();
-            if (logger.isDebugEnabled()) {
-                logger.debug("Using site ID as placeholder drive ID for Fields-based attachment: {} (driveId={})",
-                        virtualAttachment.getName(), driveId);
-            }
-        }
-
-        if (logger.isDebugEnabled()) {
-            logger.debug("Validating drive ID: {} for list attachment: {} in list: {} for item: {}", driveId, virtualAttachment.getName(),
-                    list.getName(), item.getName());
-        }
-        if (Microsoft365Constants.DOCUMENT_LIBRARY.equals(getListTemplateType(list)) && driveId != null) {
-            try {
-                final Drive drive = client.getDrive(driveId);
-                if (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive)) {
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("Skipping system library {} (ID: {}) because ignore_system_libraries is enabled", drive.getName(),
-                                drive.getId());
-                    }
-                    return;
-                }
-            } catch (final Exception e) {
-                logger.warn("Failed to validate drive ID {} for attachment: {}", driveId, virtualAttachment.getName(), e);
-                return;
-            }
-        }
-
-        if (logger.isDebugEnabled()) {
-            logger.debug("Processing virtual attachment as drive item with drive ID: {} for attachment: {}", driveId,
-                    virtualAttachment.getName());
-        }
-
-        // Process as a regular drive item using the correct drive ID from parentReference
-        // This will trigger the full indexing pipeline
-        processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, driveId, virtualAttachment, roles);
-
-        if (logger.isDebugEnabled()) {
-            logger.debug("Completed processing list attachment: {} for item: {}", virtualAttachment.getName(), item.getId());
-        }
-    }
-
-    /**
-     * Gets the content of a list attachment using the placeholder content retrieval.
-     *
-     * @param client The Microsoft365Client.
-     * @param siteId The site ID.
-     * @param listId The list ID.
-     * @param itemId The item ID.
-     * @param attachmentName The attachment name.
-     * @param maxContentLength The maximum content length.
-     * @param ignoreError true to ignore errors.
-     * @return The contents of the attachment.
-     */
-    protected String getListAttachmentContents(final Microsoft365Client client, final String siteId, final String listId,
-            final String itemId, final String attachmentName, final long maxContentLength, final boolean ignoreError) {
-        try (final InputStream in = client.getListItemAttachmentContent(siteId, listId, itemId, attachmentName)) {
-            return ComponentUtil.getExtractorFactory()
-                    .builder(in, Collections.emptyMap())
-                    .filename(attachmentName)
-                    .maxContentLength(maxContentLength)
-                    .extractorName(extractorName)
-                    .extract()
-                    .getContent();
-        } catch (final Exception e) {
-            if (!ignoreError && !ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
-                throw new DataStoreCrawlingException(attachmentName, "Failed to get list attachment contents: " + attachmentName, e);
-            }
-            if (logger.isDebugEnabled()) {
-                logger.warn("Failed to get list attachment contents: {}", attachmentName, e);
-            } else {
-                logger.warn("Failed to get list attachment contents: {}. {}", attachmentName, e.getMessage());
-            }
-        }
-        return StringUtil.EMPTY;
-    }
-
-    /**
-     * Checks if the list matches the target template type filter.
-     *
-     * @param configMap the configuration map containing pre-parsed template types
-     * @param list the SharePoint list to check
-     * @return true if the list matches the template filter, false otherwise
-     */
-    protected boolean isTargetListType(final Map<String, Object> configMap, final com.microsoft.graph.models.List list) {
-        final String[] templateTypes = (String[]) configMap.get(LIST_TEMPLATE_TYPES);
-        if (templateTypes == null || templateTypes.length == 0) {
-            return true;
-        }
-
-        final String template = getListTemplateType(list);
-        if (logger.isDebugEnabled()) {
-            logger.debug("List {} has template type: {} : {}", list.getDisplayName(), template, templateTypes);
-        }
-        for (final String targetTemplate : templateTypes) {
-            if (template.equals(targetTemplate)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**

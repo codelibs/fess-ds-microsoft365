@@ -730,7 +730,10 @@ public class Microsoft365Client implements Closeable {
                     logger.debug("Processing sites page {} with {} sites (total so far: {})", pageCount, sites.size(), totalSites);
                 }
 
-                sites.forEach(consumer::accept);
+                sites.forEach(site -> {
+                    consumer.accept(site);
+                    getSiteChildren(site.getId(), consumer);
+                });
 
                 // Check if there's a next page
                 if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
@@ -749,6 +752,67 @@ public class Microsoft365Client implements Closeable {
         } catch (final Exception e) {
             logger.warn("Failed to get sites", e);
             throw e;
+        }
+    }
+
+    /**
+     * Retrieves child sites (sub-sites) for a specific SharePoint site with pagination support.
+     *
+     * @param siteId The ID of the parent site.
+     * @param consumer A consumer to process each child Site object.
+     */
+    public void getSiteChildren(final String siteId, final Consumer<Site> consumer) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Getting child sites for site: {}", siteId);
+        }
+
+        try {
+            SiteCollectionResponse response = client.sites().bySiteId(siteId).sites().get();
+            int pageCount = 0;
+            int totalChildSites = 0;
+
+            // Handle pagination with odata.nextLink
+            while (response != null && response.getValue() != null) {
+                pageCount++;
+                final List<Site> childSites = response.getValue();
+                totalChildSites += childSites.size();
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Processing child sites page {} with {} sites for parent {} (total so far: {})", pageCount,
+                            childSites.size(), siteId, totalChildSites);
+                }
+
+                childSites.forEach(site -> {
+                    consumer.accept(site);
+                    getSiteChildren(site.getId(), consumer);
+                });
+
+                // Check if there's a next page
+                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Child site pagination completed for {} - processed {} pages with total {} child sites", siteId,
+                                pageCount, totalChildSites);
+                    }
+                    break;
+                }
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Found next link for child sites, continuing to page {}", pageCount + 1);
+                }
+
+                // Request the next page using the nextLink URL
+                response = client.sites().bySiteId(siteId).sites().withUrl(response.getOdataNextLink()).get();
+            }
+        } catch (final com.microsoft.kiota.ApiException e) {
+            if (e.getResponseStatusCode() == 404) {
+                logger.debug("No child sites found for site: {}", siteId, e);
+            } else if (e.getResponseStatusCode() == 403) {
+                logger.debug("Access denied to child sites for site: {}", siteId, e);
+            } else {
+                logger.warn("Failed to get child sites for site: {}", siteId, e);
+            }
+        } catch (final Exception e) {
+            logger.warn("Failed to get child sites for site: {}", siteId, e);
         }
     }
 
@@ -1708,17 +1772,8 @@ public class Microsoft365Client implements Closeable {
             final Consumer<DriveItem> consumer) {
         try {
             // First get the list item to check if it has a driveItem
-            final ListItem listItem =
-                    client.sites().bySiteId(siteId).lists().byListId(listId).items().byListItemId(itemId).get(requestConfiguration -> {
-                        requestConfiguration.queryParameters.expand = new String[] { "driveItem" };
-                    });
-
-            if (listItem == null) {
-                logger.debug("List item not found: siteId={}, listId={}, itemId={}", siteId, listId, itemId);
-                return false;
-            }
-
-            final DriveItem driveItem = listItem.getDriveItem();
+            final DriveItem driveItem =
+                    client.sites().bySiteId(siteId).lists().byListId(listId).items().byListItemId(itemId).driveItem().get();
             if (driveItem == null) {
                 logger.debug("No driveItem found for list item (likely generic list): siteId={}, listId={}, itemId={}", siteId, listId,
                         itemId);
@@ -1781,13 +1836,6 @@ public class Microsoft365Client implements Closeable {
             }
 
         } catch (final ApiException e) {
-            // Handle the specific error when list item is not in a document library (doesn't have driveItem)
-            if (e.getMessage() != null
-                    && e.getMessage().contains("Cannot request driveItem for an item that is not in a document library")) {
-                logger.debug("List item is not a document library item (no driveItem available): siteId={}, listId={}, itemId={}", siteId,
-                        listId, itemId);
-                return false;
-            }
             logger.warn("Failed to access list item for driveItem attachments: siteId={}, listId={}, itemId={}", siteId, listId, itemId, e);
             return false;
         } catch (final Exception e) {
