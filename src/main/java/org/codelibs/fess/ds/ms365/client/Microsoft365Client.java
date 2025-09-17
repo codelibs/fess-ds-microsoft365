@@ -147,10 +147,8 @@ public class Microsoft365Client implements Closeable {
 
         try {
             // Add multi-tenant authentication support for Azure Identity v1.16.3
-            final ClientSecretCredential credential = new ClientSecretCredentialBuilder().clientId(clientId)
-                    .clientSecret(clientSecret)
-                    .tenantId(tenant)
-                    .additionallyAllowedTenants("*") // Allow all tenants for backward compatibility
+            final ClientSecretCredential credential = new ClientSecretCredentialBuilder().clientId(clientId).clientSecret(clientSecret)
+                    .tenantId(tenant).additionallyAllowedTenants("*") // Allow all tenants for backward compatibility
                     .build();
 
             // Initialize GraphServiceClient with new v6 API
@@ -159,8 +157,7 @@ public class Microsoft365Client implements Closeable {
             throw new DataStoreException("Failed to create a client.", e);
         }
 
-        userTypeCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
+        userTypeCache = CacheBuilder.newBuilder().maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
                 .build(new CacheLoader<String, UserType>() {
                     @Override
                     public UserType load(final String key) {
@@ -179,8 +176,7 @@ public class Microsoft365Client implements Closeable {
                     }
                 });
 
-        groupIdCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
+        groupIdCache = CacheBuilder.newBuilder().maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
                 .build(new CacheLoader<String, String[]>() {
                     @Override
                     public String[] load(final String email) {
@@ -194,8 +190,7 @@ public class Microsoft365Client implements Closeable {
                     }
                 });
 
-        upnCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
+        upnCache = CacheBuilder.newBuilder().maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
                 .build(new CacheLoader<String, String>() {
                     @Override
                     public String load(final String objectId) {
@@ -203,8 +198,7 @@ public class Microsoft365Client implements Closeable {
                     }
                 });
 
-        groupNameCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
+        groupNameCache = CacheBuilder.newBuilder().maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
                 .build(new CacheLoader<String, String>() {
                     @Override
                     public String load(final String objectId) {
@@ -563,14 +557,8 @@ public class Microsoft365Client implements Closeable {
             }
             // Request the next page using the nextLink URL
             if (userId != null) {
-                response = client.users()
-                        .byUserId(userId)
-                        .onenote()
-                        .notebooks()
-                        .byNotebookId(notebookId)
-                        .sections()
-                        .withUrl(response.getOdataNextLink())
-                        .get();
+                response = client.users().byUserId(userId).onenote().notebooks().byNotebookId(notebookId).sections()
+                        .withUrl(response.getOdataNextLink()).get();
             } else {
                 response = client.me().onenote().notebooks().byNotebookId(notebookId).sections().withUrl(response.getOdataNextLink()).get();
             }
@@ -605,14 +593,8 @@ public class Microsoft365Client implements Closeable {
             }
             // Request the next page using the nextLink URL
             if (userId != null) {
-                response = client.users()
-                        .byUserId(userId)
-                        .onenote()
-                        .sections()
-                        .byOnenoteSectionId(sectionId)
-                        .pages()
-                        .withUrl(response.getOdataNextLink())
-                        .get();
+                response = client.users().byUserId(userId).onenote().sections().byOnenoteSectionId(sectionId).pages()
+                        .withUrl(response.getOdataNextLink()).get();
             } else {
                 response =
                         client.me().onenote().sections().byOnenoteSectionId(sectionId).pages().withUrl(response.getOdataNextLink()).get();
@@ -650,10 +632,7 @@ public class Microsoft365Client implements Closeable {
         try (final InputStream in =
                 userId != null ? client.users().byUserId(userId).onenote().pages().byOnenotePageId(page.getId()).content().get()
                         : client.me().onenote().pages().byOnenotePageId(page.getId()).content().get()) {
-            sb.append(ComponentUtil.getExtractorFactory()
-                    .builder(in, Collections.emptyMap())
-                    .maxContentLength(maxContentLength)
-                    .extract()
+            sb.append(ComponentUtil.getExtractorFactory().builder(in, Collections.emptyMap()).maxContentLength(maxContentLength).extract()
                     .getContent());
         } catch (final Exception e) {
             if (!ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
@@ -1327,15 +1306,8 @@ public class Microsoft365Client implements Closeable {
                 break;
             }
             // Request the next page using the nextLink URL
-            response = client.teams()
-                    .byTeamId(teamId)
-                    .channels()
-                    .byChannelId(channelId)
-                    .messages()
-                    .byChatMessageId(messageId)
-                    .replies()
-                    .withUrl(response.getOdataNextLink())
-                    .get();
+            response = client.teams().byTeamId(teamId).channels().byChannelId(channelId).messages().byChatMessageId(messageId).replies()
+                    .withUrl(response.getOdataNextLink()).get();
         }
     }
 
@@ -1481,12 +1453,7 @@ public class Microsoft365Client implements Closeable {
                 break;
             }
             // Request the next page using the nextLink URL
-            response = client.chats()
-                    .byChatId(chatId)
-                    .messages()
-                    .byChatMessageId(messageId)
-                    .replies()
-                    .withUrl(response.getOdataNextLink())
+            response = client.chats().byChatId(chatId).messages().byChatMessageId(messageId).replies().withUrl(response.getOdataNextLink())
                     .get();
         }
     }
@@ -1548,18 +1515,11 @@ public class Microsoft365Client implements Closeable {
             return StringUtil.EMPTY;
         }
         // https://learn.microsoft.com/en-us/answers/questions/1072289/download-directly-chat-attachment-using-contenturl
-        final String id = "u!" + Base64.getUrlEncoder()
-                .encodeToString(attachment.getContentUrl().getBytes(CoreLibConstants.CHARSET_UTF_8))
-                .replaceFirst("=+$", StringUtil.EMPTY)
-                .replace('/', '_')
-                .replace('+', '-');
+        final String id = "u!" + Base64.getUrlEncoder().encodeToString(attachment.getContentUrl().getBytes(CoreLibConstants.CHARSET_UTF_8))
+                .replaceFirst("=+$", StringUtil.EMPTY).replace('/', '_').replace('+', '-');
         try (InputStream in = client.shares().bySharedDriveItemId(id).driveItem().content().get()) {
-            return ComponentUtil.getExtractorFactory()
-                    .builder(in, null)
-                    .filename(attachment.getName())
-                    .maxContentLength(maxContentLength)
-                    .extract()
-                    .getContent();
+            return ComponentUtil.getExtractorFactory().builder(in, null).filename(attachment.getName()).maxContentLength(maxContentLength)
+                    .extract().getContent();
         } catch (final Exception e) {
             if (!ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
                 throw new CrawlingAccessException(e);
@@ -1714,8 +1674,7 @@ public class Microsoft365Client implements Closeable {
                         final long ms = Long.parseLong(v) * 1000L;
                         return Math.min(Math.max(ms, minMs), maxMs);
                     }
-                    final long epochMs = java.time.ZonedDateTime.parse(v, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
-                            .toInstant()
+                    final long epochMs = java.time.ZonedDateTime.parse(v, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()
                             .toEpochMilli();
                     final long delta = epochMs - System.currentTimeMillis();
                     return Math.min(Math.max(delta, minMs), maxMs);

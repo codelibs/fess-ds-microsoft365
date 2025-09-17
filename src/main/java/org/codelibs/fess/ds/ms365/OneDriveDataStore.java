@@ -46,13 +46,13 @@ import org.codelibs.fess.crawler.helper.ContentLengthHelper;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.es.config.exentity.DataConfig;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
 import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.mylasta.direction.FessConfig;
-import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.Drive;
@@ -844,13 +844,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         // Only process real DriveItems with file content
         if (item.getFile() != null) {
             try (final InputStream in = client.getDriveContent(driveId, item.getId())) {
-                return ComponentUtil.getExtractorFactory()
-                        .builder(in, Collections.emptyMap())
-                        .filename(item.getName())
-                        .maxContentLength(maxContentLength)
-                        .extractorName(extractorName)
-                        .extract()
-                        .getContent();
+                return ComponentUtil.getExtractorFactory().builder(in, Collections.emptyMap()).filename(item.getName())
+                        .maxContentLength(maxContentLength).extractorName(extractorName).extract().getContent();
             } catch (final Exception e) {
                 if (!ignoreError && !ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
                     throw new DataStoreCrawlingException(item.getWebUrl(), "Failed to get contents: " + item.getName(), e);

@@ -4,7 +4,7 @@
 	<artifactId>fess-ds-microsoft365</artifactId>
 	<packaging>jar</packaging>
 	<name>Microsoft365 Data Store</name>
-	<version>15.2.0-SNAPSHOT</version>
+	<version>14.19.0-SNAPSHOT</version>
 	<scm>
 		<connection>scm:git:git@github.com:codelibs/fess-ds-microsoft365.git</connection>
 		<developerConnection>scm:git:git@github.com:codelibs/fess-ds-microsoft365.git</developerConnection>
@@ -14,7 +14,7 @@
 	<parent>
 		<groupId>org.codelibs.fess</groupId>
 		<artifactId>fess-parent</artifactId>
-		<version>15.2.0</version>
+		<version>14.19.0</version>
 		<relativePath />
 	</parent>
 	<build>
@@ -124,15 +124,15 @@
 	</repositories>
 	<dependencies>
 		<dependency>
-			<groupId>jakarta.annotation</groupId>
-			<artifactId>jakarta.annotation-api</artifactId>
-			<version>${jakarta.annotation.api.version}</version>
+			<groupId>javax.annotation</groupId>
+			<artifactId>javax.annotation-api</artifactId>
+			<version>${javax.annotation.api.version}</version>
 			<scope>provided</scope>
 		</dependency>
 		<dependency>
-			<groupId>jakarta.servlet</groupId>
-			<artifactId>jakarta.servlet-api</artifactId>
-			<version>${jakarta.servlet.api.version}</version>
+			<groupId>javax.servlet</groupId>
+			<artifactId>javax.servlet-api</artifactId>
+			<version>${javax.servlet.api.version}</version>
 			<scope>provided</scope>
 		</dependency>
 		<dependency>
@@ -214,27 +214,27 @@
 		<dependency>
 			<groupId>com.microsoft.graph</groupId>
 			<artifactId>microsoft-graph</artifactId>
-			<version>${microsoft.graph.version}</version>
+			<version>6.47.0</version>
 		</dependency>
 		<dependency>
 			<groupId>com.azure</groupId>
 			<artifactId>azure-identity</artifactId>
-			<version>${azure.identity.version}</version>
+			<version>1.16.3</version>
 		</dependency>
 		<dependency>
 			<groupId>com.azure</groupId>
 			<artifactId>azure-core</artifactId>
-			<version>${azure.core.version}</version>
+			<version>1.55.5</version>
 		</dependency>
 		<dependency>
 			<groupId>com.azure</groupId>
 			<artifactId>azure-core-http-netty</artifactId>
-			<version>${azure.core.http.netty.version}</version>
+			<version>1.15.12</version>
 		</dependency>
 		<dependency>
 			<groupId>com.microsoft.azure</groupId>
 			<artifactId>adal4j</artifactId>
-			<version>${adal4j.version}</version>
+			<version>1.6.7</version>
 		</dependency>
 	</dependencies>
 </project>

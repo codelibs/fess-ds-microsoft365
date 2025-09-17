@@ -37,13 +37,13 @@ import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.es.config.exentity.DataConfig;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
 import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.mylasta.direction.FessConfig;
-import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.BaseSitePage;
@@ -538,16 +538,13 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         if (webpart instanceof final TextWebPart textPart) {
             if (textPart.getInnerHtml() != null) {
                 // Improved HTML tag removal and text cleanup
-                final String text = textPart.getInnerHtml()
-                        .replaceAll("(?i)<br[^>]*>", "\n") // Convert <br> to newlines
+                final String text = textPart.getInnerHtml().replaceAll("(?i)<br[^>]*>", "\n") // Convert <br> to newlines
                         .replaceAll("(?i)<p[^>]*>", "\n") // Convert <p> to newlines
                         .replaceAll("(?i)</p>", "\n") // Convert </p> to newlines
                         .replaceAll("<[^>]+>", " ") // Remove remaining HTML tags
                         .replace("&nbsp;", " ") // Replace &nbsp; with spaces
                         .replace("&lt;", "<") // HTML entity decoding
-                        .replace("&gt;", ">")
-                        .replace("&amp;", "&")
-                        .replaceAll("\\s+", " ") // Normalize whitespace
+                        .replace("&gt;", ">").replace("&amp;", "&").replaceAll("\\s+", " ") // Normalize whitespace
                         .trim();
 
                 if (!text.isEmpty() && text.length() > 2) {
@@ -596,13 +593,8 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                     if (!text.isEmpty() && text.length() > 5 && !isGuidOrId(text)) {
 
                         // Clean up HTML entities and tags if present
-                        final String cleanText = text.replace("&nbsp;", " ")
-                                .replace("&lt;", "<")
-                                .replace("&gt;", ">")
-                                .replace("&amp;", "&")
-                                .replaceAll("<[^>]+>", " ")
-                                .replaceAll("\\s+", " ")
-                                .trim();
+                        final String cleanText = text.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+                                .replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim();
 
                         if (cleanText.length() > 5) {
                             content.append(cleanText).append(" ");
@@ -620,13 +612,8 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         } else if (data instanceof String) {
             final String text = ((String) data).trim();
             if (!text.isEmpty() && text.length() > 5 && !isGuidOrId(text)) {
-                final String cleanText = text.replace("&nbsp;", " ")
-                        .replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&amp;", "&")
-                        .replaceAll("<[^>]+>", " ")
-                        .replaceAll("\\s+", " ")
-                        .trim();
+                final String cleanText = text.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+                        .replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim();
 
                 if (cleanText.length() > 5) {
                     content.append(cleanText).append(" ");
