@@ -844,8 +844,13 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         // Only process real DriveItems with file content
         if (item.getFile() != null) {
             try (final InputStream in = client.getDriveContent(driveId, item.getId())) {
-                return ComponentUtil.getExtractorFactory().builder(in, Collections.emptyMap()).filename(item.getName())
-                        .maxContentLength(maxContentLength).extractorName(extractorName).extract().getContent();
+                return ComponentUtil.getExtractorFactory()
+                        .builder(in, Collections.emptyMap())
+                        .filename(item.getName())
+                        .maxContentLength(maxContentLength)
+                        .extractorName(extractorName)
+                        .extract()
+                        .getContent();
             } catch (final Exception e) {
                 if (!ignoreError && !ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
                     throw new DataStoreCrawlingException(item.getWebUrl(), "Failed to get contents: " + item.getName(), e);
