@@ -20,6 +20,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -1227,12 +1228,14 @@ public class Microsoft365Client implements Closeable {
         ChannelCollectionResponse response = client.teams().byTeamId(teamId).channels().get(requestConfiguration -> {
             // Select only essential fields to improve performance
             requestConfiguration.queryParameters.select = new String[] { "id", "displayName", "description", "membershipType" };
-            requestConfiguration.queryParameters.orderby = new String[] { "displayName" };
         });
 
         // Handle pagination with odata.nextLink
         while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
+            response.getValue().stream()
+                .filter(java.util.Objects::nonNull)
+                .sorted(Comparator.comparing(Channel::getDisplayName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
+                .forEach(consumer::accept);
 
             // Check if there's a next page
             if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
