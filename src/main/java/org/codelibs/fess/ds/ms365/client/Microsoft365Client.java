@@ -1411,15 +1411,8 @@ public class Microsoft365Client implements Closeable {
 
         try {
             // Microsoft Graph SDK v6 uses requestConfiguration instead of QueryOption
-            ChatMessageCollectionResponse response = client.chats().byChatId(chatId).messages().get(requestConfiguration -> {
-                // Select only essential fields to improve performance
-                requestConfiguration.queryParameters.select =
-                        new String[] { "id", "body", "from", "createdDateTime", "attachments", "messageType" };
-                requestConfiguration.queryParameters.orderby = new String[] { "createdDateTime desc" };
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Request configured with select fields and orderby=createdDateTime desc for chat: {}", chatId);
-                }
-            });
+            // Chat message endpoint rejects $select/$orderby; rely on default projection.
+            ChatMessageCollectionResponse response = client.chats().byChatId(chatId).messages().get();
 
             int pageCount = 0;
             int totalMessages = 0;
