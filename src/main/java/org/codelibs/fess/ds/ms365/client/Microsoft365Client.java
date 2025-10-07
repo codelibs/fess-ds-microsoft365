@@ -1232,18 +1232,11 @@ public class Microsoft365Client implements Closeable {
 
         // Handle pagination with odata.nextLink
         while (response != null && response.getValue() != null) {
-<<<<<<< Updated upstream
-            response.getValue().stream()
-                .filter(java.util.Objects::nonNull)
-                .sorted(Comparator.comparing(Channel::getDisplayName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
-                .forEach(consumer::accept);
-=======
             response.getValue()
                     .stream()
                     .filter(java.util.Objects::nonNull)
                     .sorted(Comparator.comparing(Channel::getDisplayName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
                     .forEach(consumer::accept);
->>>>>>> Stashed changes
 
             // Check if there's a next page
             if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
