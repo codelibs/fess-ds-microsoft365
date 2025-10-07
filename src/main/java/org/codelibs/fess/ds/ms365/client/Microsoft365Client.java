@@ -1232,10 +1232,18 @@ public class Microsoft365Client implements Closeable {
 
         // Handle pagination with odata.nextLink
         while (response != null && response.getValue() != null) {
+<<<<<<< Updated upstream
             response.getValue().stream()
                 .filter(java.util.Objects::nonNull)
                 .sorted(Comparator.comparing(Channel::getDisplayName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
                 .forEach(consumer::accept);
+=======
+            response.getValue()
+                    .stream()
+                    .filter(java.util.Objects::nonNull)
+                    .sorted(Comparator.comparing(Channel::getDisplayName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
+                    .forEach(consumer::accept);
+>>>>>>> Stashed changes
 
             // Check if there's a next page
             if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
@@ -1287,12 +1295,19 @@ public class Microsoft365Client implements Closeable {
                     // Select only essential fields to improve performance
                     requestConfiguration.queryParameters.select =
                             new String[] { "id", "body", "from", "createdDateTime", "attachments", "messageType" };
-                    requestConfiguration.queryParameters.orderby = new String[] { "createdDateTime desc" };
+                    // Note: $orderby is not supported by the channel messages API
+                    // Client-side sorting is applied below instead
                 });
 
         // Handle pagination with odata.nextLink
         while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
+            // Sort messages by createdDateTime in descending order (newest first)
+            // API doesn't support $orderby, so we sort client-side
+            response.getValue()
+                    .stream()
+                    .filter(java.util.Objects::nonNull)
+                    .sorted(Comparator.comparing(ChatMessage::getCreatedDateTime, Comparator.nullsLast(Comparator.reverseOrder())))
+                    .forEach(consumer::accept);
 
             // Check if there's a next page
             if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
