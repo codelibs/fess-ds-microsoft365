@@ -1226,8 +1226,8 @@ public class Microsoft365Client implements Closeable {
     public void getChannels(final List<Object> options, final Consumer<Channel> consumer, final String teamId) {
         // Microsoft Graph SDK v6 uses requestConfiguration instead of QueryOption
         ChannelCollectionResponse response = client.teams().byTeamId(teamId).channels().get(requestConfiguration -> {
-            // Select only essential fields to improve performance
-            requestConfiguration.queryParameters.select = new String[] { "id", "displayName", "description", "membershipType" };
+            // Note: $select is not supported by the channels API.
+            //       All channel properties are returned by default.
         });
 
         // Handle pagination with odata.nextLink
@@ -1285,9 +1285,8 @@ public class Microsoft365Client implements Closeable {
         // Microsoft Graph SDK v6 uses requestConfiguration instead of QueryOption
         ChatMessageCollectionResponse response =
                 client.teams().byTeamId(teamId).channels().byChannelId(channelId).messages().get(requestConfiguration -> {
-                    // Select only essential fields to improve performance
-                    requestConfiguration.queryParameters.select =
-                            new String[] { "id", "body", "from", "createdDateTime", "attachments", "messageType" };
+                    // Note: $select is not supported by the channel messages API.
+                    //       All message properties are returned by default.
                     // Note: $orderby is not supported by the channel messages API
                     // Client-side sorting is applied below instead
                 });
