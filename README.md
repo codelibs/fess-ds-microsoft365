@@ -83,6 +83,7 @@ Before using this plugin, create an Azure App registration with the required per
    - `Notes.Read.All` - OneNote notebooks
    - `Chat.Read.All` - Teams chat messages
    - `ChannelMessage.Read.All` - Teams channel messages
+   - `ChannelMember.Read.All` - Teams channel member list
    - `Team.ReadBasic.All` - Teams basic information
    - `User.Read.All` - User directory access
    - `Group.Read.All` - Group information
