@@ -453,7 +453,7 @@ public class Microsoft365Client implements Closeable {
         GroupCollectionResponse response = client.groups().get(requestConfiguration -> {
             // Select only essential fields to improve performance
             requestConfiguration.queryParameters.select =
-                    new String[] { "id", "displayName", "mail", "groupTypes", "resourceProvisioningOptions" };
+                    new String[] { "id", "displayName", "mail", "groupTypes", "resourceProvisioningOptions", "visibility" };
             requestConfiguration.queryParameters.orderby = new String[] { "displayName" };
         });
 
@@ -516,7 +516,7 @@ public class Microsoft365Client implements Closeable {
             }
         });
         if (logger.isDebugEnabled()) {
-            groupList.forEach(ToStringBuilder::reflectionToString);
+            groupList.forEach(group -> logger.debug("Group: {}", ToStringBuilder.reflectionToString(group)));
         }
         if (groupList.size() == 1) {
             return groupList.get(0);
@@ -1263,7 +1263,7 @@ public class Microsoft365Client implements Closeable {
             }
         }, teamId);
         if (logger.isDebugEnabled()) {
-            channelList.forEach(ToStringBuilder::reflectionToString);
+            channelList.forEach(channel -> logger.debug("Channel: {}", ToStringBuilder.reflectionToString(channel)));
         }
         if (channelList.size() == 1) {
             return channelList.get(0);
@@ -1508,7 +1508,7 @@ public class Microsoft365Client implements Closeable {
             }
         });
         if (logger.isDebugEnabled()) {
-            chatList.forEach(ToStringBuilder::reflectionToString);
+            chatList.forEach(chat -> logger.debug("Chat: {}", ToStringBuilder.reflectionToString(chat)));
         }
         if (chatList.size() == 1) {
             return chatList.get(0);
