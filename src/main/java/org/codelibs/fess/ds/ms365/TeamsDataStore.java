@@ -196,12 +196,12 @@ public class TeamsDataStore extends Microsoft365DataStore {
             if (logger.isDebugEnabled()) {
                 logger.debug("Starting Teams messages processing");
             }
-            processTeamMessages(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, client);
+            processTeamMessages(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, executorService, client);
 
             if (logger.isDebugEnabled()) {
                 logger.debug("Starting Chat messages processing");
             }
-            processChatMessages(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, client);
+            processChatMessages(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, executorService, client);
 
             if (logger.isDebugEnabled()) {
                 logger.debug("Teams crawling completed - shutting down thread executor");
@@ -224,11 +224,12 @@ public class TeamsDataStore extends Microsoft365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param configMap The configuration map.
+     * @param executorService The executor service handling concurrent tasks.
      * @param client The Microsoft365Client.
      */
     protected void processChatMessages(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Map<String, Object> configMap,
-            final Microsoft365Client client) {
+            final ExecutorService executorService, final Microsoft365Client client) {
         final String chatId = (String) configMap.get(CHAT_ID);
 
         if (StringUtil.isNotBlank(chatId)) {
@@ -250,12 +251,19 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     logger.debug("Creating consolidated chat message from {} individual messages for chat: {}", msgList.size(), chatId);
                 }
 
-                final ChatMessage m = createChatMessage(msgList, client);
-                processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, getGroupRoles(client, chatId), m,
-                        map -> map.put("messages", msgList), client);
+                final List<ChatMessage> messagesSnapshot = Collections.unmodifiableList(new ArrayList<>(msgList));
+                final ChatMessage consolidatedMessage = createChatMessage(messagesSnapshot, client);
+                final List<String> chatRoles = getGroupRoles(client, chatId);
+                executorService.execute(() -> {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Submitting consolidated chat processing task for chat: {}", chatId);
+                    }
+                    processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, chatRoles, consolidatedMessage,
+                            map -> map.put("messages", messagesSnapshot), client);
+                });
 
                 if (logger.isDebugEnabled()) {
-                    logger.debug("Successfully processed consolidated chat message for chat: {} with {} individual messages", chatId,
+                    logger.debug("Submitted consolidated chat processing task for chat: {} with {} individual messages", chatId,
                             msgList.size());
                 }
             } else if (logger.isDebugEnabled()) {
@@ -319,11 +327,12 @@ public class TeamsDataStore extends Microsoft365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param configMap The configuration map.
+     * @param executorService The executor service handling concurrent tasks.
      * @param client The Microsoft365Client.
      */
     protected void processTeamMessages(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Map<String, Object> configMap,
-            final Microsoft365Client client) {
+            final ExecutorService executorService, final Microsoft365Client client) {
         final String teamId = (String) configMap.get(TEAM_ID);
 
         if (StringUtil.isNotBlank(teamId)) {
@@ -363,52 +372,15 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     logger.debug("Found channel: {} (Display Name: {}) in team: {}", c.getId(), c.getDisplayName(), g.getDisplayName());
                 }
 
-                client.getTeamMessages(Collections.emptyList(), m -> {
-                    final Map<String, Object> message = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
-                            defaultDataMap, getGroupRoles(client, g.getId(), c.getId()), m, map -> {
-                                map.put(TEAM, g);
-                                map.put(CHANNEL, c);
-                            }, client);
-                    if (message != null && !((Boolean) configMap.get(IGNORE_REPLIES)).booleanValue()) {
-                        client.getTeamReplyMessages(Collections.emptyList(), r -> {
-                            processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap,
-                                    getGroupRoles(client, g.getId(), c.getId()), r, map -> {
-                                        map.put(TEAM, g);
-                                        map.put(CHANNEL, c);
-                                        map.put(PARENT, message);
-                                    }, client);
-                        }, teamId, channelId, (String) message.get(MESSAGE_ID));
-                    }
-                }, teamId, channelId);
+                submitChannelMessages(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, executorService, client, g, c);
             } else {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Processing messages for all channels in team: {}", teamId);
                 }
 
                 try {
-                    client.getChannels(Collections.emptyList(), c -> {
-                        if (logger.isDebugEnabled()) {
-                            logger.debug("Processing channel: {} (Display Name: {}) in team: {}", c.getId(), c.getDisplayName(),
-                                    g.getDisplayName());
-                        }
-                        client.getTeamMessages(Collections.emptyList(), m -> {
-                            final Map<String, Object> message = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
-                                    defaultDataMap, getGroupRoles(client, g.getId(), c.getId()), m, map -> {
-                                        map.put(TEAM, g);
-                                        map.put(CHANNEL, c);
-                                    }, client);
-                            if (message != null && !((Boolean) configMap.get(IGNORE_REPLIES)).booleanValue()) {
-                                client.getTeamReplyMessages(Collections.emptyList(), r -> {
-                                    processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap,
-                                            getGroupRoles(client, g.getId(), c.getId()), r, map -> {
-                                                map.put(TEAM, g);
-                                                map.put(CHANNEL, c);
-                                                map.put(PARENT, message);
-                                            }, client);
-                                }, teamId, c.getId(), (String) message.get(MESSAGE_ID));
-                            }
-                        }, teamId, c.getId());
-                    }, teamId);
+                    client.getChannels(Collections.emptyList(), c -> submitChannelMessages(dataConfig, callback, paramMap, scriptMap,
+                            defaultDataMap, configMap, executorService, client, g, c), teamId);
                 } catch (final Exception e) {
                     throw new DataStoreException("Failed to access channels for team: " + teamId + " (Display Name: " + g.getDisplayName()
                             + "). Team may be archived or inaccessible.", e);
@@ -450,31 +422,8 @@ public class TeamsDataStore extends Microsoft365DataStore {
                 }
 
                 try {
-                    client.getChannels(Collections.emptyList(), c -> {
-
-                        if (logger.isDebugEnabled()) {
-                            logger.debug("Processing channel: {} (Display Name: {}) in team: {}", c.getId(), c.getDisplayName(),
-                                    g.getDisplayName());
-                        }
-
-                        client.getTeamMessages(Collections.emptyList(), m -> {
-                            final Map<String, Object> message = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
-                                    defaultDataMap, getGroupRoles(client, g.getId(), c.getId()), m, map -> {
-                                        map.put(TEAM, g);
-                                        map.put(CHANNEL, c);
-                                    }, client);
-                            if (message != null && !((Boolean) configMap.get(IGNORE_REPLIES)).booleanValue()) {
-                                client.getTeamReplyMessages(Collections.emptyList(), r -> {
-                                    processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap,
-                                            getGroupRoles(client, g.getId(), c.getId()), r, map -> {
-                                                map.put(TEAM, g);
-                                                map.put(CHANNEL, c);
-                                                map.put(PARENT, message);
-                                            }, client);
-                                }, g.getId(), c.getId(), (String) message.get(MESSAGE_ID));
-                            }
-                        }, g.getId(), c.getId());
-                    }, g.getId());
+                    client.getChannels(Collections.emptyList(), c -> submitChannelMessages(dataConfig, callback, paramMap, scriptMap,
+                            defaultDataMap, configMap, executorService, client, g, c), g.getId());
                 } catch (final Exception e) {
                     if (logger.isDebugEnabled()) {
                         logger.debug("Failed to access channels for team: {} (Display Name: {}). Team may be archived or inaccessible.",
@@ -485,6 +434,75 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     }
                 }
             });
+        }
+    }
+
+    /**
+     * Submits channel processing to the executor for asynchronous execution.
+     *
+     * @param dataConfig The data configuration.
+     * @param callback The index update callback.
+     * @param paramMap The data store parameters.
+     * @param scriptMap The script map.
+     * @param defaultDataMap The default data map.
+     * @param configMap The configuration map.
+     * @param executorService The executor service.
+     * @param client The Microsoft365Client.
+     * @param group The Microsoft 365 group (team).
+     * @param channel The Teams channel.
+     */
+    protected void submitChannelMessages(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+            final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Map<String, Object> configMap,
+            final ExecutorService executorService, final Microsoft365Client client, final Group group, final Channel channel) {
+        executorService.execute(
+                () -> processChannelMessages(dataConfig, callback, paramMap, scriptMap, defaultDataMap, configMap, client, group, channel));
+    }
+
+    /**
+     * Processes all messages for a given channel including replies when enabled.
+     *
+     * @param dataConfig The data configuration.
+     * @param callback The index update callback.
+     * @param paramMap The data store parameters.
+     * @param scriptMap The script map.
+     * @param defaultDataMap The default data map.
+     * @param configMap The configuration map.
+     * @param client The Microsoft365Client.
+     * @param group The Microsoft 365 group (team).
+     * @param channel The Teams channel to process.
+     */
+    protected void processChannelMessages(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+            final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Map<String, Object> configMap,
+            final Microsoft365Client client, final Group group, final Channel channel) {
+        final boolean ignoreReplies = ((Boolean) configMap.get(IGNORE_REPLIES)).booleanValue();
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Submitting processing for channel: {} (Display Name: {}) in team: {}", channel.getId(), channel.getDisplayName(),
+                    group.getDisplayName());
+        }
+
+        try {
+            client.getTeamMessages(Collections.emptyList(), message -> {
+                final Map<String, Object> processedMessage = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
+                        defaultDataMap, getGroupRoles(client, group.getId(), channel.getId()), message, map -> {
+                            map.put(TEAM, group);
+                            map.put(CHANNEL, channel);
+                        }, client);
+                if (processedMessage != null && !ignoreReplies) {
+                    client.getTeamReplyMessages(Collections.emptyList(), reply -> {
+                        processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap,
+                                getGroupRoles(client, group.getId(), channel.getId()), reply, map -> {
+                                    map.put(TEAM, group);
+                                    map.put(CHANNEL, channel);
+                                    map.put(PARENT, processedMessage);
+                                }, client);
+                    }, group.getId(), channel.getId(), (String) processedMessage.get(MESSAGE_ID));
+                }
+            }, group.getId(), channel.getId());
+        } catch (final Exception e) {
+            logger.warn("Failed to process channel: {} (Display Name: {}) in team: {}", channel.getId(), channel.getDisplayName(),
+                    group.getDisplayName(), e);
+            throw new DataStoreException("Failed to process channel: " + channel.getId(), e);
         }
     }
 
