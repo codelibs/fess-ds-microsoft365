@@ -385,29 +385,35 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     logger.debug("Processing messages for all channels in team: {}", teamId);
                 }
 
-                client.getChannels(Collections.emptyList(), c -> {
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("Processing channel: {} (Display Name: {}) in team: {}", c.getId(), c.getDisplayName(),
-                                g.getDisplayName());
-                    }
-                    client.getTeamMessages(Collections.emptyList(), m -> {
-                        final Map<String, Object> message = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
-                                defaultDataMap, getGroupRoles(client, g.getId(), c.getId()), m, map -> {
-                                    map.put(TEAM, g);
-                                    map.put(CHANNEL, c);
-                                }, client);
-                        if (message != null && !((Boolean) configMap.get(IGNORE_REPLIES)).booleanValue()) {
-                            client.getTeamReplyMessages(Collections.emptyList(), r -> {
-                                processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap,
-                                        getGroupRoles(client, g.getId(), c.getId()), r, map -> {
-                                            map.put(TEAM, g);
-                                            map.put(CHANNEL, c);
-                                            map.put(PARENT, message);
-                                        }, client);
-                            }, teamId, c.getId(), (String) message.get(MESSAGE_ID));
+                try {
+                    client.getChannels(Collections.emptyList(), c -> {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Processing channel: {} (Display Name: {}) in team: {}", c.getId(), c.getDisplayName(),
+                                    g.getDisplayName());
                         }
-                    }, teamId, c.getId());
-                }, teamId);
+                        client.getTeamMessages(Collections.emptyList(), m -> {
+                            final Map<String, Object> message = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
+                                    defaultDataMap, getGroupRoles(client, g.getId(), c.getId()), m, map -> {
+                                        map.put(TEAM, g);
+                                        map.put(CHANNEL, c);
+                                    }, client);
+                            if (message != null && !((Boolean) configMap.get(IGNORE_REPLIES)).booleanValue()) {
+                                client.getTeamReplyMessages(Collections.emptyList(), r -> {
+                                    processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap,
+                                            getGroupRoles(client, g.getId(), c.getId()), r, map -> {
+                                                map.put(TEAM, g);
+                                                map.put(CHANNEL, c);
+                                                map.put(PARENT, message);
+                                            }, client);
+                                }, teamId, c.getId(), (String) message.get(MESSAGE_ID));
+                            }
+                        }, teamId, c.getId());
+                    }, teamId);
+                } catch (final Exception e) {
+                    logger.warn("Failed to access channels for team: {} (Display Name: {}). Team may be archived or inaccessible.", teamId,
+                            g.getDisplayName(), e);
+                    throw new DataStoreException("Cannot access channels for team: " + teamId, e);
+                }
             }
         } else if (teamId == null) {
             if (logger.isDebugEnabled()) {
@@ -419,7 +425,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
                 logger.debug("Exclude Group IDs: {}", excludeGroupIdSet);
             }
 
-            client.geTeams(Collections.emptyList(), g -> {
+            client.getTeams(Collections.emptyList(), g -> {
 
                 if (logger.isDebugEnabled()) {
                     logger.debug("Evaluating team: {} (Display Name: {}, Visibility: {})", g.getId(), g.getDisplayName(),
@@ -444,31 +450,41 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     logger.debug("Processing team: {} (Display Name: {})", g.getId(), g.getDisplayName());
                 }
 
-                client.getChannels(Collections.emptyList(), c -> {
+                try {
+                    client.getChannels(Collections.emptyList(), c -> {
 
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("Processing channel: {} (Display Name: {}) in team: {}", c.getId(), c.getDisplayName(),
-                                g.getDisplayName());
-                    }
-
-                    client.getTeamMessages(Collections.emptyList(), m -> {
-                        final Map<String, Object> message = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
-                                defaultDataMap, getGroupRoles(client, g.getId(), c.getId()), m, map -> {
-                                    map.put(TEAM, g);
-                                    map.put(CHANNEL, c);
-                                }, client);
-                        if (message != null && !((Boolean) configMap.get(IGNORE_REPLIES)).booleanValue()) {
-                            client.getTeamReplyMessages(Collections.emptyList(), r -> {
-                                processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap,
-                                        getGroupRoles(client, g.getId(), c.getId()), r, map -> {
-                                            map.put(TEAM, g);
-                                            map.put(CHANNEL, c);
-                                            map.put(PARENT, message);
-                                        }, client);
-                            }, g.getId(), c.getId(), (String) message.get(MESSAGE_ID));
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Processing channel: {} (Display Name: {}) in team: {}", c.getId(), c.getDisplayName(),
+                                    g.getDisplayName());
                         }
-                    }, g.getId(), c.getId());
-                }, g.getId());
+
+                        client.getTeamMessages(Collections.emptyList(), m -> {
+                            final Map<String, Object> message = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
+                                    defaultDataMap, getGroupRoles(client, g.getId(), c.getId()), m, map -> {
+                                        map.put(TEAM, g);
+                                        map.put(CHANNEL, c);
+                                    }, client);
+                            if (message != null && !((Boolean) configMap.get(IGNORE_REPLIES)).booleanValue()) {
+                                client.getTeamReplyMessages(Collections.emptyList(), r -> {
+                                    processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap,
+                                            getGroupRoles(client, g.getId(), c.getId()), r, map -> {
+                                                map.put(TEAM, g);
+                                                map.put(CHANNEL, c);
+                                                map.put(PARENT, message);
+                                            }, client);
+                                }, g.getId(), c.getId(), (String) message.get(MESSAGE_ID));
+                            }
+                        }, g.getId(), c.getId());
+                    }, g.getId());
+                } catch (final Exception e) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Failed to access channels for team: {} (Display Name: {}). Team may be archived or inaccessible.",
+                                g.getId(), g.getDisplayName(), e);
+                    } else {
+                        logger.warn("Failed to access channels for team: {} (Display Name: {}). Skipping this team. {}", g.getId(),
+                                g.getDisplayName(), e.getMessage());
+                    }
+                }
             });
         }
     }
