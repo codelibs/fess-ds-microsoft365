@@ -118,7 +118,7 @@ public class Microsoft365ClientTest extends LastaFluteTestCase {
             return;
         }
 
-        client.geTeams(Collections.emptyList(), g -> {
+        client.getTeams(Collections.emptyList(), g -> {
             logger.info(ToStringBuilder.reflectionToString(g));
             assertNotNull(g.getId());
             Group g2 = client.getGroupById(g.getId());

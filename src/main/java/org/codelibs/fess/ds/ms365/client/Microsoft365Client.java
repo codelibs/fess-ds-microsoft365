@@ -75,11 +75,15 @@ import com.microsoft.graph.models.PermissionCollectionResponse;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.models.SiteCollectionResponse;
 import com.microsoft.graph.models.SitePageCollectionResponse;
+import com.microsoft.graph.models.TeamCollectionResponse;
 import com.microsoft.graph.models.User;
 import com.microsoft.graph.models.UserCollectionResponse;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
 import com.microsoft.kiota.ApiException;
 import com.microsoft.kiota.ResponseHeaders;
+import com.microsoft.kiota.serialization.UntypedArray;
+import com.microsoft.kiota.serialization.UntypedNode;
+import com.microsoft.kiota.serialization.UntypedString;
 
 /**
  * This class provides a client for accessing Microsoft Microsoft 365 services using the Microsoft Graph API.
@@ -486,6 +490,7 @@ public class Microsoft365Client implements Closeable {
                     new String[] { "id", "displayName", "mail", "groupTypes", "resourceProvisioningOptions" };
             // Removed orderby as it's not supported with advanced filters and ConsistencyLevel:eventual
             // Required for advanced queries
+            requestConfiguration.queryParameters.count = true;
             requestConfiguration.headers.add("ConsistencyLevel", "eventual");
         });
 
@@ -1151,59 +1156,49 @@ public class Microsoft365Client implements Closeable {
 
     /**
      * Retrieves a list of Teams, processing each Team with the provided consumer.
-     * In SDK v6, query options are applied using requestConfiguration lambda.
+     * Uses the /teams endpoint directly to ensure all teams are retrieved, including old teams
+     * that may not have resourceProvisioningOptions set.
+     * For each team, retrieves the corresponding Group object to provide full team details.
      *
      * @param options A list of query options for the request (deprecated - kept for API compatibility).
      * @param consumer A consumer to process each Group object representing a Team.
      */
-    public void geTeams(final List<Object> options, final Consumer<Group> consumer) {
-        // Microsoft Graph SDK v6 uses requestConfiguration instead of QueryOption
-        GroupCollectionResponse response = client.groups().get(requestConfiguration -> {
-            // Filter for Teams-enabled groups only
-            requestConfiguration.queryParameters.filter = "resourceProvisioningOptions/any(x:x eq 'Team')";
-            // Select only essential fields to improve performance
-            requestConfiguration.queryParameters.select =
-                    new String[] { "id", "displayName", "mail", "description", "resourceProvisioningOptions" };
-            // Removed orderby as it's not supported with advanced filters and ConsistencyLevel:eventual
-            // Required for advanced queries
-            requestConfiguration.headers.add("ConsistencyLevel", "eventual");
-        });
-        final Consumer<Group> filter = g -> {
-            final Map<String, Object> additionalDataManager = g.getAdditionalData();
-            if (additionalDataManager != null) {
-                final Object jsonObj = additionalDataManager.get("resourceProvisioningOptions");
-                // Handle both JsonElement (SDK v5 style) and native List/Collection (SDK v6 style)
-                if (jsonObj instanceof final JsonElement jsonElement && jsonElement.isJsonArray()) {
-                    final JsonArray array = jsonElement.getAsJsonArray();
-                    for (int i = 0; i < array.size(); i++) {
-                        if ("Team".equals(array.get(i).getAsString())) {
-                            consumer.accept(g);
-                            return;
-                        }
-                    }
-                } else if (jsonObj instanceof final java.util.Collection<?> collection) {
-                    // Handle native collection objects (SDK v6 may provide List<String> directly)
-                    for (final Object item : collection) {
-                        if ("Team".equals(String.valueOf(item))) {
-                            consumer.accept(g);
-                            return;
-                        }
-                    }
-                } else if (jsonObj instanceof final Object[] array) {
-                    // Handle object arrays (another possible format)
-                    for (final Object item : array) {
-                        if ("Team".equals(String.valueOf(item))) {
-                            consumer.accept(g);
-                            return;
-                        }
-                    }
-                }
-            }
-        };
+    public void getTeams(final List<Object> options, final Consumer<Group> consumer) {
+        // Use /teams endpoint to get all teams in the organization
+        // This ensures we get ALL teams, including old teams that may not have resourceProvisioningOptions set
+        TeamCollectionResponse response = client.teams().get();
 
         // Handle pagination with odata.nextLink
         while (response != null && response.getValue() != null) {
-            response.getValue().forEach(filter);
+            // For each team, get the corresponding Group object to provide full details
+            response.getValue().forEach(team -> {
+                if (team.getId() != null) {
+                    try {
+                        // Retrieve the Group object using the team's ID
+                        // Teams are backed by Microsoft 365 groups, so the team ID is also the group ID
+                        Group group = client.groups().byGroupId(team.getId()).get(requestConfiguration -> {
+                            // Select essential fields to improve performance
+                            requestConfiguration.queryParameters.select = new String[] { "id", "displayName", "mail", "description",
+                                    "resourceProvisioningOptions", "visibility" };
+                        });
+                        if (group != null) {
+                            // Validate that this is an active Team by checking resourceProvisioningOptions
+                            // This prevents errors when trying to access channels for inactive/archived teams
+                            if (isActiveTeam(group)) {
+                                consumer.accept(group);
+                            } else {
+                                if (logger.isDebugEnabled()) {
+                                    logger.debug(
+                                            "Skipping team {} ({}): not an active Team (missing 'Team' in resourceProvisioningOptions)",
+                                            team.getId(), group.getDisplayName());
+                                }
+                            }
+                        }
+                    } catch (final Exception e) {
+                        logger.warn("Failed to retrieve group details for team ID: {}", team.getId(), e);
+                    }
+                }
+            });
 
             // Check if there's a next page
             if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
@@ -1211,8 +1206,54 @@ public class Microsoft365Client implements Closeable {
                 break;
             }
             // Request the next page using the nextLink URL
-            response = client.groups().withUrl(response.getOdataNextLink()).get();
+            response = client.teams().withUrl(response.getOdataNextLink()).get();
         }
+    }
+
+    /**
+     * Checks if a Group is an active Team by verifying the resourceProvisioningOptions property.
+     *
+     * @param group The Group object to check
+     * @return true if the group has "Team" in its resourceProvisioningOptions, false otherwise
+     */
+    private boolean isActiveTeam(final Group group) {
+        final Map<String, Object> additionalDataManager = group.getAdditionalData();
+        if (additionalDataManager != null) {
+            final Object jsonObj = additionalDataManager.get("resourceProvisioningOptions");
+            // Handle UntypedArray (Kiota SDK v6 style)
+            if (jsonObj instanceof final UntypedArray untypedArray) {
+                for (final UntypedNode node : untypedArray.getValue()) {
+                    if (node instanceof final UntypedString untypedString) {
+                        if ("Team".equals(untypedString.getValue())) {
+                            return true;
+                        }
+                    }
+                }
+            } else if (jsonObj instanceof final JsonElement jsonElement && jsonElement.isJsonArray()) {
+                // Handle JsonElement (SDK v5 style)
+                final JsonArray array = jsonElement.getAsJsonArray();
+                for (int i = 0; i < array.size(); i++) {
+                    if ("Team".equals(array.get(i).getAsString())) {
+                        return true;
+                    }
+                }
+            } else if (jsonObj instanceof final java.util.Collection<?> collection) {
+                // Handle native collection objects (may be used in some SDK versions)
+                for (final Object item : collection) {
+                    if ("Team".equals(String.valueOf(item))) {
+                        return true;
+                    }
+                }
+            } else if (jsonObj instanceof final Object[] array) {
+                // Handle object arrays (another possible format)
+                for (final Object item : array) {
+                    if ("Team".equals(String.valueOf(item))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /**
