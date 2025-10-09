@@ -355,7 +355,7 @@ role=page.roles
 | Parameter | Description | Default | Notes |
 |-----------|-------------|---------|-------|
 | `team_id` | Specific team ID to crawl | All teams | Microsoft 365 group ID |
-| `exclude_team_id` | Comma-separated team IDs to exclude | - | Multiple teams to skip |
+| `exclude_team_ids` | Comma-separated team IDs to exclude | - | Multiple teams to skip |
 | `include_visibility` | Team visibility levels to include | All | Comma-separated: `public`, `private` |
 | `channel_id` | Specific channel ID to crawl | All channels | Within specified team |
 | `chat_id` | Specific chat ID to crawl | - | For 1:1 or group chats |
@@ -381,7 +381,7 @@ The TeamsDataStore provides comprehensive Microsoft Teams content crawling with 
 **Crawling Modes:**
 - **All Teams**: Leave `team_id` empty to crawl all accessible teams
 - **Specific Team**: Set `team_id` to crawl only that team's channels and messages
-- **Team Filtering**: Use `exclude_team_id` to skip specific teams (comma-separated IDs)
+- **Team Filtering**: Use `exclude_team_ids` to skip specific teams (comma-separated IDs)
 - **Visibility Filtering**: Use `include_visibility` to filter by team visibility (public/private)
 - **Specific Channel**: Set both `team_id` and `channel_id` to crawl a single channel
 - **Chat Conversations**: Set `chat_id` to crawl specific chat conversations
@@ -944,7 +944,7 @@ title_dateformat=yyyy/MM/dd'T'HH:mm:ss
 title_timezone=Asia/Tokyo
 
 # Exclude multiple teams
-exclude_team_id=team1-id,team2-id,team3-id
+exclude_team_ids=team1-id,team2-id,team3-id
 include_visibility=public,private
 
 # Crawl specific channel in a team

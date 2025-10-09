@@ -340,6 +340,14 @@ public class TeamsDataStore extends Microsoft365DataStore {
                 logger.debug("Found team: {} (Display Name: {})", g.getId(), g.getDisplayName());
             }
 
+            if (!isTargetVisibility(configMap, g.getVisibility())) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Skipping team due to visibility filter: {} (Display Name: {}, Visibility: {})", g.getId(),
+                            g.getDisplayName(), g.getVisibility());
+                }
+                return;
+            }
+
             final String channelId = (String) configMap.get(CHANNEL_ID);
             if (StringUtil.isNotBlank(channelId)) {
                 if (logger.isDebugEnabled()) {
