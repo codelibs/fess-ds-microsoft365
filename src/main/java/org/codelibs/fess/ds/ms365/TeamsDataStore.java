@@ -410,9 +410,8 @@ public class TeamsDataStore extends Microsoft365DataStore {
                         }, teamId, c.getId());
                     }, teamId);
                 } catch (final Exception e) {
-                    logger.warn("Failed to access channels for team: {} (Display Name: {}). Team may be archived or inaccessible.", teamId,
-                            g.getDisplayName(), e);
-                    throw new DataStoreException("Cannot access channels for team: " + teamId, e);
+                    throw new DataStoreException("Failed to access channels for team: " + teamId + " (Display Name: " + g.getDisplayName()
+                            + "). Team may be archived or inaccessible.", e);
                 }
             }
         } else if (teamId == null) {
