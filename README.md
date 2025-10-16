@@ -363,7 +363,7 @@ role=page.roles
 | `append_attachment` | Include attachments in content | `true` | Append attachment text to message body |
 | `ignore_system_events` | Skip system event messages | `true` | Filter out system notifications |
 | `title_dateformat` | Date format for message titles | `yyyy/MM/dd'T'HH:mm:ss` | Java date pattern |
-| `title_timezone` | Timezone for message titles | `Z` | e.g., `UTC`, `Asia/Tokyo`, `America/New_York` |
+| `title_timezone_offset` | Timezone offset for message titles | `Z` | e.g., `Z`, `+09:00`, `-05:00` |
 | `number_of_threads` | Number of processing threads | `1` | Concurrent message processing |
 | `default_permissions` | Default role assignments | - | Additional permissions for all messages |
 | `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed messages |
@@ -941,7 +941,7 @@ ignore_system_events=true
 append_attachment=true
 number_of_threads=2
 title_dateformat=yyyy/MM/dd'T'HH:mm:ss
-title_timezone=Asia/Tokyo
+title_timezone_offset=+09:00
 
 # Exclude multiple teams
 exclude_team_ids=team1-id,team2-id,team3-id
