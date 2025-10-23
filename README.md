@@ -18,7 +18,7 @@ This plugin extends [Fess](https://fess.codelibs.org/) enterprise search capabil
 - **Teams**: Channels, messages, chats with conversation context
 - **SharePoint Document Libraries**: Document library metadata indexing (libraries crawled as searchable entities, not individual files)
 - **SharePoint Lists**: Custom lists and list items with dynamic field mapping
-- **SharePoint Pages**: Site pages, news articles, and wiki pages with full content extraction
+- **SharePoint Pages**: Site pages and news articles with full content extraction
 
 ### 🔐 **Enterprise-Grade Security**
 - **Role-based Access Control**: Seamless integration with Fess security model
@@ -307,7 +307,7 @@ role=page.roles
 | page.created | The time at which the page was created. |
 | page.modified | The last time the page was modified. |
 | page.author | The user who created the page. |
-| page.type | The type of page (news, article, wiki, page). |
+| page.type | The type of page (news, article, page). |
 | page.description | The page description or summary. |
 | page.url | A link for opening the page in SharePoint. |
 | page.canonical_url | The canonical URL for accessing the page. |
@@ -325,7 +325,6 @@ role=page.roles
 **Page Types**: The plugin automatically detects and categorizes pages:
 - `news`: News posts and announcements
 - `article`: Article pages and documentation
-- `wiki`: Wiki-style collaborative pages
 - `page`: Standard site pages
 
 **Note**: Content extraction from canvas layout depends on the Microsoft Graph SDK's ability to retrieve web part data. The plugin handles both text web parts and attempts to extract meaningful content from standard web parts when possible.
@@ -758,7 +757,7 @@ Common SharePoint list template IDs for filtering:
 | `site_id` | SharePoint site ID containing pages | All sites | Full site ID format: `hostname,siteCollectionId,siteId` |
 | `exclude_site_id` | Comma-separated site IDs to exclude | - | Multiple site IDs separated by commas |
 | `ignore_system_pages` | Skip system pages | `true` | Excludes Forms, DevHome, and other system pages |
-| `page_type_filter` | Filter by page type | All types | Comma-separated: `news,article,wiki,page` |
+| `page_type_filter` | Filter by page type | All types | Comma-separated: `news,article,page` |
 | `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed pages |
 | `include_pattern` | Regex pattern for page URLs to include | - | Filter pages by URL matching |
 | `exclude_pattern` | Regex pattern for page URLs to exclude | - | Skip pages with matching URLs |
