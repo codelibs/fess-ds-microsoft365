@@ -729,6 +729,9 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
         // Check if it's a system page
         if (isIgnoreSystemPages(paramMap) && isSystemPage(page)) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping system page: {}", page.getWebUrl());
+            }
             return false;
         }
 
@@ -745,6 +748,10 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
 
         // Check URL patterns
         final String pageUrl = page.getWebUrl();
+        if (logger.isDebugEnabled()) {
+            logger.debug("Evaluating page URL: {}", pageUrl);
+        }
+
         if (pageUrl != null) {
             if (excludePattern != null && excludePattern.matcher(pageUrl).find()
                     || includePattern != null && !includePattern.matcher(pageUrl).find()) {
