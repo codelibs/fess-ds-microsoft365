@@ -18,6 +18,7 @@ package org.codelibs.fess.ds.ms365;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -260,7 +261,7 @@ public class Microsoft365DataStoreTest extends LastaFluteTestCase {
 
         final List<AssignedLicense> licenses = new ArrayList<>();
         final AssignedLicense license = new AssignedLicense();
-        license.setSkuId("sku-id-123");
+        license.setSkuId(UUID.randomUUID());
         licenses.add(license);
         licensedUser.setAssignedLicenses(licenses);
 
