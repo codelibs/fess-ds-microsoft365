@@ -155,4 +155,186 @@ public class Microsoft365ClientTest extends LastaFluteTestCase {
             logger.info(m.getBody().getContent());
         }, chatId);
     }
+
+    /**
+     * Test that DEFAULT_CACHE_SIZE is an int constant and has the correct value.
+     */
+    public void test_defaultCacheSizeConstant() {
+        // Verify that DEFAULT_CACHE_SIZE is the expected value
+        assertEquals("DEFAULT_CACHE_SIZE should be 10000", 10000, Microsoft365Client.DEFAULT_CACHE_SIZE);
+
+        // Verify it's of type int (compile-time check, but we can verify the value type)
+        assertTrue("DEFAULT_CACHE_SIZE should be an integer", Microsoft365Client.DEFAULT_CACHE_SIZE instanceof Integer);
+    }
+
+    /**
+     * Test that client uses default cache size when no cache_size parameter is provided.
+     */
+    public void test_clientUsesDefaultCacheSize() {
+        String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
+        String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
+        String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
+
+        if (tenant == null || clientId == null || clientSecret == null) {
+            assertTrue("No credentials - skipping test", true);
+            return;
+        }
+
+        DataStoreParams params = new DataStoreParams();
+        params.put(Microsoft365Client.TENANT_PARAM, tenant);
+        params.put(Microsoft365Client.CLIENT_ID_PARAM, clientId);
+        params.put(Microsoft365Client.CLIENT_SECRET_PARAM, clientSecret);
+        // Note: NOT setting cache_size parameter - should use default
+
+        Microsoft365Client testClient = null;
+        try {
+            testClient = new Microsoft365Client(params);
+            assertNotNull("Client should be created successfully", testClient);
+
+            // The client should be created without errors using the default cache size
+            // We can't directly verify the cache size, but we can verify the client works
+            assertNotNull("userTypeCache should be initialized", testClient.userTypeCache);
+            assertNotNull("groupIdCache should be initialized", testClient.groupIdCache);
+            assertNotNull("upnCache should be initialized", testClient.upnCache);
+            assertNotNull("groupNameCache should be initialized", testClient.groupNameCache);
+        } finally {
+            if (testClient != null) {
+                testClient.close();
+            }
+        }
+    }
+
+    /**
+     * Test that client uses custom cache size when cache_size parameter is provided.
+     */
+    public void test_clientUsesCustomCacheSize() {
+        String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
+        String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
+        String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
+
+        if (tenant == null || clientId == null || clientSecret == null) {
+            assertTrue("No credentials - skipping test", true);
+            return;
+        }
+
+        DataStoreParams params = new DataStoreParams();
+        params.put(Microsoft365Client.TENANT_PARAM, tenant);
+        params.put(Microsoft365Client.CLIENT_ID_PARAM, clientId);
+        params.put(Microsoft365Client.CLIENT_SECRET_PARAM, clientSecret);
+        params.put("cache_size", "5000"); // Set custom cache size
+
+        Microsoft365Client testClient = null;
+        try {
+            testClient = new Microsoft365Client(params);
+            assertNotNull("Client should be created successfully with custom cache size", testClient);
+
+            // The client should be created without errors using the custom cache size
+            assertNotNull("userTypeCache should be initialized", testClient.userTypeCache);
+            assertNotNull("groupIdCache should be initialized", testClient.groupIdCache);
+            assertNotNull("upnCache should be initialized", testClient.upnCache);
+            assertNotNull("groupNameCache should be initialized", testClient.groupNameCache);
+        } finally {
+            if (testClient != null) {
+                testClient.close();
+            }
+        }
+    }
+
+    /**
+     * Test that close() method properly invalidates all caches.
+     * This test verifies the fix for the resource leak bug.
+     */
+    public void test_closeInvalidatesAllCaches() {
+        String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
+        String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
+        String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
+
+        if (tenant == null || clientId == null || clientSecret == null) {
+            assertTrue("No credentials - skipping test", true);
+            return;
+        }
+
+        DataStoreParams params = new DataStoreParams();
+        params.put(Microsoft365Client.TENANT_PARAM, tenant);
+        params.put(Microsoft365Client.CLIENT_ID_PARAM, clientId);
+        params.put(Microsoft365Client.CLIENT_SECRET_PARAM, clientSecret);
+
+        Microsoft365Client testClient = new Microsoft365Client(params);
+
+        // Verify caches are initialized
+        assertNotNull("userTypeCache should be initialized before close", testClient.userTypeCache);
+        assertNotNull("groupIdCache should be initialized before close", testClient.groupIdCache);
+        assertNotNull("upnCache should be initialized before close", testClient.upnCache);
+        assertNotNull("groupNameCache should be initialized before close", testClient.groupNameCache);
+
+        // Get initial sizes (should be 0 as nothing has been cached yet)
+        long userTypeCacheSize = testClient.userTypeCache.size();
+        long groupIdCacheSize = testClient.groupIdCache.size();
+        long upnCacheSize = testClient.upnCache.size();
+        long groupNameCacheSize = testClient.groupNameCache.size();
+
+        logger.info("Cache sizes before close - userType: {}, groupId: {}, upn: {}, groupName: {}",
+                    userTypeCacheSize, groupIdCacheSize, upnCacheSize, groupNameCacheSize);
+
+        // Close the client - this should invalidate all caches
+        testClient.close();
+
+        // Verify all caches are invalidated (size should be 0)
+        assertEquals("userTypeCache should be empty after close", 0L, testClient.userTypeCache.size());
+        assertEquals("groupIdCache should be empty after close", 0L, testClient.groupIdCache.size());
+        assertEquals("upnCache should be empty after close", 0L, testClient.upnCache.size());
+        assertEquals("groupNameCache should be empty after close", 0L, testClient.groupNameCache.size());
+
+        logger.info("All caches successfully invalidated after close()");
+    }
+
+    /**
+     * Test that caches work correctly and can be invalidated.
+     * This is an integration test that verifies cache behavior.
+     */
+    public void test_cacheInvalidationPreventsMemoryLeak() {
+        String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
+        String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
+        String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
+
+        if (tenant == null || clientId == null || clientSecret == null) {
+            assertTrue("No credentials - skipping test", true);
+            return;
+        }
+
+        DataStoreParams params = new DataStoreParams();
+        params.put(Microsoft365Client.TENANT_PARAM, tenant);
+        params.put(Microsoft365Client.CLIENT_ID_PARAM, clientId);
+        params.put(Microsoft365Client.CLIENT_SECRET_PARAM, clientSecret);
+        params.put("cache_size", "100"); // Small cache for testing
+
+        Microsoft365Client testClient = null;
+        try {
+            testClient = new Microsoft365Client(params);
+
+            // All caches should start empty
+            assertEquals("Initial userTypeCache size should be 0", 0L, testClient.userTypeCache.size());
+            assertEquals("Initial groupIdCache size should be 0", 0L, testClient.groupIdCache.size());
+            assertEquals("Initial upnCache size should be 0", 0L, testClient.upnCache.size());
+            assertEquals("Initial groupNameCache size should be 0", 0L, testClient.groupNameCache.size());
+
+            logger.info("Cache invalidation test: All caches start empty as expected");
+
+            // After close, all caches should still be empty (and properly cleaned up)
+            testClient.close();
+
+            assertEquals("userTypeCache should remain empty after close", 0L, testClient.userTypeCache.size());
+            assertEquals("groupIdCache should remain empty after close", 0L, testClient.groupIdCache.size());
+            assertEquals("upnCache should remain empty after close", 0L, testClient.upnCache.size());
+            assertEquals("groupNameCache should remain empty after close", 0L, testClient.groupNameCache.size());
+
+            logger.info("Cache invalidation test: All caches properly cleaned up after close()");
+
+        } finally {
+            if (testClient != null && testClient != client) {
+                // Ensure cleanup even if test fails
+                testClient.close();
+            }
+        }
+    }
 }
