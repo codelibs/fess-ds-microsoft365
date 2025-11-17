@@ -123,7 +123,8 @@ public class Microsoft365Client implements Closeable {
     protected LoadingCache<String, UserType> userTypeCache;
     /** A cache for group IDs. */
     protected LoadingCache<String, String[]> groupIdCache;
-    private LoadingCache<String, String> groupNameCache;
+    /** A cache for group names. */
+    protected LoadingCache<String, String> groupNameCache;
     /** A cache for user principal names (UPNs). */
     protected LoadingCache<String, String> upnCache;
 

@@ -163,8 +163,8 @@ public class Microsoft365ClientTest extends LastaFluteTestCase {
         // Verify that DEFAULT_CACHE_SIZE is the expected value
         assertEquals("DEFAULT_CACHE_SIZE should be 10000", 10000, Microsoft365Client.DEFAULT_CACHE_SIZE);
 
-        // Verify it's of type int (compile-time check, but we can verify the value type)
-        assertTrue("DEFAULT_CACHE_SIZE should be an integer", Microsoft365Client.DEFAULT_CACHE_SIZE instanceof Integer);
+        // Note: Type checking for primitive int is done at compile-time
+        // The fact that this compiles confirms it's an int
     }
 
     /**
