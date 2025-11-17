@@ -112,6 +112,9 @@ public class Microsoft365Client implements Closeable {
     /** Error code for an invalid authentication token. */
     protected static final String INVALID_AUTHENTICATION_TOKEN = "InvalidAuthenticationToken";
 
+    /** Default cache size for user type, group ID, UPN, and group name caches. */
+    protected static final String DEFAULT_CACHE_SIZE = "10000";
+
     /** The Microsoft Graph service client. */
     protected GraphServiceClient client;
     /** The data store parameters. */
@@ -165,7 +168,7 @@ public class Microsoft365Client implements Closeable {
         }
 
         userTypeCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
+                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, DEFAULT_CACHE_SIZE)))
                 .build(new CacheLoader<String, UserType>() {
                     @Override
                     public UserType load(final String key) {
@@ -185,7 +188,7 @@ public class Microsoft365Client implements Closeable {
                 });
 
         groupIdCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
+                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, DEFAULT_CACHE_SIZE)))
                 .build(new CacheLoader<String, String[]>() {
                     @Override
                     public String[] load(final String email) {
@@ -200,7 +203,7 @@ public class Microsoft365Client implements Closeable {
                 });
 
         upnCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
+                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, DEFAULT_CACHE_SIZE)))
                 .build(new CacheLoader<String, String>() {
                     @Override
                     public String load(final String objectId) {
@@ -209,7 +212,7 @@ public class Microsoft365Client implements Closeable {
                 });
 
         groupNameCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, "10000")))
+                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, DEFAULT_CACHE_SIZE)))
                 .build(new CacheLoader<String, String>() {
                     @Override
                     public String load(final String objectId) {
@@ -223,6 +226,8 @@ public class Microsoft365Client implements Closeable {
     public void close() {
         userTypeCache.invalidateAll();
         groupIdCache.invalidateAll();
+        upnCache.invalidateAll();
+        groupNameCache.invalidateAll();
     }
 
     /**
