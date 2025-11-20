@@ -178,7 +178,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                 logger.debug("Shutting down thread executor.");
             }
             executorService.shutdown();
-            executorService.awaitTermination(60, TimeUnit.SECONDS);
+            executorService.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (final InterruptedException e) {
             throw new InterruptedRuntimeException(e);
         } finally {

@@ -61,6 +61,10 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     /** Parameter name for ignoring system lists. */
     protected static final String IGNORE_SYSTEM_LISTS = "ignore_system_lists";
 
+    // Thread pool constants
+    /** Default timeout in seconds for executor service shutdown. */
+    protected static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 60L;
+
     /**
      * Default constructor.
      */
