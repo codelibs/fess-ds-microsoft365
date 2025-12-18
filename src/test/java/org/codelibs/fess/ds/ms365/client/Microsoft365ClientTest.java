@@ -273,8 +273,8 @@ public class Microsoft365ClientTest extends LastaFluteTestCase {
         long upnCacheSize = testClient.upnCache.size();
         long groupNameCacheSize = testClient.groupNameCache.size();
 
-        logger.info("Cache sizes before close - userType: {}, groupId: {}, upn: {}, groupName: {}",
-                    userTypeCacheSize, groupIdCacheSize, upnCacheSize, groupNameCacheSize);
+        logger.info("Cache sizes before close - userType: {}, groupId: {}, upn: {}, groupName: {}", userTypeCacheSize, groupIdCacheSize,
+                upnCacheSize, groupNameCacheSize);
 
         // Close the client - this should invalidate all caches
         testClient.close();

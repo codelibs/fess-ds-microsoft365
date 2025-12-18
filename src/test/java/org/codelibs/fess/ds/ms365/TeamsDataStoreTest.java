@@ -89,8 +89,8 @@ public class TeamsDataStoreTest extends LastaFluteTestCase {
     }
 
     public void test_normalizeTextContent_multipleAttachments() {
-        assertEquals("text  between",
-                dataStore.normalizeTextContent("<attachment></attachment> text <attachment></attachment> between <attachment></attachment>"));
+        assertEquals("text  between", dataStore
+                .normalizeTextContent("<attachment></attachment> text <attachment></attachment> between <attachment></attachment>"));
         assertEquals("start  end", dataStore.normalizeTextContent("start <attachment></attachment><attachment></attachment> end"));
     }
 

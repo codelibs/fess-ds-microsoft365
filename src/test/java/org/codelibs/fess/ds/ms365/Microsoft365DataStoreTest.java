@@ -313,8 +313,7 @@ public class Microsoft365DataStoreTest extends LastaFluteTestCase {
             final List<Runnable> unfinishedTasks = executor.shutdownNow();
             assertNotNull("ShutdownNow should return list of unfinished tasks", unfinishedTasks);
 
-            assertTrue("Executor should terminate quickly after shutdownNow",
-                    executor.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue("Executor should terminate quickly after shutdownNow", executor.awaitTermination(2, TimeUnit.SECONDS));
         } catch (Exception e) {
             fail("Immediate shutdown should work: " + e.getMessage());
         }
@@ -322,12 +321,10 @@ public class Microsoft365DataStoreTest extends LastaFluteTestCase {
 
     public void test_constantValues() {
         // Test that important constants are properly defined
-        assertEquals("IGNORE_ERROR constant should match", "ignore_error",
-                TestDataStore.getIgnoreErrorConstant());
+        assertEquals("IGNORE_ERROR constant should match", "ignore_error", TestDataStore.getIgnoreErrorConstant());
         assertEquals("IGNORE_SYSTEM_LIBRARIES constant should match", "ignore_system_libraries",
                 TestDataStore.getIgnoreSystemLibrariesConstant());
-        assertEquals("IGNORE_SYSTEM_LISTS constant should match", "ignore_system_lists",
-                TestDataStore.getIgnoreSystemListsConstant());
+        assertEquals("IGNORE_SYSTEM_LISTS constant should match", "ignore_system_lists", TestDataStore.getIgnoreSystemListsConstant());
     }
 
     /**
