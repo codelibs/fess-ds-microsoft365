@@ -16,7 +16,10 @@
 package org.codelibs.fess.ds.ms365.client;
 
 import java.io.Closeable;
+import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
@@ -39,6 +42,9 @@ import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.util.ComponentUtil;
 
+import com.azure.core.http.HttpClient;
+import com.azure.core.http.ProxyOptions;
+import com.azure.core.http.netty.NettyAsyncHttpClientBuilder;
 import com.azure.identity.ClientSecretCredential;
 import com.azure.identity.ClientSecretCredentialBuilder;
 import com.google.common.cache.CacheBuilder;
@@ -76,9 +82,18 @@ import com.microsoft.graph.models.SiteCollectionResponse;
 import com.microsoft.graph.models.SitePageCollectionResponse;
 import com.microsoft.graph.models.User;
 import com.microsoft.graph.models.UserCollectionResponse;
+import com.microsoft.graph.core.requests.GraphClientFactory;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
 import com.microsoft.kiota.ApiException;
 import com.microsoft.kiota.ResponseHeaders;
+import com.microsoft.kiota.authentication.AzureIdentityAuthenticationProvider;
+
+import okhttp3.Authenticator;
+import okhttp3.Credentials;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.Route;
 
 /**
  * This class provides a client for accessing Microsoft Microsoft 365 services using the Microsoft Graph API.
@@ -103,6 +118,14 @@ public class Microsoft365Client implements Closeable {
     protected static final String CACHE_SIZE = "cache_size";
     /** The parameter name for the maximum content length. */
     protected static final String MAX_CONTENT_LENGTH = "max_content_length";
+    /** The parameter name for the proxy host. */
+    protected static final String PROXY_HOST_PARAM = "proxy_host";
+    /** The parameter name for the proxy port. */
+    protected static final String PROXY_PORT_PARAM = "proxy_port";
+    /** The parameter name for the proxy username. */
+    protected static final String PROXY_USERNAME_PARAM = "proxy_username";
+    /** The parameter name for the proxy password. */
+    protected static final String PROXY_PASSWORD_PARAM = "proxy_password";
 
     /** Error code for an invalid authentication token. */
     protected static final String INVALID_AUTHENTICATION_TOKEN = "InvalidAuthenticationToken";
@@ -145,16 +168,65 @@ public class Microsoft365Client implements Closeable {
             logger.warn("Failed to parse {}.", params.getAsString(MAX_CONTENT_LENGTH), e);
         }
 
+        // Proxy settings
+        final String proxyHost = params.getAsString(PROXY_HOST_PARAM, StringUtil.EMPTY);
+        final String proxyPortStr = params.getAsString(PROXY_PORT_PARAM, StringUtil.EMPTY);
+        final String proxyUsername = params.getAsString(PROXY_USERNAME_PARAM, StringUtil.EMPTY);
+        final String proxyPassword = params.getAsString(PROXY_PASSWORD_PARAM, StringUtil.EMPTY);
+
         try {
-            // Add multi-tenant authentication support for Azure Identity v1.16.3
-            final ClientSecretCredential credential = new ClientSecretCredentialBuilder().clientId(clientId)
+            final ClientSecretCredentialBuilder credentialBuilder = new ClientSecretCredentialBuilder().clientId(clientId)
                     .clientSecret(clientSecret)
                     .tenantId(tenant)
-                    .additionallyAllowedTenants("*") // Allow all tenants for backward compatibility
-                    .build();
+                    .additionallyAllowedTenants("*"); // Allow all tenants for backward compatibility
 
-            // Initialize GraphServiceClient with new v6 API
-            client = new GraphServiceClient(credential);
+            // Configure proxy for Azure Identity (OAuth token acquisition)
+            if (!proxyHost.isEmpty() && !proxyPortStr.isEmpty()) {
+                final int proxyPort = Integer.parseInt(proxyPortStr);
+                final InetSocketAddress proxyAddress = new InetSocketAddress(proxyHost, proxyPort);
+                final ProxyOptions proxyOptions = new ProxyOptions(ProxyOptions.Type.HTTP, proxyAddress);
+                if (!proxyUsername.isEmpty() && !proxyPassword.isEmpty()) {
+                    proxyOptions.setCredentials(proxyUsername, proxyPassword);
+                }
+                final HttpClient authHttpClient = new NettyAsyncHttpClientBuilder().proxy(proxyOptions).build();
+                credentialBuilder.httpClient(authHttpClient);
+                logger.info("Proxy configured for Azure Identity: {}:{}", proxyHost, proxyPort);
+            }
+
+            final ClientSecretCredential credential = credentialBuilder.build();
+
+            // Initialize GraphServiceClient
+            if (!proxyHost.isEmpty() && !proxyPortStr.isEmpty()) {
+                final int proxyPort = Integer.parseInt(proxyPortStr);
+                final InetSocketAddress proxyAddress = new InetSocketAddress(proxyHost, proxyPort);
+                final Proxy proxy = new Proxy(Proxy.Type.HTTP, proxyAddress);
+
+                final OkHttpClient.Builder okHttpBuilder = GraphClientFactory.create().proxy(proxy);
+
+                // Configure proxy authentication if credentials are provided
+                if (!proxyUsername.isEmpty() && !proxyPassword.isEmpty()) {
+                    final String proxyUser = proxyUsername;
+                    final String proxyPass = proxyPassword;
+                    okHttpBuilder.proxyAuthenticator(new Authenticator() {
+                        @Override
+                        public Request authenticate(final Route route, final Response response) throws IOException {
+                            final String credential = Credentials.basic(proxyUser, proxyPass);
+                            return response.request().newBuilder().header("Proxy-Authorization", credential).build();
+                        }
+                    });
+                }
+
+                final OkHttpClient okHttpClient = okHttpBuilder.build();
+                final String[] scopes = new String[] { "https://graph.microsoft.com/.default" };
+                final AzureIdentityAuthenticationProvider authProvider = new AzureIdentityAuthenticationProvider(credential, null, scopes);
+                client = new GraphServiceClient(authProvider, okHttpClient);
+                logger.info("Proxy configured for Graph client: {}:{}", proxyHost, proxyPort);
+            } else {
+                // No proxy - use default initialization
+                client = new GraphServiceClient(credential);
+            }
+        } catch (final NumberFormatException e) {
+            throw new DataStoreException("Invalid proxy port: " + proxyPortStr, e);
         } catch (final Exception e) {
             throw new DataStoreException("Failed to create a client.", e);
         }
