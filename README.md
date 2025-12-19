@@ -77,18 +77,60 @@ cp target/fess-ds-microsoft365-*.jar $FESS_HOME/app/WEB-INF/lib/
 Before using this plugin, create an Azure App registration with the required permissions:
 
 1. **Register Application** in Azure Portal
-2. **Add API Permissions** (Microsoft Graph):
-   - `Files.Read.All` - OneDrive file access
-   - `Sites.Read.All` - SharePoint sites and lists
-   - `Notes.Read.All` - OneNote notebooks
-   - `Chat.Read.All` - Teams chat messages
-   - `ChannelMessage.Read.All` - Teams channel messages
-   - `ChannelMember.Read.All` - Teams channel member list
-   - `Team.ReadBasic.All` - Teams basic information
-   - `User.Read.All` - User directory access
-   - `Group.Read.All` - Group information
+2. **Add API Permissions** (Microsoft Graph) - see [Required Permissions by DataStore](#required-permissions-by-datastore) below
 3. **Grant Admin Consent** for the permissions
 4. **Create Client Secret** and note the values
+
+### Required Permissions by DataStore
+
+Each DataStore requires specific Microsoft Graph API permissions. Grant only the permissions needed for your use case.
+
+| DataStore | Required Permissions | Conditional Permissions |
+|-----------|---------------------|------------------------|
+| OneDriveDataStore | Files.Read.All | User.Read.All (*1), Group.Read.All (*2), Sites.Read.All (*3) |
+| OneNoteDataStore | Notes.Read.All | User.Read.All (*1), Group.Read.All (*2), Sites.Read.All (*4) |
+| TeamsDataStore | Team.ReadBasic.All, Group.Read.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMember.Read.All, User.Read.All | Chat.Read.All (*5), Files.Read.All (*6) |
+| SharePointDocLibDataStore | Files.Read.All, Sites.Read.All (*7) | - |
+| SharePointListDataStore | Sites.Read.All (*7) | - |
+| SharePointPageDataStore | Sites.Read.All (*7) | - |
+
+**Conditional Permission Notes:**
+- (*1) Required when `user_drive_crawler=true` or `user_note_crawler=true` (default: true)
+- (*2) Required when `group_drive_crawler=true` or `group_note_crawler=true` (default: true)
+- (*3) Required when `shared_documents_drive_crawler=true` (default: true)
+- (*4) Required when `site_note_crawler=true` (default: true)
+- (*5) Required when `chat_id` is specified
+- (*6) Required when `append_attachment=true`
+- (*7) Can be replaced with `Sites.Selected` when `site_id` is specified (requires additional per-site configuration)
+
+#### Using Sites.Selected Permission
+
+When `site_id` is specified, you can use `Sites.Selected` instead of `Sites.Read.All` for more restrictive access:
+
+1. Grant `Sites.Selected` permission to your app registration in Azure Portal
+2. Use Microsoft Graph PowerShell or API to grant access to specific sites
+3. Explicitly allow access for each target site
+
+Reference: https://learn.microsoft.com/en-us/graph/permissions-reference#sitesselected
+
+#### Minimum Permissions Examples
+
+**OneDrive only (user drives):**
+```
+Files.Read.All, User.Read.All
+```
+
+**SharePoint Lists (specific site):**
+```
+Sites.Selected (with per-site configuration)
+```
+
+**Teams (channels only, no chat):**
+```
+Team.ReadBasic.All, Group.Read.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMember.Read.All, User.Read.All
+```
+
+For detailed permission documentation, see [PERMISSIONS.md](PERMISSIONS.md).
 
 ### Basic Configuration
 
