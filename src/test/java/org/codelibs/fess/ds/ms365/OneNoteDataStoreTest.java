@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import org.junit.jupiter.api.TestInfo;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -26,9 +28,9 @@ import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
-import org.dbflute.utflute.lastaflute.LastaFluteTestCase;
+import org.codelibs.fess.ds.microsoft365.UnitDsTestCase;
 
-public class OneNoteDataStoreTest extends LastaFluteTestCase {
+public class OneNoteDataStoreTest extends UnitDsTestCase {
 
     private static final Logger logger = LogManager.getLogger(OneNoteDataStoreTest.class);
 
@@ -50,15 +52,15 @@ public class OneNoteDataStoreTest extends LastaFluteTestCase {
     }
 
     @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    public void setUp(TestInfo testInfo) throws Exception {
+        super.setUp(testInfo);
         dataStore = new OneNoteDataStore();
     }
 
     @Override
-    public void tearDown() throws Exception {
+    public void tearDown(TestInfo testInfo) throws Exception {
         ComponentUtil.setFessConfig(null);
-        super.tearDown();
+        super.tearDown(testInfo);
     }
 
     public void test_getName() {

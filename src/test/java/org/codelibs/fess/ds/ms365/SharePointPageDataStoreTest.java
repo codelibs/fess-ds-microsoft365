@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import org.junit.jupiter.api.TestInfo;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -26,7 +28,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.entity.DataStoreParams;
-import org.dbflute.utflute.lastaflute.LastaFluteTestCase;
+import org.codelibs.fess.ds.microsoft365.UnitDsTestCase;
 
 import com.microsoft.graph.models.BaseSitePage;
 import com.microsoft.graph.models.CanvasLayout;
@@ -39,7 +41,7 @@ import com.microsoft.graph.models.TextWebPart;
 import com.microsoft.graph.models.VerticalSection;
 import com.microsoft.graph.models.WebPart;
 
-public class SharePointPageDataStoreTest extends LastaFluteTestCase {
+public class SharePointPageDataStoreTest extends UnitDsTestCase {
 
     private static final Logger logger = LogManager.getLogger(SharePointPageDataStoreTest.class);
 
@@ -61,15 +63,15 @@ public class SharePointPageDataStoreTest extends LastaFluteTestCase {
     }
 
     @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    public void setUp(TestInfo testInfo) throws Exception {
+        super.setUp(testInfo);
         dataStore = new SharePointPageDataStore();
     }
 
     @Override
-    public void tearDown() throws Exception {
+    public void tearDown(TestInfo testInfo) throws Exception {
         dataStore = null;
-        super.tearDown();
+        super.tearDown(testInfo);
     }
 
     public void test_getName() {
