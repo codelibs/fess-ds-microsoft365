@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365.client;
 
+import org.junit.jupiter.api.TestInfo;
+
 import java.util.Collections;
 
 import org.apache.commons.lang3.builder.ToStringBuilder;
@@ -22,14 +24,14 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.util.ComponentUtil;
-import org.dbflute.utflute.lastaflute.LastaFluteTestCase;
+import org.codelibs.fess.ds.microsoft365.UnitDsTestCase;
 
 import com.microsoft.graph.models.Channel;
 import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
 
-public class Microsoft365ClientTest extends LastaFluteTestCase {
+public class Microsoft365ClientTest extends UnitDsTestCase {
 
     private static final Logger logger = LogManager.getLogger(Microsoft365ClientTest.class);
 
@@ -46,8 +48,8 @@ public class Microsoft365ClientTest extends LastaFluteTestCase {
     }
 
     @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    public void setUp(TestInfo testInfo) throws Exception {
+        super.setUp(testInfo);
         String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
         String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
@@ -61,12 +63,12 @@ public class Microsoft365ClientTest extends LastaFluteTestCase {
     }
 
     @Override
-    public void tearDown() throws Exception {
+    public void tearDown(TestInfo testInfo) throws Exception {
         ComponentUtil.setFessConfig(null);
         if (client != null) {
             client.close();
         }
-        super.tearDown();
+        super.tearDown(testInfo);
     }
 
     public void test_getUsers() {

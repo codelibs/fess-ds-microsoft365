@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import org.junit.jupiter.api.TestInfo;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -24,7 +26,7 @@ import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.util.ComponentUtil;
-import org.dbflute.utflute.lastaflute.LastaFluteTestCase;
+import org.codelibs.fess.ds.microsoft365.UnitDsTestCase;
 
 import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.Identity;
@@ -32,7 +34,7 @@ import com.microsoft.graph.models.ItemReference;
 import com.microsoft.graph.models.Permission;
 import com.microsoft.graph.models.SharePointIdentitySet;
 
-public class OneDriveDataStoreTest extends LastaFluteTestCase {
+public class OneDriveDataStoreTest extends UnitDsTestCase {
 
     private static final Logger logger = LogManager.getLogger(OneDriveDataStoreTest.class);
 
@@ -54,15 +56,15 @@ public class OneDriveDataStoreTest extends LastaFluteTestCase {
     }
 
     @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    public void setUp(TestInfo testInfo) throws Exception {
+        super.setUp(testInfo);
         dataStore = new OneDriveDataStore();
     }
 
     @Override
-    public void tearDown() throws Exception {
+    public void tearDown(TestInfo testInfo) throws Exception {
         ComponentUtil.setFessConfig(null);
-        super.tearDown();
+        super.tearDown(testInfo);
     }
 
     public void test_getName() {
