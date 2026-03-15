@@ -231,10 +231,5 @@
 			<artifactId>azure-core-http-netty</artifactId>
 			<version>${azure.core.http.netty.version}</version>
 		</dependency>
-		<dependency>
-			<groupId>com.microsoft.azure</groupId>
-			<artifactId>adal4j</artifactId>
-			<version>${adal4j.version}</version>
-		</dependency>
 	</dependencies>
 </project>
