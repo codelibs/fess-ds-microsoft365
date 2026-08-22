@@ -26,7 +26,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.util.ComponentUtil;
-import org.codelibs.fess.ds.microsoft365.UnitDsTestCase;
+import org.codelibs.fess.ds.ms365.UnitDsTestCase;
 
 import com.microsoft.graph.models.Channel;
 import com.microsoft.graph.models.Drive;

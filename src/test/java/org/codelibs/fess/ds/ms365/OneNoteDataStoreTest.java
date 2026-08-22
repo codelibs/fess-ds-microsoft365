@@ -29,7 +29,6 @@ import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
-import org.codelibs.fess.ds.microsoft365.UnitDsTestCase;
 
 public class OneNoteDataStoreTest extends UnitDsTestCase {
 
