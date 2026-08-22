@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365.client;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
@@ -74,10 +75,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
 
     @Test
     public void test_getUsers() {
-        if (client == null) {
-            assertTrue("No client", true);
-            return;
-        }
+        Assumptions.assumeTrue(client != null, "No client");
 
         client.getUsers(Collections.emptyList(), u -> {
             logger.info(ToStringBuilder.reflectionToString(u));
@@ -93,10 +91,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
 
     @Test
     public void test_getGroups() {
-        if (client == null) {
-            assertTrue("No client", true);
-            return;
-        }
+        Assumptions.assumeTrue(client != null, "No client");
 
         client.getGroups(Collections.emptyList(), g -> {
             logger.info(ToStringBuilder.reflectionToString(g));
@@ -106,10 +101,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
 
     @Test
     public void test_getDrives() {
-        if (client == null) {
-            assertTrue("No client", true);
-            return;
-        }
+        Assumptions.assumeTrue(client != null, "No client");
 
         client.getDrives(d -> {
             logger.info(ToStringBuilder.reflectionToString(d));
@@ -120,10 +112,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
 
     @Test
     public void test_getTeams() {
-        if (client == null) {
-            assertTrue("No client", true);
-            return;
-        }
+        Assumptions.assumeTrue(client != null, "No client");
 
         client.getTeams(Collections.emptyList(), g -> {
             logger.info(ToStringBuilder.reflectionToString(g));
@@ -151,10 +140,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
 
     @Test
     public void test_getChats() {
-        if (client == null) {
-            assertTrue("No client", true);
-            return;
-        }
+        Assumptions.assumeTrue(client != null, "No client");
 
         final String chatId = "chat id";
         client.getChatMessages(Collections.emptyList(), m -> {
@@ -185,10 +171,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
         String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
 
-        if (tenant == null || clientId == null || clientSecret == null) {
-            assertTrue("No credentials - skipping test", true);
-            return;
-        }
+        Assumptions.assumeTrue(tenant != null && clientId != null && clientSecret != null, "No credentials - skipping test");
 
         DataStoreParams params = new DataStoreParams();
         params.put(Microsoft365Client.TENANT_PARAM, tenant);
@@ -223,10 +206,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
         String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
 
-        if (tenant == null || clientId == null || clientSecret == null) {
-            assertTrue("No credentials - skipping test", true);
-            return;
-        }
+        Assumptions.assumeTrue(tenant != null && clientId != null && clientSecret != null, "No credentials - skipping test");
 
         DataStoreParams params = new DataStoreParams();
         params.put(Microsoft365Client.TENANT_PARAM, tenant);
@@ -261,10 +241,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
         String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
 
-        if (tenant == null || clientId == null || clientSecret == null) {
-            assertTrue("No credentials - skipping test", true);
-            return;
-        }
+        Assumptions.assumeTrue(tenant != null && clientId != null && clientSecret != null, "No credentials - skipping test");
 
         DataStoreParams params = new DataStoreParams();
         params.put(Microsoft365Client.TENANT_PARAM, tenant);
@@ -310,10 +287,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
         String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
 
-        if (tenant == null || clientId == null || clientSecret == null) {
-            assertTrue("No credentials - skipping test", true);
-            return;
-        }
+        Assumptions.assumeTrue(tenant != null && clientId != null && clientSecret != null, "No credentials - skipping test");
 
         DataStoreParams params = new DataStoreParams();
         params.put(Microsoft365Client.TENANT_PARAM, tenant);
