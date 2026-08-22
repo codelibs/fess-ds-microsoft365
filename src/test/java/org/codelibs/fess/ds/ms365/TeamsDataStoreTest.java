@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.time.ZoneOffset;
@@ -57,45 +58,53 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         super.tearDown(testInfo);
     }
 
+    @Test
     public void test_getName() {
         assertEquals("TeamsDataStore", dataStore.getName());
     }
 
     // Test normalizeTextContent method
+    @Test
     public void test_normalizeTextContent_nullInput() {
         assertEquals("", dataStore.normalizeTextContent(null));
     }
 
+    @Test
     public void test_normalizeTextContent_emptyInput() {
         assertEquals("", dataStore.normalizeTextContent(""));
         assertEquals("", dataStore.normalizeTextContent(" "));
         assertEquals("", dataStore.normalizeTextContent("   "));
     }
 
+    @Test
     public void test_normalizeTextContent_simpleText() {
         assertEquals("test", dataStore.normalizeTextContent(" test "));
         assertEquals("hello world", dataStore.normalizeTextContent("hello world"));
         assertEquals("test message", dataStore.normalizeTextContent("  test message  "));
     }
 
+    @Test
     public void test_normalizeTextContent_withAttachmentTags() {
         assertEquals("test", dataStore.normalizeTextContent(" test <attachment></attachment>"));
         assertEquals("before  after", dataStore.normalizeTextContent("before <attachment></attachment> after"));
         assertEquals("text", dataStore.normalizeTextContent("<attachment></attachment>text<attachment></attachment>"));
     }
 
+    @Test
     public void test_normalizeTextContent_withAttachmentAttributes() {
         assertEquals("test", dataStore.normalizeTextContent(" test <attachment id=\"123\"></attachment>"));
         assertEquals("message", dataStore.normalizeTextContent("<attachment name=\"file.pdf\"></attachment> message "));
         assertEquals("content", dataStore.normalizeTextContent("content<attachment id=\"abc\" name=\"doc.docx\"></attachment>"));
     }
 
+    @Test
     public void test_normalizeTextContent_multipleAttachments() {
         assertEquals("text  between", dataStore
                 .normalizeTextContent("<attachment></attachment> text <attachment></attachment> between <attachment></attachment>"));
         assertEquals("start  end", dataStore.normalizeTextContent("start <attachment></attachment><attachment></attachment> end"));
     }
 
+    @Test
     public void test_normalizeTextContent_preserveOtherHtml() {
         // Other HTML tags should be preserved (only attachment tags are removed)
         assertEquals("<p>test</p>", dataStore.normalizeTextContent("<p>test</p>"));
@@ -104,6 +113,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test getTeamId method
+    @Test
     public void test_getTeamId_withValue() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("team_id", "test-team-id");
@@ -111,6 +121,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("test-team-id", dataStore.getTeamId(paramMap));
     }
 
+    @Test
     public void test_getTeamId_withoutValue() {
         final DataStoreParams paramMap = new DataStoreParams();
 
@@ -118,6 +129,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test getExcludeTeamIds method
+    @Test
     public void test_getExcludeTeamIds_singleTeam() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_team_ids", "team-1");
@@ -128,6 +140,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("team-1", excludeIds[0]);
     }
 
+    @Test
     public void test_getExcludeTeamIds_multipleTeams() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_team_ids", "team-1,team-2,team-3");
@@ -140,6 +153,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("team-3", excludeIds[2]);
     }
 
+    @Test
     public void test_getExcludeTeamIds_withSpaces() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_team_ids", " team-1 , team-2 , team-3 ");
@@ -152,6 +166,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("team-3", excludeIds[2]);
     }
 
+    @Test
     public void test_getExcludeTeamIds_emptyString() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_team_ids", "");
@@ -161,6 +176,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals(0, excludeIds.length);
     }
 
+    @Test
     public void test_getExcludeTeamIds_notSet() {
         final DataStoreParams paramMap = new DataStoreParams();
 
@@ -170,6 +186,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test getIncludeVisibilities method
+    @Test
     public void test_getIncludeVisibilities_singleVisibility() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("include_visibility", "Public");
@@ -180,6 +197,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("Public", visibilities[0]);
     }
 
+    @Test
     public void test_getIncludeVisibilities_multipleVisibilities() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("include_visibility", "Public,Private");
@@ -191,6 +209,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("Private", visibilities[1]);
     }
 
+    @Test
     public void test_getIncludeVisibilities_withSpaces() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("include_visibility", " Public , Private , HiddenMembership ");
@@ -203,6 +222,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("HiddenMembership", visibilities[2]);
     }
 
+    @Test
     public void test_getIncludeVisibilities_emptyString() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("include_visibility", "");
@@ -212,6 +232,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals(0, visibilities.length);
     }
 
+    @Test
     public void test_getIncludeVisibilities_notSet() {
         final DataStoreParams paramMap = new DataStoreParams();
 
@@ -221,6 +242,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test getChannelId method
+    @Test
     public void test_getChannelId_withValue() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("channel_id", "test-channel-id");
@@ -228,6 +250,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("test-channel-id", dataStore.getChannelId(paramMap));
     }
 
+    @Test
     public void test_getChannelId_withoutValue() {
         final DataStoreParams paramMap = new DataStoreParams();
 
@@ -235,6 +258,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test getChatId method
+    @Test
     public void test_getChatId_withValue() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("chat_id", "test-chat-id");
@@ -242,6 +266,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("test-chat-id", dataStore.getChatId(paramMap));
     }
 
+    @Test
     public void test_getChatId_withoutValue() {
         final DataStoreParams paramMap = new DataStoreParams();
 
@@ -249,6 +274,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test isIgnoreReplies method
+    @Test
     public void test_isIgnoreReplies_true() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("ignore_replies", "true");
@@ -256,6 +282,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isIgnoreReplies(paramMap));
     }
 
+    @Test
     public void test_isIgnoreReplies_false() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("ignore_replies", "false");
@@ -263,12 +290,14 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isIgnoreReplies(paramMap));
     }
 
+    @Test
     public void test_isIgnoreReplies_defaultValue() {
         final DataStoreParams paramMap = new DataStoreParams();
 
         assertFalse("Default should be false", dataStore.isIgnoreReplies(paramMap));
     }
 
+    @Test
     public void test_isIgnoreReplies_caseInsensitive() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("ignore_replies", "TRUE");
@@ -280,6 +309,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test isAppendAttachment method
+    @Test
     public void test_isAppendAttachment_true() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("append_attachment", "true");
@@ -287,6 +317,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals(Boolean.TRUE, dataStore.isAppendAttachment(paramMap));
     }
 
+    @Test
     public void test_isAppendAttachment_false() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("append_attachment", "false");
@@ -294,12 +325,14 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals(Boolean.FALSE, dataStore.isAppendAttachment(paramMap));
     }
 
+    @Test
     public void test_isAppendAttachment_defaultValue() {
         final DataStoreParams paramMap = new DataStoreParams();
 
         assertEquals("Default should be true", Boolean.TRUE, dataStore.isAppendAttachment(paramMap));
     }
 
+    @Test
     public void test_isAppendAttachment_caseInsensitive() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("append_attachment", "TRUE");
@@ -311,6 +344,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test isIgnoreSystemEvents method
+    @Test
     public void test_isIgnoreSystemEvents_true() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("ignore_system_events", "true");
@@ -318,6 +352,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals(Boolean.TRUE, dataStore.isIgnoreSystemEvents(paramMap));
     }
 
+    @Test
     public void test_isIgnoreSystemEvents_false() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("ignore_system_events", "false");
@@ -325,12 +360,14 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals(Boolean.FALSE, dataStore.isIgnoreSystemEvents(paramMap));
     }
 
+    @Test
     public void test_isIgnoreSystemEvents_defaultValue() {
         final DataStoreParams paramMap = new DataStoreParams();
 
         assertEquals("Default should be true", Boolean.TRUE, dataStore.isIgnoreSystemEvents(paramMap));
     }
 
+    @Test
     public void test_isIgnoreSystemEvents_caseInsensitive() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("ignore_system_events", "TRUE");
@@ -342,6 +379,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test getTitleDateformat method
+    @Test
     public void test_getTitleDateformat_defaultFormat() {
         final DataStoreParams paramMap = new DataStoreParams();
 
@@ -356,6 +394,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_getTitleDateformat_customFormat() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("title_dateformat", "yyyy-MM-dd HH:mm:ss");
@@ -373,6 +412,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_getTitleDateformat_iso8601Format() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("title_dateformat", "yyyy-MM-dd'T'HH:mm:ss");
@@ -390,6 +430,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test getTitleTimezone method
+    @Test
     public void test_getTitleTimezone_defaultUTC() {
         final DataStoreParams paramMap = new DataStoreParams();
 
@@ -398,6 +439,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals(ZoneOffset.UTC, offset);
     }
 
+    @Test
     public void test_getTitleTimezone_customOffset() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("title_timezone_offset", "+09:00");
@@ -407,6 +449,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals(ZoneOffset.of("+09:00"), offset);
     }
 
+    @Test
     public void test_getTitleTimezone_negativeOffset() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("title_timezone_offset", "-05:00");
@@ -416,6 +459,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals(ZoneOffset.of("-05:00"), offset);
     }
 
+    @Test
     public void test_getTitleTimezone_variousFormats() {
         // Test +HH:MM format
         DataStoreParams paramMap = new DataStoreParams();
@@ -434,6 +478,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test isTargetVisibility method
+    @Test
     public void test_isTargetVisibility_emptyVisibilities() {
         final Map<String, Object> configMap = new HashMap<>();
         configMap.put("include_visibility", new String[0]);
@@ -444,6 +489,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isTargetVisibility(configMap, "HiddenMembership"));
     }
 
+    @Test
     public void test_isTargetVisibility_singleVisibility() {
         final Map<String, Object> configMap = new HashMap<>();
         configMap.put("include_visibility", new String[] { "Public" });
@@ -453,6 +499,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isTargetVisibility(configMap, "HiddenMembership"));
     }
 
+    @Test
     public void test_isTargetVisibility_multipleVisibilities() {
         final Map<String, Object> configMap = new HashMap<>();
         configMap.put("include_visibility", new String[] { "Public", "Private" });
@@ -462,6 +509,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isTargetVisibility(configMap, "HiddenMembership"));
     }
 
+    @Test
     public void test_isTargetVisibility_caseInsensitive() {
         final Map<String, Object> configMap = new HashMap<>();
         configMap.put("include_visibility", new String[] { "Public" });
@@ -471,6 +519,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isTargetVisibility(configMap, "PuBlIc"));
     }
 
+    @Test
     public void test_isTargetVisibility_nullVisibility() {
         final Map<String, Object> configMap = new HashMap<>();
         configMap.put("include_visibility", new String[] { "Public" });
@@ -479,6 +528,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test numberOfThreads parameter
+    @Test
     public void test_numberOfThreads_parameter() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("number_of_threads", "1");
@@ -493,6 +543,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test default permissions parameter
+    @Test
     public void test_defaultPermissions_parameter() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("default_permissions", "{role}admin,{role}user");
@@ -500,6 +551,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("{role}admin,{role}user", paramMap.getAsString("default_permissions"));
     }
 
+    @Test
     public void test_defaultPermissions_notSet() {
         final DataStoreParams paramMap = new DataStoreParams();
 
@@ -507,31 +559,37 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     // Test stripHtmlTags method
+    @Test
     public void test_stripHtmlTags_nullInput() {
         assertEquals("", dataStore.stripHtmlTags(null));
     }
 
+    @Test
     public void test_stripHtmlTags_emptyInput() {
         assertEquals("", dataStore.stripHtmlTags(""));
     }
 
+    @Test
     public void test_stripHtmlTags_plainText() {
         assertEquals("plain text", dataStore.stripHtmlTags("plain text"));
         assertEquals("no html here", dataStore.stripHtmlTags("no html here"));
     }
 
+    @Test
     public void test_stripHtmlTags_simpleHtml() {
         assertEquals("bold text", dataStore.stripHtmlTags("<strong>bold text</strong>").trim());
         assertEquals("paragraph", dataStore.stripHtmlTags("<p>paragraph</p>").trim());
         assertEquals("link text", dataStore.stripHtmlTags("<a href=\"url\">link text</a>").trim());
     }
 
+    @Test
     public void test_stripHtmlTags_complexHtml() {
         final String html = "<div><p>This is <strong>bold</strong> and <em>italic</em> text.</p></div>";
         final String expected = "This is bold and italic text.";
         assertEquals(expected, dataStore.stripHtmlTags(html).trim());
     }
 
+    @Test
     public void test_stripHtmlTags_withLineBreaks() {
         // HTMLStripCharFilter converts <br/> and <br> to newlines, not spaces
         final String result1 = dataStore.stripHtmlTags("line1<br/>line2");
@@ -543,12 +601,14 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertTrue("Result should contain line2", result2.contains("line2"));
     }
 
+    @Test
     public void test_stripHtmlTags_noHtmlBrackets() {
         // If no HTML brackets, should return as-is
         assertEquals("text without html", dataStore.stripHtmlTags("text without html"));
         assertEquals("some text", dataStore.stripHtmlTags("some text"));
     }
 
+    @Test
     public void test_stripHtmlTags_withEntities() {
         // HTML entities might be processed depending on HTMLStripCharFilter implementation
         final String result = dataStore.stripHtmlTags("&lt;test&gt;");

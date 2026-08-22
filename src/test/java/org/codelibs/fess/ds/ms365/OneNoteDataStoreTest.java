@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.HashMap;
@@ -63,10 +64,12 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         super.tearDown(testInfo);
     }
 
+    @Test
     public void test_getName() {
         assertEquals("OneNoteDataStore", dataStore.getName());
     }
 
+    @Test
     public void test_isGroupNoteCrawler() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -82,6 +85,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isGroupNoteCrawler(paramMap));
     }
 
+    @Test
     public void test_isUserNoteCrawler() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -97,6 +101,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isUserNoteCrawler(paramMap));
     }
 
+    @Test
     public void test_isSiteNoteCrawler() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -112,6 +117,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isSiteNoteCrawler(paramMap));
     }
 
+    @Test
     public void test_numberOfThreads() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -123,6 +129,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         assertEquals("5", paramMap.getAsString(OneNoteDataStore.NUMBER_OF_THREADS));
     }
 
+    @Test
     public void test_notebookConstants() {
         // Verify constant values are set - based on actual implementation
         assertEquals("notebook", OneNoteDataStore.NOTEBOOK);
@@ -135,6 +142,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         assertEquals("roles", OneNoteDataStore.NOTEBOOK_ROLES);
     }
 
+    @Test
     public void test_crawlerTypeParameters() {
         assertEquals("number_of_threads", OneNoteDataStore.NUMBER_OF_THREADS);
         assertEquals("site_note_crawler", OneNoteDataStore.SITE_NOTE_CRAWLER);
@@ -142,6 +150,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         assertEquals("group_note_crawler", OneNoteDataStore.GROUP_NOTE_CRAWLER);
     }
 
+    @Test
     public void test_multipleNotebookConfigurations() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -173,6 +182,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isGroupNoteCrawler(paramMap));
     }
 
+    @Test
     public void test_invalidParameterValues() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -196,6 +206,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isGroupNoteCrawler(newParamMap));
     }
 
+    @Test
     public void test_threadPoolConfiguration() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -213,10 +224,12 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         // Note: Actual implementation should handle this gracefully
     }
 
+    @Test
     public void testStoreData() {
         // doStoreData();
     }
 
+    @Test
     public void test_notebookProcessingOrder() {
         // Test that different crawler types are processed in the expected order
         DataStoreParams paramMap = new DataStoreParams();
@@ -235,6 +248,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         // This ensures systematic crawling of OneNote content
     }
 
+    @Test
     public void test_emptyParameterMap() {
         DataStoreParams emptyParamMap = new DataStoreParams();
 
@@ -245,6 +259,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         assertEquals("1", emptyParamMap.getAsString(OneNoteDataStore.NUMBER_OF_THREADS, "1"));
     }
 
+    @Test
     public void test_caseInsensitiveParameterValues() {
         DataStoreParams paramMap = new DataStoreParams();
 

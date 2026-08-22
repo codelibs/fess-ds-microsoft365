@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.HashMap;
@@ -67,10 +68,12 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         super.tearDown(testInfo);
     }
 
+    @Test
     public void test_getName() {
         assertEquals("OneDriveDataStore", dataStore.getName());
     }
 
+    @Test
     public void test_getUrl() {
         Map<String, Object> configMap = new HashMap<>();
         DataStoreParams paramMap = new DataStoreParams();
@@ -93,6 +96,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
                 dataStore.getUrl(configMap, paramMap, item));
     }
 
+    @Test
     public void test_getUrlFilter() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -109,6 +113,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_isSharedDocumentsDriveCrawler() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -121,6 +126,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isSharedDocumentsDriveCrawler(paramMap));
     }
 
+    @Test
     public void test_isUserDriveCrawler() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -133,6 +139,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isUserDriveCrawler(paramMap));
     }
 
+    @Test
     public void test_isGroupDriveCrawler() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -145,6 +152,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isGroupDriveCrawler(paramMap));
     }
 
+    @Test
     public void test_isIgnoreFolder() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -157,6 +165,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isIgnoreFolder(paramMap));
     }
 
+    @Test
     public void test_isIgnoreError() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -169,6 +178,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isIgnoreError(paramMap));
     }
 
+    @Test
     public void test_getMaxSize() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -184,6 +194,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertEquals(OneDriveDataStore.DEFAULT_MAX_SIZE, dataStore.getMaxSize(paramMap));
     }
 
+    @Test
     public void test_getSupportedMimeTypes() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -210,6 +221,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertEquals("image/jpeg", mimeTypes[2]);
     }
 
+    @Test
     public void test_getUserEmail() {
         // Test with null permission - this will cause NullPointerException based on implementation
         try {
@@ -245,6 +257,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertEquals("User Display Name", dataStore.getUserEmail(permission));
     }
 
+    @Test
     public void test_encodeUrl() {
         // Test normal URL encoding - URLEncoder.encode uses + for spaces, then replaces with %20
         assertEquals("hello%20world", dataStore.encodeUrl("hello world"));
@@ -263,6 +276,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertNull(dataStore.encodeUrl(null)); // encodeUrl returns null for null input
     }
 
+    @Test
     public void test_isInterrupted() {
         // The isInterrupted method is void and throws an exception for InterruptedException
         // Test with InterruptedException - should throw InterruptedRuntimeException
@@ -286,10 +300,12 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void testStoreData() {
         // doStoreData();
     }
 
+    @Test
     public void test_driveIdParameter() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -301,6 +317,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertEquals("drive123", paramMap.getAsString(OneDriveDataStore.DRIVE_ID));
     }
 
+    @Test
     public void test_defaultPermissions() {
         DataStoreParams paramMap = new DataStoreParams();
 
@@ -312,6 +329,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertEquals("{role}admin,{role}user", paramMap.getAsString(OneDriveDataStore.DEFAULT_PERMISSIONS));
     }
 
+    @Test
     public void test_numberOfThreads() {
         DataStoreParams paramMap = new DataStoreParams();
 

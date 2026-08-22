@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.HashMap;
@@ -62,10 +63,12 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         super.tearDown(testInfo);
     }
 
+    @Test
     public void test_getName() {
         assertEquals("SharePointDocLibDataStore", dataStore.getName());
     }
 
+    @Test
     public void test_getSiteId() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("site_id", "test-site-id");
@@ -74,6 +77,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertEquals("test-site-id", siteId);
     }
 
+    @Test
     public void test_isExcludedSite() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_site_id", "site1,site2,site3");
@@ -90,6 +94,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isExcludedSite(paramMap, site2));
     }
 
+    @Test
     public void test_isSystemLibrary() {
         final Drive drive1 = new Drive();
         drive1.setName("Documents");
@@ -118,6 +123,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isSystemLibrary(drive5));
     }
 
+    @Test
     public void test_isSystemLibrary_multilingual() {
         // Test with non-English library names but system URLs
         final Drive drive1 = new Drive();
@@ -143,6 +149,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertFalse("Japanese Documents should not be detected as system", dataStore.isSystemLibrary(drive4));
     }
 
+    @Test
     public void test_isSystemLibrary_nullWebUrl() {
         // Test behavior when webUrl is null
         final Drive drive = new Drive();
@@ -152,6 +159,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertFalse("Drive without webUrl should not be considered system library", dataStore.isSystemLibrary(drive));
     }
 
+    @Test
     public void test_isIgnoreSystemLibraries() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("ignore_system_libraries", "true");
@@ -166,6 +174,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isIgnoreSystemLibraries(paramMap3)); // default is true
     }
 
+    @Test
     public void test_isIgnoreError() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("ignore_error", "true");
@@ -180,6 +189,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isIgnoreError(paramMap3)); // default is false
     }
 
+    @Test
     public void test_isExcludedSite_multipleSites() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_site_id", "site1,site2, site3 ");
@@ -206,6 +216,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertFalse("Site 4 should not be excluded", dataStore.isExcludedSite(paramMap, allowedSite));
     }
 
+    @Test
     public void test_isExcludedSite_emptyExcludeList() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("exclude_site_id", "");
@@ -221,6 +232,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertFalse("Site should not be excluded with no exclude parameter", dataStore.isExcludedSite(paramMap2, site));
     }
 
+    @Test
     public void test_threadPoolCreation() {
         // Test that number_of_threads parameter is correctly parsed
         final DataStoreParams paramMap1 = new DataStoreParams();
@@ -246,6 +258,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_isExcludedSite_sharePointSiteIdWithCommas() {
         // Test with SharePoint site IDs that contain commas
         final DataStoreParams paramMap = new DataStoreParams();
@@ -264,6 +277,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertFalse("Different SharePoint site should not be excluded", dataStore.isExcludedSite(paramMap, allowedSite));
     }
 
+    @Test
     public void test_isExcludedSite_multipleSharePointSiteIdsWithSemicolon() {
         // Test multiple SharePoint site IDs separated by semicolon
         final DataStoreParams paramMap = new DataStoreParams();
@@ -287,6 +301,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertFalse("Different SharePoint site should not be excluded", dataStore.isExcludedSite(paramMap, allowedSite));
     }
 
+    @Test
     public void test_documentLibraryCrawling_parameters() {
         // Test that parameters needed for document library crawling are available
         final DataStoreParams paramMap = new DataStoreParams();
@@ -298,6 +313,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertTrue("Should ignore system libraries by default", dataStore.isIgnoreSystemLibraries(paramMap));
     }
 
+    @Test
     public void test_documentLibraryMetadata_configuration() {
         // Test that document library metadata collection parameters are properly configured
         final DataStoreParams paramMap = new DataStoreParams();
@@ -310,6 +326,7 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertEquals("Should get thread count", "3", paramMap.getAsString("number_of_threads", "1"));
     }
 
+    @Test
     public void testStoreData() {
         // This test requires actual Microsoft 365 credentials and would be integration test
         // Uncomment and provide credentials for actual testing

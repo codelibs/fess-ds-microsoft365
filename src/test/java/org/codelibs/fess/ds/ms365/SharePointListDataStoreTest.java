@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.HashMap;
@@ -62,10 +63,12 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         super.tearDown(testInfo);
     }
 
+    @Test
     public void test_getName() {
         assertEquals("SharePointListDataStore", dataStore.getName());
     }
 
+    @Test
     public void test_getSiteId() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("site_id", "test-site-id");
@@ -74,6 +77,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertEquals("test-site-id", siteId);
     }
 
+    @Test
     public void test_getListId() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("list_id", "test-list-id");
@@ -82,6 +86,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertEquals("test-list-id", listId);
     }
 
+    @Test
     public void test_isExcludedList() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_list_id", "list1,list2,list3");
@@ -98,6 +103,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isExcludedList(paramMap, list2));
     }
 
+    @Test
     public void test_isSystemList() {
         final List list1 = new List();
         list1.setDisplayName("My Custom List");
@@ -121,6 +127,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isSystemList(list5));
     }
 
+    @Test
     public void test_isSystemList_withSystemFacet() {
         // Test system list detection using Microsoft Graph API system facet
         // According to https://learn.microsoft.com/en-us/graph/api/resources/systemfacet?view=graph-rest-1.0
@@ -153,6 +160,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertTrue("Name-based system list should still be detected via fallback", dataStore.isSystemList(nameBasedSystemList));
     }
 
+    @Test
     public void test_extractFieldValue() {
         final Map<String, Object> fields = new HashMap<>();
         fields.put("Title", "Test Title");
@@ -179,6 +187,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertNull(dataStore.extractFieldValue(fields));
     }
 
+    @Test
     public void test_buildContentFromFields() {
         final Map<String, Object> fields = new HashMap<>();
         fields.put("Title", "Test Title");
@@ -207,6 +216,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertEquals("", dataStore.buildContentFromFields(new HashMap<>()));
     }
 
+    @Test
     public void test_urlFilter() {
         // Test URL filter functionality added in processListItem improvement
         final DataStoreParams paramMap1 = new DataStoreParams();
@@ -224,6 +234,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertNull("Should return null for no pattern", paramMap3.getAsString("include_pattern"));
     }
 
+    @Test
     public void test_statsTracking_parameters() {
         // Test that statistical tracking parameters are correctly handled
         final DataStoreParams paramMap = new DataStoreParams();
@@ -237,6 +248,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertEquals("Should get thread count for stats", "2", paramMap.getAsString("number_of_threads"));
     }
 
+    @Test
     public void test_failureHandling_parameters() {
         // Test that failure handling parameters are correctly configured
         final DataStoreParams paramMap1 = new DataStoreParams();
@@ -253,6 +265,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertFalse("Should default to false", dataStore.isIgnoreError(paramMap3));
     }
 
+    @Test
     public void test_permissionProcessing_configuration() {
         // Test that permission-related configurations are properly handled
         final DataStoreParams paramMap = new DataStoreParams();
@@ -262,6 +275,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertEquals("Should get site ID for permission context", "test-site-123", paramMap.getAsString("site_id"));
     }
 
+    @Test
     public void test_isSystemField() {
         // System fields should return true
         assertTrue(dataStore.isSystemField("_SystemField"));
@@ -283,6 +297,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isSystemField(null));
     }
 
+    @Test
     public void test_isIgnoreError() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("ignore_error", "true");
@@ -297,6 +312,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isIgnoreError(paramMap3)); // default is false
     }
 
+    @Test
     public void test_isIgnoreSystemLists() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("ignore_system_lists", "true");
@@ -311,6 +327,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isIgnoreSystemLists(paramMap3)); // default is true
     }
 
+    @Test
     public void test_isIgnoreSystemLists_withSystemListFiltering() {
         // Test the logic used in storeData method for filtering system lists
         final DataStoreParams paramMap1 = new DataStoreParams();
@@ -345,6 +362,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
                 (!dataStore.isIgnoreSystemLists(paramMap2) || !dataStore.isSystemList(regularList)));
     }
 
+    @Test
     public void test_threadPoolCreation() {
         // Test that number_of_threads parameter is correctly parsed
         final DataStoreParams paramMap1 = new DataStoreParams();
@@ -371,6 +389,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_isExcludedList_multipleLists() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_list_id", "list1,list2, list3 ");
@@ -397,6 +416,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertFalse("List 4 should not be excluded", dataStore.isExcludedList(paramMap, allowedList));
     }
 
+    @Test
     public void test_isExcludedList_emptyExcludeList() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("exclude_list_id", "");
@@ -412,6 +432,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertFalse("List should not be excluded with no exclude parameter", dataStore.isExcludedList(paramMap2, list));
     }
 
+    @Test
     public void test_numberOfThreads_threadPoolManagement() {
         // Test thread pool creation and management with different thread counts
         final DataStoreParams paramMap1 = new DataStoreParams();
@@ -446,6 +467,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_numberOfThreads_listProcessingFutures() {
         // Test that list processing properly manages futures for concurrent execution
         final DataStoreParams paramMap = new DataStoreParams();
@@ -489,6 +511,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_ignoreSystemLists_specificListId() {
         // Test that ignore_system_lists is respected even when a specific list_id is provided
         final DataStoreParams paramMap1 = new DataStoreParams();
@@ -529,6 +552,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
                 (!dataStore.isIgnoreSystemLists(paramMap1) || !dataStore.isSystemList(regularList)));
     }
 
+    @Test
     public void test_ignoreSystemLists_defaultBehavior() {
         // Test default behavior when ignore_system_lists is not specified
         final DataStoreParams paramMapDefault = new DataStoreParams();
@@ -553,6 +577,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_ignoreSystemLists_edgeCases() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("ignore_system_lists", "true");
@@ -592,6 +617,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         return list;
     }
 
+    @Test
     public void testStoreData() {
         // This test requires actual Microsoft 365 credentials and would be integration test
         // Uncomment and provide credentials for actual testing

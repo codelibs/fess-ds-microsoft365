@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365.client;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.Collections;
@@ -71,6 +72,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         super.tearDown(testInfo);
     }
 
+    @Test
     public void test_getUsers() {
         if (client == null) {
             assertTrue("No client", true);
@@ -89,6 +91,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         });
     }
 
+    @Test
     public void test_getGroups() {
         if (client == null) {
             assertTrue("No client", true);
@@ -101,6 +104,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         });
     }
 
+    @Test
     public void test_getDrives() {
         if (client == null) {
             assertTrue("No client", true);
@@ -114,6 +118,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         });
     }
 
+    @Test
     public void test_getTeams() {
         if (client == null) {
             assertTrue("No client", true);
@@ -144,6 +149,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         });
     }
 
+    @Test
     public void test_getChats() {
         if (client == null) {
             assertTrue("No client", true);
@@ -161,6 +167,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
     /**
      * Test that DEFAULT_CACHE_SIZE is an int constant and has the correct value.
      */
+    @Test
     public void test_defaultCacheSizeConstant() {
         // Verify that DEFAULT_CACHE_SIZE is the expected value
         assertEquals("DEFAULT_CACHE_SIZE should be 10000", 10000, Microsoft365Client.DEFAULT_CACHE_SIZE);
@@ -172,6 +179,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
     /**
      * Test that client uses default cache size when no cache_size parameter is provided.
      */
+    @Test
     public void test_clientUsesDefaultCacheSize() {
         String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
@@ -209,6 +217,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
     /**
      * Test that client uses custom cache size when cache_size parameter is provided.
      */
+    @Test
     public void test_clientUsesCustomCacheSize() {
         String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
@@ -246,6 +255,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
      * Test that close() method properly invalidates all caches.
      * This test verifies the fix for the resource leak bug.
      */
+    @Test
     public void test_closeInvalidatesAllCaches() {
         String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
@@ -294,6 +304,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
      * Test that caches work correctly and can be invalidated.
      * This is an integration test that verifies cache behavior.
      */
+    @Test
     public void test_cacheInvalidationPreventsMemoryLeak() {
         String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
