@@ -241,6 +241,17 @@
 			<groupId>com.microsoft.graph</groupId>
 			<artifactId>microsoft-graph</artifactId>
 			<version>${microsoft.graph.version}</version>
+			<exclusions>
+				<!-- Kiota pulls okhttp 4.12.0, but this plugin does not shade okhttp:
+				     at runtime it uses the okhttp-jvm 5.x that Fess supplies. Dropping
+				     the 4.12.0 copy keeps the test classpath on the same okhttp as
+				     production; leaving both causes MockWebServer to fail with
+				     NoSuchMethodError on okhttp3.internal.concurrent.TaskRunner. -->
+				<exclusion>
+					<groupId>com.squareup.okhttp3</groupId>
+					<artifactId>okhttp</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>com.azure</groupId>
@@ -256,6 +267,18 @@
 			<groupId>com.azure</groupId>
 			<artifactId>azure-core-http-netty</artifactId>
 			<version>${azure.core.http.netty.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>com.squareup.okhttp3</groupId>
+			<artifactId>mockwebserver</artifactId>
+			<version>${okhttp.version}</version>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.mockito</groupId>
+			<artifactId>mockito-core</artifactId>
+			<version>5.17.0</version>
+			<scope>test</scope>
 		</dependency>
 	</dependencies>
 </project>
