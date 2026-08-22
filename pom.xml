@@ -29,6 +29,14 @@
 				<artifactId>maven-javadoc-plugin</artifactId>
 			</plugin>
 			<plugin>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<!-- The JUnit 5 migration silently collected zero tests for seven
+					     months because @Test was never added. Fail the build instead. -->
+					<failIfNoTests>true</failIfNoTests>
+				</configuration>
+			</plugin>
+			<plugin>
 				<groupId>com.mycila</groupId>
 				<artifactId>license-maven-plugin</artifactId>
 			</plugin>
