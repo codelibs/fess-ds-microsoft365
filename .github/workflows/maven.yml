@@ -41,5 +41,7 @@ jobs:
       run: |
         cd fess-parent
         mvn install -Dgpg.skip=true
+    - name: Check formatting
+      run: mvn -B formatter:validate --file pom.xml
     - name: Build with Maven
-      run: mvn -B package --file pom.xml
+      run: mvn -B verify --file pom.xml
