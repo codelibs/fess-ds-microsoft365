@@ -27,6 +27,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
@@ -146,10 +147,10 @@ public class Microsoft365Client implements Closeable {
     protected LoadingCache<String, UserType> userTypeCache;
     /** A cache for group IDs. */
     protected LoadingCache<String, String[]> groupIdCache;
-    /** A cache for group names. */
-    protected LoadingCache<String, String> groupNameCache;
-    /** A cache for user principal names (UPNs). */
-    protected LoadingCache<String, String> upnCache;
+    /** Cache of group object ID to group name. Empty means "looked up, not resolvable". */
+    protected LoadingCache<String, Optional<String>> groupNameCache;
+    /** Cache of user object ID to UPN. Empty means "looked up, not resolvable". */
+    protected LoadingCache<String, Optional<String>> upnCache;
 
     /** The maximum content length for extracted text. */
     protected int maxContentLength = -1;
@@ -277,19 +278,19 @@ public class Microsoft365Client implements Closeable {
 
         upnCache = CacheBuilder.newBuilder()
                 .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE))))
-                .build(new CacheLoader<String, String>() {
+                .build(new CacheLoader<String, Optional<String>>() {
                     @Override
-                    public String load(final String objectId) {
-                        return doResolveUserPrincipalName(objectId);
+                    public Optional<String> load(final String objectId) {
+                        return Optional.ofNullable(doResolveUserPrincipalName(objectId));
                     }
                 });
 
         groupNameCache = CacheBuilder.newBuilder()
                 .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE))))
-                .build(new CacheLoader<String, String>() {
+                .build(new CacheLoader<String, Optional<String>>() {
                     @Override
-                    public String load(final String objectId) {
-                        return doResolveGroupName(objectId);
+                    public Optional<String> load(final String objectId) {
+                        return Optional.ofNullable(doResolveGroupName(objectId));
                     }
                 });
 
@@ -1711,7 +1712,7 @@ public class Microsoft365Client implements Closeable {
             return id;
         }
         try {
-            return upnCache.getIfPresent(id);
+            return upnCache.get(id).orElse(null);
         } catch (final Exception e) {
             if (logger.isDebugEnabled()) {
                 logger.debug("Failed to resolve UPN for id={}", id, e);
@@ -1786,7 +1787,7 @@ public class Microsoft365Client implements Closeable {
             return id;
         }
         try {
-            return groupNameCache.getIfPresent(id);
+            return groupNameCache.get(id).orElse(null);
         } catch (final Exception e) {
             if (logger.isDebugEnabled()) {
                 logger.debug("Failed to resolve group name for id={}", id, e);
