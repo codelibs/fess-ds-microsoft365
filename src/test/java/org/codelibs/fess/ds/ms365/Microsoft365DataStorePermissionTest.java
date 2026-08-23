@@ -130,6 +130,31 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         assertFalse("the raw display name must never become a role: " + permissions, permissions.contains("Display Name Of " + oid));
     }
 
+    /**
+     * Pins the fix that removed the raw {@code default_permissions} addition from
+     * {@code getPagePermissions} itself: the caller in {@code storeData} already adds it through
+     * {@code permissionHelper::encode}, so a raw addition here would double it up (once encoded,
+     * once raw). Without this test, reintroducing the raw addition leaves all other tests green.
+     */
+    @Test
+    public void test_getPagePermissions_doesNotAddRawDefaultPermissions() {
+        final String siteId = "site-1";
+        final String pageId = "page-1";
+        final String rawDefaultPermissions = "{role}admin";
+
+        final PermissionCollectionResponse response = new PermissionCollectionResponse();
+        response.setValue(List.of());
+        when(client.getSitePermissions(siteId)).thenReturn(response);
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", rawDefaultPermissions);
+
+        final List<String> permissions = pageDataStore.getPagePermissions(client, siteId, pageId, paramMap);
+
+        assertFalse("getPagePermissions must not add the raw default_permissions config string itself; "
+                + "the caller applies permissionHelper::encode, got " + permissions, permissions.contains(rawDefaultPermissions));
+    }
+
     @Test
     public void test_permissionFailurePolicy_defaultsToSkip() {
         final DataStoreParams paramMap = new DataStoreParams();
