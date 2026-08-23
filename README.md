@@ -91,8 +91,8 @@ Each DataStore requires specific Microsoft Graph API permissions. Grant only the
 | OneNoteDataStore | Notes.Read.All | User.Read.All (*1), Group.Read.All (*2), Sites.Read.All (*4) |
 | TeamsDataStore | Team.ReadBasic.All, Group.Read.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMember.Read.All, User.Read.All | Chat.Read.All (*5), Files.Read.All (*6) |
 | SharePointDocLibDataStore | Files.Read.All, Sites.Read.All (*7) | - |
-| SharePointListDataStore | Sites.Read.All (*7) | - |
-| SharePointPageDataStore | Sites.Read.All (*7) | - |
+| SharePointListDataStore | Sites.Read.All (*7), Sites.FullControl.All (*8) | - |
+| SharePointPageDataStore | Sites.Read.All (*7), Sites.FullControl.All (*8) | - |
 
 **Conditional Permission Notes:**
 - (*1) Required when `user_drive_crawler=true` or `user_note_crawler=true` (default: true)
@@ -101,17 +101,26 @@ Each DataStore requires specific Microsoft Graph API permissions. Grant only the
 - (*4) Required when `site_note_crawler=true` (default: true)
 - (*5) Required when `chat_id` is specified
 - (*6) Required when `append_attachment=true`
-- (*7) Can be replaced with `Sites.Selected` when `site_id` is specified (requires additional per-site configuration)
+- (*7) Can be replaced with `Sites.Selected` when `site_id` is specified (requires additional per-site configuration), **for reading site/list/page content only**. It does not satisfy (*8) below -- see the note under [Using Sites.Selected Permission](#using-sitesselected-permission).
+- (*8) SharePointListDataStore and SharePointPageDataStore each call Microsoft Graph's ["List permissions"](https://learn.microsoft.com/en-us/graph/api/site-list-permissions) API (`GET /sites/{site-id}/permissions`) to build every item's/page's ACL. For that specific call, Microsoft documents `Sites.FullControl.All` as the only Application permission -- there is no lower option and `Sites.Selected` is not listed as an alternative. Without it the call returns `403` for every site, which is a permanent failure, not throttling. Under the default `permission_failure_policy=skip` this means the DataStore indexes **zero documents**. See [Permanent 403s on SharePointListDataStore / SharePointPageDataStore](#permanent-403s-on-sharepointlistdatastore--sharepointpagedatastore) below.
 
 #### Using Sites.Selected Permission
 
-When `site_id` is specified, you can use `Sites.Selected` instead of `Sites.Read.All` for more restrictive access:
+When `site_id` is specified, you can use `Sites.Selected` instead of `Sites.Read.All` for more restrictive access to site/list/page **content**:
 
 1. Grant `Sites.Selected` permission to your app registration in Azure Portal
 2. Use Microsoft Graph PowerShell or API to grant access to specific sites
 3. Explicitly allow access for each target site
 
 Reference: https://learn.microsoft.com/en-us/graph/permissions-reference#sitesselected
+
+> **`Sites.Selected` does not cover the ACL lookup.** SharePointListDataStore and
+> SharePointPageDataStore still need `Sites.FullControl.All` (see note *8 above) to call
+> `GET /sites/{site-id}/permissions`, regardless of whether `Sites.Selected` is used for content
+> access and regardless of what role the app was granted on the site through `Sites.Selected`.
+> Microsoft's own documentation for that specific API lists only `Sites.FullControl.All`; it does
+> not offer a `Sites.Selected`-based path. If you cannot grant `Sites.FullControl.All`, set
+> `permission_failure_policy=index_without_acl` for these two DataStores instead.
 
 #### Minimum Permissions Examples
 
@@ -397,10 +406,22 @@ role=page.roles
 This applies to OneDriveDataStore, SharePointDocLibDataStore, SharePointListDataStore, and
 SharePointPageDataStore, where a document's ACL comes from a separate Microsoft Graph call
 (listing its permissions) that can fail on its own even when the document itself was read
-successfully - most often a `429` or `503` under throttling. TeamsDataStore and
-OneNoteDataStore resolve permissions from data they already have in hand while enumerating
-content, so this parameter has no effect for them. `permission_failure_policy` controls what
-happens when the permissions call fails, and takes one of two values:
+successfully. That failure is often a transient `429` or `503` under throttling, but for
+SharePointListDataStore and SharePointPageDataStore it can also be a permanent `403` - see
+[Permanent 403s on SharePointListDataStore / SharePointPageDataStore](#permanent-403s-on-sharepointlistdatastore--sharepointpagedatastore)
+below.
+
+OneNoteDataStore resolves permissions from data it already has in hand while enumerating
+content, so this parameter has no effect for it. TeamsDataStore does not call any of the
+permission-fetch methods this parameter governs either, so this parameter has no effect for it
+too - but not because TeamsDataStore has no permission-fetch failure path of its own. It makes a
+separate Graph call per message (listing the channel's members, to resolve that message's roles),
+and a failure there is not governed by `permission_failure_policy` at all: it propagates out of
+the per-channel handler as a `DataStoreException`, which aborts the rest of that channel's
+messages rather than skipping just the one message.
+
+`permission_failure_policy` controls what happens when the permissions call fails for the four
+DataStores it does cover, and takes one of two values:
 
 | Value | Behavior |
 |-------|----------|
@@ -418,6 +439,21 @@ document from every user's search results until it is re-crawled successfully, a
 everyone that setting covers - more widely than intended, because the per-user/per-group roles
 that should have narrowed access down were never added. Choose `index_without_acl` only if
 surfacing a document without its full ACL is preferable to not surfacing it at all.
+
+##### Permanent 403s on SharePointListDataStore / SharePointPageDataStore
+
+`GET /sites/{site-id}/permissions`, the Graph call both of these DataStores use to build a
+document's ACL, requires the `Sites.FullControl.All` Application permission - see note (*8) in
+[Required Permissions by DataStore](#required-permissions-by-datastore). If the app registration
+was granted only `Sites.Read.All` (or `Sites.Selected`), that call returns `403` for *every*
+site, not just occasionally under load. Under the default `permission_failure_policy=skip`, that
+means SharePointListDataStore and SharePointPageDataStore index **zero documents**: every item
+fails the ACL lookup and lands in the failed URL list.
+
+There are two ways to fix this:
+- Grant the app registration `Sites.FullControl.All` and re-run the crawl, or
+- Set `permission_failure_policy=index_without_acl` on the affected DataStore(s) instead, to
+  index documents without a complete ACL rather than skip them (see the tradeoffs above).
 
 `ignore_error` and `permission_failure_policy` cover different failures. `ignore_error` governs
 failures while enumerating sites, drives, and lists (for example, a site that fails to list);
