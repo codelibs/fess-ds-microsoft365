@@ -21,6 +21,7 @@ import static org.mockito.Mockito.when;
 import java.util.List;
 
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
+import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.util.ComponentUtil;
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.TestInfo;
 
 import com.microsoft.graph.models.Identity;
 import com.microsoft.graph.models.Permission;
+import com.microsoft.graph.models.PermissionCollectionResponse;
 import com.microsoft.graph.models.SharePointIdentitySet;
 
 /**
@@ -98,5 +100,29 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         final String expected = ComponentUtil.getSystemHelper().getSearchRoleByGroup("gid-1");
         assertTrue("expected the prefix-encoded group role, got " + permissions, permissions.contains(expected));
         assertFalse("the raw display name must never become a role: " + permissions, permissions.contains("Display Name Of gid-1"));
+    }
+
+    /**
+     * Exercises {@link SharePointPageDataStore#getPagePermissions} itself, not just the base
+     * class's {@code assignPermission}. Graph has no page-level permission endpoint, so this
+     * method must delegate to the site's permissions; if the delegation regresses back to a
+     * client-side shortcut that emits raw display names (the removed
+     * {@code getSitePermissionsAsList}), this is the test that must go red.
+     */
+    @Test
+    public void test_getPagePermissions_delegatesToSitePermissionsAndEncodesIds() {
+        final String siteId = "site-1";
+        final String pageId = "page-1";
+        final String oid = "oid-42";
+
+        final PermissionCollectionResponse response = new PermissionCollectionResponse();
+        response.setValue(List.of(userPermission(oid)));
+        when(client.getSitePermissions(siteId)).thenReturn(response);
+
+        final List<String> permissions = pageDataStore.getPagePermissions(client, siteId, pageId, new DataStoreParams());
+
+        final String expected = ComponentUtil.getSystemHelper().getSearchRoleByUser(oid);
+        assertTrue("expected the prefix-encoded user role from the site's permissions, got " + permissions, permissions.contains(expected));
+        assertFalse("the raw display name must never become a role: " + permissions, permissions.contains("Display Name Of " + oid));
     }
 }
