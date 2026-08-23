@@ -311,7 +311,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             docLibMap.put(DOCLIB_CONTENT, docLibContent);
 
             // Get permissions for document library
-            final List<String> roles = getDrivePermissions(client, drive.getId());
+            final List<String> roles = getDrivePermissions(client, drive.getId(), paramMap);
             if (logger.isDebugEnabled()) {
                 logger.debug("Initial permissions for document library {} - Count: {}, Permissions: {}", drive.getName(), roles.size(),
                         roles);
@@ -427,9 +427,10 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
      *
      * @param client Microsoft 365 client for API calls
      * @param driveId ID of the document library drive
+     * @param paramMap the data store parameters, consulted for {@link #PERMISSION_FAILURE_POLICY}
      * @return list of user emails/IDs with access permissions
      */
-    protected List<String> getDrivePermissions(final Microsoft365Client client, final String driveId) {
+    protected List<String> getDrivePermissions(final Microsoft365Client client, final String driveId, final DataStoreParams paramMap) {
         final List<String> permissions = new ArrayList<>();
         try {
             // Get permissions for the drive root item
@@ -447,7 +448,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                 response = client.getDrivePermissionsByNextLink(driveId, "root", response.getOdataNextLink());
             }
         } catch (final Exception e) {
-            logger.warn("Failed to get permissions for drive: {}", driveId, e);
+            handlePermissionFailure(paramMap, driveId, e);
         }
         return permissions;
     }

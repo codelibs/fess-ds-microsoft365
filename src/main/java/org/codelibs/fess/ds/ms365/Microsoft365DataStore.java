@@ -34,6 +34,7 @@ import org.codelibs.fess.Constants;
 import org.codelibs.fess.ds.AbstractDataStore;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -60,6 +61,17 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     protected static final String IGNORE_SYSTEM_LIBRARIES = "ignore_system_libraries";
     /** Parameter name for ignoring system lists. */
     protected static final String IGNORE_SYSTEM_LISTS = "ignore_system_lists";
+    /** Parameter name for what to do when a document's permissions cannot be retrieved. */
+    protected static final String PERMISSION_FAILURE_POLICY = "permission_failure_policy";
+
+    /** Skip the document and record it as a failed URL. The default. */
+    protected static final String POLICY_SKIP = "skip";
+
+    /** Abort the crawl. */
+    protected static final String POLICY_FAIL = "fail";
+
+    /** Index the document with whatever permissions were collected, possibly none. */
+    protected static final String POLICY_INDEX_WITHOUT_ACL = "index_without_acl";
 
     // Thread pool constants
     /** Default timeout in seconds for executor service shutdown. */
@@ -247,9 +259,11 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      * @param client The Microsoft365Client.
      * @param driveId The drive ID.
      * @param item The drive item.
+     * @param paramMap the data store parameters, consulted for {@link #PERMISSION_FAILURE_POLICY}
      * @return A list of permissions.
      */
-    protected List<String> getDriveItemPermissions(final Microsoft365Client client, final String driveId, final DriveItem item) {
+    protected List<String> getDriveItemPermissions(final Microsoft365Client client, final String driveId, final DriveItem item,
+            final DataStoreParams paramMap) {
         if (logger.isDebugEnabled()) {
             logger.debug("Retrieving permissions for drive item - Drive: {}, Item: {}, ItemId: {}", driveId, item.getName(), item.getId());
         }
@@ -276,7 +290,9 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 try {
                     response = client.getDrivePermissionsByNextLink(driveId, item.getId(), response.getOdataNextLink());
                 } catch (final Exception e) {
-                    logger.warn("Failed to get next page of permissions: {}", e.getMessage());
+                    // A partial page must not be treated as the complete ACL: roles named only on
+                    // later pages would otherwise be silently dropped from the document's permissions.
+                    handlePermissionFailure(paramMap, item.getWebUrl() != null ? item.getWebUrl() : item.getName(), e);
                     break;
                 }
             }
@@ -285,7 +301,7 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 logger.debug("Successfully retrieved {} permissions for drive item: {}", permissions.size(), item.getName());
             }
         } catch (final Exception e) {
-            logger.warn("Failed to retrieve permissions for drive item: {} - {}", item.getName(), e.getMessage());
+            handlePermissionFailure(paramMap, item.getWebUrl() != null ? item.getWebUrl() : item.getName(), e);
         }
         return permissions;
     }
@@ -295,9 +311,10 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      *
      * @param client The Microsoft365Client instance to use for API calls
      * @param siteId The ID of the SharePoint site
+     * @param paramMap the data store parameters, consulted for {@link #PERMISSION_FAILURE_POLICY}
      * @return List of permission strings in the format "user:email" or "group:id"
      */
-    protected List<String> getSitePermissions(final Microsoft365Client client, final String siteId) {
+    protected List<String> getSitePermissions(final Microsoft365Client client, final String siteId, final DataStoreParams paramMap) {
         if (logger.isDebugEnabled()) {
             logger.debug("Retrieving permissions for site - SiteId: {}", siteId);
         }
@@ -324,7 +341,9 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 try {
                     response = client.getSitePermissionsByNextLink(siteId, response.getOdataNextLink());
                 } catch (final Exception e) {
-                    logger.warn("Failed to get next page of permissions: {}", e.getMessage());
+                    // A partial page must not be treated as the complete ACL: roles named only on
+                    // later pages would otherwise be silently dropped from the document's permissions.
+                    handlePermissionFailure(paramMap, siteId, e);
                     break;
                 }
             }
@@ -333,11 +352,7 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 logger.debug("Successfully retrieved {} permissions for site: {}", permissions.size(), siteId);
             }
         } catch (final Exception e) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Failed to retrieve permissions for site: {}", siteId, e);
-            } else {
-                logger.warn("Failed to retrieve permissions for site: {} - {}", siteId, e.getMessage());
-            }
+            handlePermissionFailure(paramMap, siteId, e);
         }
         return permissions;
     }
@@ -446,6 +461,43 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      */
     protected boolean isIgnoreError(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.FALSE));
+    }
+
+    /**
+     * Gets the configured policy for documents whose permissions cannot be retrieved.
+     *
+     * @param paramMap the data store parameters
+     * @return one of {@link #POLICY_SKIP}, {@link #POLICY_FAIL}, {@link #POLICY_INDEX_WITHOUT_ACL}
+     */
+    protected String getPermissionFailurePolicy(final DataStoreParams paramMap) {
+        return paramMap.getAsString(PERMISSION_FAILURE_POLICY, POLICY_SKIP);
+    }
+
+    /**
+     * Applies the configured policy after a permission lookup failed.
+     *
+     * <p>Returns normally only under {@link #POLICY_INDEX_WITHOUT_ACL}, in which case the
+     * caller indexes the document with whatever it managed to collect.</p>
+     *
+     * @param paramMap the data store parameters
+     * @param target the URL or identifier of the document, for the log and the failure record
+     * @param cause the failure that prevented the lookup
+     * @throws PermissionUnavailableException under {@link #POLICY_SKIP}
+     * @throws DataStoreException under {@link #POLICY_FAIL}
+     */
+    protected void handlePermissionFailure(final DataStoreParams paramMap, final String target, final Exception cause) {
+        final String policy = getPermissionFailurePolicy(paramMap);
+        if (POLICY_INDEX_WITHOUT_ACL.equalsIgnoreCase(policy)) {
+            logger.warn("Indexing {} without a complete ACL: its permissions could not be retrieved.", target, cause);
+            return;
+        }
+        if (POLICY_FAIL.equalsIgnoreCase(policy)) {
+            throw new DataStoreException("Failed to retrieve permissions for " + target, cause);
+        }
+        if (!POLICY_SKIP.equalsIgnoreCase(policy)) {
+            logger.warn("Unknown {} value '{}'; treating it as '{}'.", PERMISSION_FAILURE_POLICY, policy, POLICY_SKIP);
+        }
+        throw new PermissionUnavailableException("Failed to retrieve permissions for " + target, cause);
     }
 
     /**

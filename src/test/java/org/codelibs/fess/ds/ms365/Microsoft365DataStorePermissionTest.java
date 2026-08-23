@@ -125,4 +125,44 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         assertTrue("expected the prefix-encoded user role from the site's permissions, got " + permissions, permissions.contains(expected));
         assertFalse("the raw display name must never become a role: " + permissions, permissions.contains("Display Name Of " + oid));
     }
+
+    @Test
+    public void test_permissionFailurePolicy_defaultsToSkip() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        assertEquals("skip", pageDataStore.getPermissionFailurePolicy(paramMap));
+    }
+
+    @Test
+    public void test_handlePermissionFailure_skipThrowsCrawlingAccessException() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        try {
+            pageDataStore.handlePermissionFailure(paramMap, "https://example.com/doc", new RuntimeException("429"));
+            fail("the default policy must not let the document be indexed without an ACL");
+        } catch (final PermissionUnavailableException expected) {
+            assertTrue("must extend CrawlingAccessException so the existing per-item handler records it",
+                    expected instanceof org.codelibs.fess.crawler.exception.CrawlingAccessException);
+        }
+    }
+
+    @Test
+    public void test_handlePermissionFailure_indexWithoutAclReturnsNormally() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("permission_failure_policy", "index_without_acl");
+        // returns normally == caller indexes the document with whatever it collected
+        pageDataStore.handlePermissionFailure(paramMap, "https://example.com/doc", new RuntimeException("429"));
+    }
+
+    @Test
+    public void test_handlePermissionFailure_failStopsTheJob() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("permission_failure_policy", "fail");
+        try {
+            pageDataStore.handlePermissionFailure(paramMap, "https://example.com/doc", new RuntimeException("429"));
+            fail("the fail policy must stop the crawl");
+        } catch (final PermissionUnavailableException e) {
+            fail("the fail policy must not be swallowed as a per-item skip");
+        } catch (final RuntimeException expected) {
+            // DataStoreException or similar; the point is that it is not a per-item skip
+        }
+    }
 }

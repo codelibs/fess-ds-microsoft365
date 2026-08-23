@@ -480,7 +480,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             }
 
             // Handle permissions properly
-            final List<String> roles = getSitePermissions(client, site.getId());
+            final List<String> roles = getSitePermissions(client, site.getId(), paramMap);
             if (logger.isDebugEnabled()) {
                 logger.debug("Initial permissions for site {} - Count: {}, Permissions: {}", site.getDisplayName(), roles.size(), roles);
             }

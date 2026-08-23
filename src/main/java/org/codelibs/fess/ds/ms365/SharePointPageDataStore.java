@@ -677,7 +677,7 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         if (logger.isDebugEnabled()) {
             logger.debug("Resolving permissions for page {} from site {}", pageId, siteId);
         }
-        return getSitePermissions(client, siteId).stream().distinct().collect(Collectors.toList());
+        return getSitePermissions(client, siteId, paramMap).stream().distinct().collect(Collectors.toList());
     }
 
     /**
