@@ -467,11 +467,16 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     /**
      * Gets the configured policy for documents whose permissions cannot be retrieved.
      *
+     * <p>{@link DataStoreParams#getAsString(String, String)} does not trim the value, so a
+     * trailing space (for example a value pasted from the admin UI) would otherwise be treated
+     * as unrecognized rather than matching {@link #POLICY_SKIP} or {@link #POLICY_INDEX_WITHOUT_ACL}.</p>
+     *
      * @param paramMap the data store parameters
      * @return one of {@link #POLICY_SKIP}, {@link #POLICY_INDEX_WITHOUT_ACL}
      */
     protected String getPermissionFailurePolicy(final DataStoreParams paramMap) {
-        return paramMap.getAsString(PERMISSION_FAILURE_POLICY, POLICY_SKIP);
+        final String policy = paramMap.getAsString(PERMISSION_FAILURE_POLICY, POLICY_SKIP);
+        return policy == null ? POLICY_SKIP : policy.trim();
     }
 
     /**
