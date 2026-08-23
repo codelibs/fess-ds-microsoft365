@@ -390,6 +390,60 @@ role=page.roles
 | `include_pattern` | Regex pattern for inclusion | - | `.*\.pdf$` |
 | `exclude_pattern` | Regex pattern for exclusion | - | `.*temp.*` |
 | `default_permissions` | Default role assignments | - | `{role}admin` |
+| `permission_failure_policy` | What to do when a document's permissions cannot be retrieved | `skip` | `index_without_acl` |
+
+#### Permission lookup failures
+
+This applies to OneDriveDataStore, SharePointDocLibDataStore, SharePointListDataStore, and
+SharePointPageDataStore, where a document's ACL comes from a separate Microsoft Graph call
+(listing its permissions) that can fail on its own even when the document itself was read
+successfully - most often a `429` or `503` under throttling. TeamsDataStore and
+OneNoteDataStore resolve permissions from data they already have in hand while enumerating
+content, so this parameter has no effect for them. `permission_failure_policy` controls what
+happens when the permissions call fails, and takes one of two values:
+
+| Value | Behavior |
+|-------|----------|
+| `skip` (default) | The document is not indexed. The failure is recorded in the failed URL list and logged at `WARN`, so it is visible after the crawl. |
+| `index_without_acl` | The document is indexed with whatever permissions were collected before the failure, possibly none. This was the only behavior before this parameter existed. |
+
+An unrecognized value is logged at `WARN` and treated as `skip`. There is no value that aborts
+the crawl: a permission lookup always runs inside a per-item handler that already catches every
+exception for that item and moves on to the next one, so nothing thrown while resolving
+permissions can stop the crawl.
+
+Indexing a document with an incomplete ACL is not a neutral fallback. An empty ACL removes the
+document from every user's search results until it is re-crawled successfully, and when
+`default_permissions` is configured, `index_without_acl` instead publishes the document to
+everyone that setting covers - more widely than intended, because the per-user/per-group roles
+that should have narrowed access down were never added. Choose `index_without_acl` only if
+surfacing a document without its full ACL is preferable to not surfacing it at all.
+
+`ignore_error` and `permission_failure_policy` cover different failures. `ignore_error` governs
+failures while enumerating sites, drives, and lists (for example, a site that fails to list);
+it has no effect on permission lookups for an individual document. Those are governed solely by
+`permission_failure_policy`.
+
+#### Re-crawling after upgrading to this fix
+
+This fix changes which ACL gets indexed, not just how failures in retrieving it are handled, so
+documents indexed by an older version keep their old ACL until they are re-crawled:
+
+- For OneDrive, SharePoint document libraries, SharePoint lists, and SharePoint pages, a user or
+  group named in an ACL entry used to resolve only to an internal object ID, which matches no
+  Fess role; the UPN (for users) and group name (for groups) roles that should have been added
+  alongside it were silently dropped. They are added now, so re-crawled documents typically gain
+  roles rather than lose them. The group name added is the group's `mail` attribute if it has
+  one, otherwise `mailNickname`, otherwise `displayName` - so it is usually an email address, not
+  the group's display name. If a Fess role mapping was built around the group's display name,
+  check it against whichever of these attributes the group actually has.
+- SharePoint page ACLs used to be indexed as raw display names (e.g. `John Doe`), which also
+  match no Fess role and made the ACL inert - it neither granted nor denied access on its own
+  strength. Page ACLs now carry the site's permissions in the same encoded role format as every
+  other DataStore, so this is the first release where they have any effect.
+
+Re-crawl the OneDrive, SharePoint document library, SharePoint list, and SharePoint page
+crawlers after upgrading to pick up the corrected ACLs.
 
 ### Teams-Specific Parameters
 
