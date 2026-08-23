@@ -17,6 +17,7 @@ package org.codelibs.fess.ds.ms365.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.codelibs.fess.entity.DataStoreParams;
 import org.junit.jupiter.api.Test;
@@ -118,6 +119,58 @@ public class Microsoft365ClientCacheTest {
             assertNull(client.tryResolveGroupName("gid-missing"));
             assertNull(client.tryResolveGroupName("gid-missing"));
             assertEquals(1, mock.requestCount(), "an unresolved id must not be re-queried");
+        }
+    }
+
+    /**
+     * A throttled lookup is not "unresolvable" the way a 404 is: {@code doResolveUserPrincipalName}
+     * retries once on 429/503, and once that retry is also exhausted it must throw rather than
+     * return null, so the cache does not remember the id as permanently unresolved. This uses
+     * {@link GraphMockServer#newGraphClientWithRetriesDisabled()} so each queued 429 reaches
+     * {@code Microsoft365Client} directly instead of being retried again by the SDK's own
+     * middleware first.
+     */
+    @Test
+    public void test_tryResolveUserPrincipalName_doesNotCacheThrottling() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            // Two 429s in a row: the first is consumed by doResolveUserPrincipalName's own
+            // one-time retry, the second exhausts it.
+            mock.enqueueStatus(429, "1");
+            mock.enqueueStatus(429, "1");
+            client.client = mock.newGraphClientWithRetriesDisabled();
+
+            assertNull(client.tryResolveUserPrincipalName("oid-throttled"));
+            final int requestsAfterFirstCall = mock.requestCount();
+            assertEquals(2, requestsAfterFirstCall, "the request plus doResolveUserPrincipalName's own retry");
+
+            // If the throttled result had been cached (the pre-fix behavior), this second call
+            // would be served from the cache and Graph would never see a third request.
+            mock.enqueueJson("{\"id\":\"oid-throttled\",\"userPrincipalName\":\"alice@example.com\"}");
+            assertEquals("alice@example.com", client.tryResolveUserPrincipalName("oid-throttled"));
+            assertTrue(mock.requestCount() > requestsAfterFirstCall,
+                    "a throttled lookup must not be cached as unresolved -- the second call must reach Graph again");
+        }
+    }
+
+    /**
+     * Same as {@link #test_tryResolveUserPrincipalName_doesNotCacheThrottling()} for the group
+     * cache. {@code doResolveGroupName} has no retry of its own, so a single 429 is enough to
+     * exhaust it.
+     */
+    @Test
+    public void test_tryResolveGroupName_doesNotCacheThrottling() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            mock.enqueueStatus(429, "1");
+            client.client = mock.newGraphClientWithRetriesDisabled();
+
+            assertNull(client.tryResolveGroupName("gid-throttled"));
+            final int requestsAfterFirstCall = mock.requestCount();
+            assertEquals(1, requestsAfterFirstCall, "doResolveGroupName does not retry itself");
+
+            mock.enqueueJson("{\"id\":\"gid-throttled\",\"displayName\":\"Sales\",\"mail\":\"sales@example.com\"}");
+            assertEquals("sales@example.com", client.tryResolveGroupName("gid-throttled"));
+            assertTrue(mock.requestCount() > requestsAfterFirstCall,
+                    "a throttled lookup must not be cached as unresolved -- the second call must reach Graph again");
         }
     }
 }

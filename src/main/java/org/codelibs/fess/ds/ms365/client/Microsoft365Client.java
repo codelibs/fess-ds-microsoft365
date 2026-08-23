@@ -1722,11 +1722,39 @@ public class Microsoft365Client implements Closeable {
     }
 
     /**
+     * Thrown by {@link #doResolveUserPrincipalName(String)} and {@link #doResolveGroupName(String)}
+     * when a lookup could not be completed because of a transient failure (429/503, or any
+     * unexpected error other than an {@link ApiException}) rather than because the id genuinely
+     * does not resolve to a principal.
+     *
+     * <p>It is deliberately thrown rather than returned as {@code null}: {@code upnCache} and
+     * {@code groupNameCache} wrap the loader's return value in {@code Optional.ofNullable(...)},
+     * and Guava caches that {@code Optional} - including an empty one - for the life of the
+     * cache, which has no {@code expireAfterWrite}/{@code refreshAfterWrite}. A {@code null}
+     * return here would therefore mark the id as permanently unresolvable for the rest of the
+     * crawl even though the failure was transient. Guava does not cache an exception thrown by
+     * {@code CacheLoader#load}, so throwing lets the next lookup try Graph again. {@code
+     * tryResolveUserPrincipalName} and {@code tryResolveGroupName} already catch every exception
+     * from the cache and return {@code null}, so callers outside this class see no behavior
+     * change beyond the id being retried on the next document instead of never again.</p>
+     */
+    private static final class TransientPrincipalLookupException extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        TransientPrincipalLookupException(final String message, final Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    /**
      * Resolves a user principal name (UPN) from a given object ID by querying the Microsoft Graph API.
      * Implements a simple retry mechanism for transient errors like rate limiting (HTTP 429) or service unavailability (HTTP 503).
      *
      * @param objectId The object ID of the user to resolve.
-     * @return The resolved UPN, or null if it cannot be resolved.
+     * @return The resolved UPN, or null if the id does not resolve to a user (for example, 404).
+     * @throws TransientPrincipalLookupException if the lookup failed transiently after retrying
+     *         once (429/503) or failed with an unexpected error; must not be cached as "unresolved".
      */
     private String doResolveUserPrincipalName(final String objectId) {
         int attempts = 0;
@@ -1762,11 +1790,19 @@ public class Microsoft365Client implements Closeable {
                     }
                     return null;
                 }
+                if (status == 429 || status == 503) {
+                    // The retry above was already used and also failed. Still transient, not
+                    // "not found" - do not let it be cached as permanently unresolved.
+                    logger.warn("Failed to resolve UPN for id={} after retry (status={})", objectId, status, e);
+                    throw new TransientPrincipalLookupException("Failed to resolve UPN for id=" + objectId, e);
+                }
                 logger.warn("Failed to resolve UPN for id={} (status={})", objectId, status, e);
                 return null;
             } catch (final Exception ex) {
+                // An unexpected, non-ApiException error is not evidence that objectId fails to
+                // resolve to a user either; treat it the same as a transient failure.
                 logger.warn("Failed to resolve UPN for id={}", objectId, ex);
-                return null;
+                throw new TransientPrincipalLookupException("Failed to resolve UPN for id=" + objectId, ex);
             }
         }
     }
@@ -1796,6 +1832,16 @@ public class Microsoft365Client implements Closeable {
         }
     }
 
+    /**
+     * Resolves a group name from a given object ID by querying the Microsoft Graph API.
+     *
+     * @param objectId The object ID of the group to resolve.
+     * @return The resolved group name, or null if the id does not resolve to a group (for
+     *         example, 404).
+     * @throws TransientPrincipalLookupException if the lookup failed transiently (429/503) or
+     *         with an unexpected error; must not be cached as "unresolved". Unlike {@link
+     *         #doResolveUserPrincipalName(String)} this method does not itself retry.
+     */
     private String doResolveGroupName(final String objectId) {
         try {
             final Group g = client.groups().byGroupId(objectId).get(rc -> {
@@ -1815,14 +1861,23 @@ public class Microsoft365Client implements Closeable {
             }
             return null;
         } catch (final ApiException e) {
-            if (e.getResponseStatusCode() == 404) {
+            final int status = e.getResponseStatusCode();
+            if (status == 404) {
                 return null;
+            }
+            if (status == 429 || status == 503) {
+                // Transient (throttling/service unavailable), not "id does not resolve to a
+                // group" - do not let it be cached as permanently unresolved.
+                logger.warn("Failed to resolve group name for id={} (status={})", objectId, status, e);
+                throw new TransientPrincipalLookupException("Failed to resolve group name for id=" + objectId, e);
             }
             logger.warn("Failed to resolve group name for id={}", objectId, e);
             return null;
         } catch (final Exception e) {
+            // An unexpected, non-ApiException error is not evidence that objectId fails to
+            // resolve to a group either; treat it the same as a transient failure.
             logger.warn("Failed to resolve group name for id={}", objectId, e);
-            return null;
+            throw new TransientPrincipalLookupException("Failed to resolve group name for id=" + objectId, e);
         }
     }
 
