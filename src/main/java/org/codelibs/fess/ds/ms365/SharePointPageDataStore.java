@@ -659,42 +659,26 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Gets permissions for a specific page.
+     * Gets the permissions to index for a page.
      *
-     * @param client Microsoft 365 client instance
-     * @param siteId SharePoint site ID
-     * @param pageId SharePoint page ID
-     * @param paramMap data store parameters
-     * @return list of permission strings for the page
+     * <p>Graph exposes no page-level permission list, so a page inherits the ACL of its
+     * site. This used to go through a client-side helper that emitted raw display names;
+     * those match no Fess role, so the ACL was inert. It now uses the shared
+     * {@link Microsoft365DataStore#getSitePermissions} path, which prefix-encodes ids the
+     * way every other data store does.</p>
+     *
+     * @param client the Microsoft 365 client
+     * @param siteId the ID of the site owning the page
+     * @param pageId the ID of the page, for logging only
+     * @param paramMap the data store parameters
+     * @return the roles to index, already encoded
      */
     protected List<String> getPagePermissions(final Microsoft365Client client, final String siteId, final String pageId,
             final DataStoreParams paramMap) {
-        final List<String> permissions = new ArrayList<>();
-
-        try {
-            // Get page-specific permissions
-            final List<String> pagePerms = client.getPagePermissions(siteId, pageId);
-            if (pagePerms != null && !pagePerms.isEmpty()) {
-                permissions.addAll(pagePerms);
-            }
-        } catch (final Exception e) {
-            logger.debug("Could not get page-specific permissions, using site permissions: {}", e.getMessage());
-            // Fall back to site permissions
-            try {
-                permissions.addAll(getSitePermissions(client, siteId));
-            } catch (final Exception ex) {
-                logger.warn("Failed to get site permissions: {}", ex.getMessage());
-            }
+        if (logger.isDebugEnabled()) {
+            logger.debug("Resolving permissions for page {} from site {}", pageId, siteId);
         }
-
-        // Add default permissions if configured
-        final String defaultPerms = paramMap.getAsString(DEFAULT_PERMISSIONS);
-        if (StringUtil.isNotBlank(defaultPerms)) {
-            permissions.addAll(StreamUtil.split(defaultPerms, ",")
-                    .get(stream -> stream.map(String::trim).filter(StringUtil::isNotBlank).collect(Collectors.toList())));
-        }
-
-        return permissions.stream().distinct().collect(Collectors.toList());
+        return getSitePermissions(client, siteId).stream().distinct().collect(Collectors.toList());
     }
 
     /**

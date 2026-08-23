@@ -2303,56 +2303,6 @@ public class Microsoft365Client implements Closeable {
     }
 
     /**
-     * Retrieves permissions for a specific page.
-     *
-     * @param siteId The ID of the SharePoint site
-     * @param pageId The ID of the page
-     * @return List of permission principals
-     */
-    public List<String> getPagePermissions(final String siteId, final String pageId) {
-        final List<String> permissions = new ArrayList<>();
-        // Page-specific permissions are not directly available through Graph API
-        // Fall back to site permissions
-        try {
-            final List<String> sitePerms = getSitePermissionsAsList(siteId);
-            if (sitePerms != null) {
-                permissions.addAll(sitePerms);
-            }
-        } catch (final Exception ex) {
-            logger.warn("Failed to get site permissions for site: {} - {}", siteId, ex.getMessage());
-        }
-        return permissions;
-    }
-
-    /**
-     * Helper method to get site permissions as a list of strings.
-     *
-     * @param siteId The ID of the SharePoint site
-     * @return List of permission principals
-     */
-    public List<String> getSitePermissionsAsList(final String siteId) {
-        final List<String> permissions = new ArrayList<>();
-        try {
-            final PermissionCollectionResponse response = getSitePermissions(siteId);
-            if (response != null && response.getValue() != null) {
-                response.getValue().forEach(permission -> {
-                    // Extract permission information manually since assignPermission is not available here
-                    if (permission.getGrantedToV2() != null && permission.getGrantedToV2().getUser() != null
-                            && permission.getGrantedToV2().getUser().getDisplayName() != null) {
-                        permissions.add(permission.getGrantedToV2().getUser().getDisplayName());
-                    } else if (permission.getGrantedToV2() != null && permission.getGrantedToV2().getGroup() != null
-                            && permission.getGrantedToV2().getGroup().getDisplayName() != null) {
-                        permissions.add(permission.getGrantedToV2().getGroup().getDisplayName());
-                    }
-                });
-            }
-        } catch (final Exception e) {
-            logger.warn("Failed to get site permissions for site: {} - {}", siteId, e.getMessage());
-        }
-        return permissions;
-    }
-
-    /**
      * Retrieves the next page of site pages using pagination.
      *
      * @param siteId The ID of the SharePoint site
