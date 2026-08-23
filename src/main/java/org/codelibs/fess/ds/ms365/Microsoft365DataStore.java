@@ -34,7 +34,6 @@ import org.codelibs.fess.Constants;
 import org.codelibs.fess.ds.AbstractDataStore;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
-import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -66,9 +65,6 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
 
     /** Skip the document and record it as a failed URL. The default. */
     protected static final String POLICY_SKIP = "skip";
-
-    /** Abort the crawl. */
-    protected static final String POLICY_FAIL = "fail";
 
     /** Index the document with whatever permissions were collected, possibly none. */
     protected static final String POLICY_INDEX_WITHOUT_ACL = "index_without_acl";
@@ -352,6 +348,11 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 logger.debug("Successfully retrieved {} permissions for site: {}", permissions.size(), siteId);
             }
         } catch (final Exception e) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Failed to retrieve permissions for site: {}", siteId, e);
+            } else {
+                logger.warn("Failed to retrieve permissions for site: {} - {}", siteId, e.getMessage());
+            }
             handlePermissionFailure(paramMap, siteId, e);
         }
         return permissions;
@@ -467,7 +468,7 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      * Gets the configured policy for documents whose permissions cannot be retrieved.
      *
      * @param paramMap the data store parameters
-     * @return one of {@link #POLICY_SKIP}, {@link #POLICY_FAIL}, {@link #POLICY_INDEX_WITHOUT_ACL}
+     * @return one of {@link #POLICY_SKIP}, {@link #POLICY_INDEX_WITHOUT_ACL}
      */
     protected String getPermissionFailurePolicy(final DataStoreParams paramMap) {
         return paramMap.getAsString(PERMISSION_FAILURE_POLICY, POLICY_SKIP);
@@ -479,20 +480,21 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      * <p>Returns normally only under {@link #POLICY_INDEX_WITHOUT_ACL}, in which case the
      * caller indexes the document with whatever it managed to collect.</p>
      *
+     * <p>There is no policy that aborts the crawl: each permission lookup runs inside a
+     * per-item method that already wraps itself in a catch-all handler recording the failure
+     * and moving on to the next item, so no exception thrown from here can propagate past it.
+     * A value that promised to stop the crawl would not do so.</p>
+     *
      * @param paramMap the data store parameters
      * @param target the URL or identifier of the document, for the log and the failure record
      * @param cause the failure that prevented the lookup
      * @throws PermissionUnavailableException under {@link #POLICY_SKIP}
-     * @throws DataStoreException under {@link #POLICY_FAIL}
      */
     protected void handlePermissionFailure(final DataStoreParams paramMap, final String target, final Exception cause) {
         final String policy = getPermissionFailurePolicy(paramMap);
         if (POLICY_INDEX_WITHOUT_ACL.equalsIgnoreCase(policy)) {
             logger.warn("Indexing {} without a complete ACL: its permissions could not be retrieved.", target, cause);
             return;
-        }
-        if (POLICY_FAIL.equalsIgnoreCase(policy)) {
-            throw new DataStoreException("Failed to retrieve permissions for " + target, cause);
         }
         if (!POLICY_SKIP.equalsIgnoreCase(policy)) {
             logger.warn("Unknown {} value '{}'; treating it as '{}'.", PERMISSION_FAILURE_POLICY, policy, POLICY_SKIP);

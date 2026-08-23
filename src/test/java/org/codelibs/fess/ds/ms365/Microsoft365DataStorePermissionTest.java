@@ -27,6 +27,7 @@ import org.codelibs.fess.util.ComponentUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.Identity;
 import com.microsoft.graph.models.Permission;
 import com.microsoft.graph.models.PermissionCollectionResponse;
@@ -40,6 +41,8 @@ import com.microsoft.graph.models.SharePointIdentitySet;
 public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
 
     private SharePointPageDataStore pageDataStore;
+
+    private SharePointDocLibDataStore docLibDataStore;
 
     /** A stand-in for the real client: assignPermission always calls tryResolveUserPrincipalName/
      *  tryResolveGroupName on whatever client it is given, so a bare {@code null} would NPE before
@@ -55,6 +58,7 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         // depend on init() having run, so a bare instance registered directly is sufficient.
         ComponentUtil.register(new SystemHelper(), "systemHelper");
         pageDataStore = new SharePointPageDataStore();
+        docLibDataStore = new SharePointDocLibDataStore();
         client = mock(Microsoft365Client.class);
         when(client.tryResolveUserPrincipalName(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
         when(client.tryResolveGroupName(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
@@ -152,17 +156,107 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         pageDataStore.handlePermissionFailure(paramMap, "https://example.com/doc", new RuntimeException("429"));
     }
 
+    // ===== Integration coverage for the three rewritten permission-fetch methods =====
+    //
+    // The tests above exercise handlePermissionFailure directly, which would stay green even
+    // if a rewritten method's own catch block reverted to logging a warning and returning a
+    // partial result instead of calling handlePermissionFailure at all. The tests below call
+    // getSitePermissions / getDriveItemPermissions / getDrivePermissions themselves, through a
+    // client mocked to fail, so a regression in any of those three catch blocks is caught here.
+
     @Test
-    public void test_handlePermissionFailure_failStopsTheJob() {
-        final DataStoreParams paramMap = new DataStoreParams();
-        paramMap.put("permission_failure_policy", "fail");
+    public void test_getSitePermissions_defaultPolicy_propagatesPermissionUnavailableException() {
+        final String siteId = "site-1";
+        when(client.getSitePermissions(siteId)).thenThrow(new RuntimeException("503"));
+
         try {
-            pageDataStore.handlePermissionFailure(paramMap, "https://example.com/doc", new RuntimeException("429"));
-            fail("the fail policy must stop the crawl");
-        } catch (final PermissionUnavailableException e) {
-            fail("the fail policy must not be swallowed as a per-item skip");
-        } catch (final RuntimeException expected) {
-            // DataStoreException or similar; the point is that it is not a per-item skip
+            pageDataStore.getSitePermissions(client, siteId, new DataStoreParams());
+            fail("a failed lookup must not be indexed with an empty ACL under the default policy");
+        } catch (final PermissionUnavailableException expected) {
+            // expected
         }
+    }
+
+    @Test
+    public void test_getSitePermissions_indexWithoutAcl_returnsWithoutThrowing() {
+        final String siteId = "site-1";
+        when(client.getSitePermissions(siteId)).thenThrow(new RuntimeException("503"));
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("permission_failure_policy", "index_without_acl");
+
+        final List<String> permissions = pageDataStore.getSitePermissions(client, siteId, paramMap);
+        assertTrue("index_without_acl must return whatever was collected instead of throwing, got " + permissions, permissions.isEmpty());
+    }
+
+    @Test
+    public void test_getSitePermissions_nextLinkFailure_defaultPolicy_propagatesPermissionUnavailableException() {
+        final String siteId = "site-1";
+        final PermissionCollectionResponse firstPage = new PermissionCollectionResponse();
+        firstPage.setValue(List.of(userPermission("oid-1")));
+        firstPage.setOdataNextLink("https://graph.microsoft.com/v1.0/next-page");
+        when(client.getSitePermissions(siteId)).thenReturn(firstPage);
+        when(client.getSitePermissionsByNextLink(org.mockito.ArgumentMatchers.eq(siteId), org.mockito.ArgumentMatchers.anyString()))
+                .thenThrow(new RuntimeException("429"));
+
+        try {
+            pageDataStore.getSitePermissions(client, siteId, new DataStoreParams());
+            fail("a failure fetching page 2 must not let page 1's partial results stand in as the complete ACL");
+        } catch (final PermissionUnavailableException expected) {
+            // expected: the roles named only on page 2 (never fetched) must not be silently dropped
+        }
+    }
+
+    @Test
+    public void test_getDriveItemPermissions_defaultPolicy_propagatesPermissionUnavailableException() {
+        final String driveId = "drive-1";
+        final DriveItem item = new DriveItem();
+        item.setId("item-1");
+        item.setWebUrl("https://example.com/item-1");
+        when(client.getDrivePermissions(driveId, "item-1")).thenThrow(new RuntimeException("503"));
+
+        try {
+            pageDataStore.getDriveItemPermissions(client, driveId, item, new DataStoreParams());
+            fail("a failed lookup must not be indexed with an empty ACL under the default policy");
+        } catch (final PermissionUnavailableException expected) {
+            // expected
+        }
+    }
+
+    @Test
+    public void test_getDriveItemPermissions_indexWithoutAcl_returnsWithoutThrowing() {
+        final String driveId = "drive-1";
+        final DriveItem item = new DriveItem();
+        item.setId("item-1");
+        item.setWebUrl("https://example.com/item-1");
+        when(client.getDrivePermissions(driveId, "item-1")).thenThrow(new RuntimeException("503"));
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("permission_failure_policy", "index_without_acl");
+
+        final List<String> permissions = pageDataStore.getDriveItemPermissions(client, driveId, item, paramMap);
+        assertTrue("index_without_acl must return whatever was collected instead of throwing, got " + permissions, permissions.isEmpty());
+    }
+
+    @Test
+    public void test_docLibGetDrivePermissions_defaultPolicy_propagatesPermissionUnavailableException() {
+        final String driveId = "drive-1";
+        when(client.getDrivePermissions(driveId, "root")).thenThrow(new RuntimeException("503"));
+
+        try {
+            docLibDataStore.getDrivePermissions(client, driveId, new DataStoreParams());
+            fail("a failed lookup must not be indexed with an empty ACL under the default policy");
+        } catch (final PermissionUnavailableException expected) {
+            // expected
+        }
+    }
+
+    @Test
+    public void test_docLibGetDrivePermissions_indexWithoutAcl_returnsWithoutThrowing() {
+        final String driveId = "drive-1";
+        when(client.getDrivePermissions(driveId, "root")).thenThrow(new RuntimeException("503"));
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("permission_failure_policy", "index_without_acl");
+
+        final List<String> permissions = docLibDataStore.getDrivePermissions(client, driveId, paramMap);
+        assertTrue("index_without_acl must return whatever was collected instead of throwing, got " + permissions, permissions.isEmpty());
     }
 }
