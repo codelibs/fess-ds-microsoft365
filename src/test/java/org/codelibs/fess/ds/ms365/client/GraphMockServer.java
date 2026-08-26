@@ -60,6 +60,18 @@ public class GraphMockServer implements AutoCloseable {
     }
 
     /**
+     * Queues a 200 response carrying a raw (non-JSON) body, as OneNote's page-content
+     * endpoint returns: {@code .../onenote/pages/{id}/content} responds with the page's
+     * HTML, not a JSON envelope, and the client reads it as a plain {@code InputStream}.
+     *
+     * @param contentType the Content-Type header to send
+     * @param body the raw response body
+     */
+    public void enqueueContent(final String contentType, final String body) {
+        server.enqueue(new MockResponse().setResponseCode(200).setHeader("Content-Type", contentType).setBody(body));
+    }
+
+    /**
      * Queues a bare status response.
      *
      * @param code the HTTP status code
