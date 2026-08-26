@@ -83,7 +83,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
             logger.info(ToStringBuilder.reflectionToString(user));
             assertEquals(u.getId(), user.getId());
 
-            client.getNotebookPage(user.getId()).getValue().forEach(n -> {
+            client.getNotebookPage(NotebookScope.USER, user.getId()).getValue().forEach(n -> {
                 logger.info(ToStringBuilder.reflectionToString(n));
             });
         });
