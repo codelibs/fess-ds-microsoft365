@@ -17,7 +17,6 @@ package org.codelibs.fess.ds.ms365.client;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import org.codelibs.fess.crawler.extractor.impl.TikaExtractor;
 import org.codelibs.fess.ds.ms365.UnitDsTestCase;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.util.ComponentUtil;
@@ -38,13 +37,29 @@ import org.junit.jupiter.api.TestInfo;
  * the way through to the page-content request, not just the first hop.</p>
  *
  * <p>This extends {@link UnitDsTestCase} (rather than being a bare JUnit test, like
- * the sibling {@code Microsoft365ClientMockTest}) because {@code getPageContents}
- * routes the page body through {@code ComponentUtil.getExtractorFactory()}, which
- * needs a real DI container plus a registered {@code tikaExtractor} to resolve.
- * Note {@code UnitDsTestCase} redeclares JUnit4-style {@code assertTrue}/{@code
- * assertEquals}/{@code assertFalse} overloads (message first) that shadow the
- * statically-imported JUnit5 ones, so this class follows that same message-first
- * convention rather than importing {@code Assertions.assertTrue} et al.</p>
+ * the sibling {@code Microsoft365ClientMockTest}) because without a real container,
+ * {@code getPageContents}'s catch block itself throws when it calls {@code
+ * ComponentUtil.getFessConfig()} to decide whether to swallow the original failure,
+ * and the chain never completes. Note {@code UnitDsTestCase} redeclares JUnit4-style
+ * {@code assertTrue}/{@code assertEquals}/{@code assertFalse} overloads (message
+ * first) that shadow the statically-imported JUnit5 ones, so this class follows that
+ * same message-first convention rather than importing {@code Assertions.assertTrue}
+ * et al.</p>
+ *
+ * <p><b>What the full-chain tests below do not cover:</b> {@code extractorFactory} is
+ * not defined in {@code test_app.xml} (only {@code convention.xml}, {@code
+ * lastaflute.xml} and {@code fileTypeHelper} are), so {@code
+ * ComponentUtil.getExtractorFactory()} throws {@code ComponentNotFoundException}.
+ * That gets swallowed by {@code isCrawlerIgnoreContentException()}'s default of
+ * {@code true}, so {@code getPageContents} always falls back to returning just the
+ * page title, and the page-content HTTP body below is never read or extracted. (An
+ * earlier version of this test also registered a {@code tikaExtractor} component,
+ * hoping to make extraction succeed; it does nothing, because the lookup that fails
+ * is for {@code extractorFactory} itself, not for an extractor by name -- removed
+ * rather than left in as dead setup that implies extraction is covered.) What these
+ * tests genuinely pin is the request path at each hop (sections, pages, page
+ * content), which is decided before extraction runs; see the comments at each
+ * fixture below.</p>
  */
 public class Microsoft365ClientOneNoteTest extends UnitDsTestCase {
 
@@ -56,17 +71,6 @@ public class Microsoft365ClientOneNoteTest extends UnitDsTestCase {
     @Override
     protected boolean isSuppressTestCaseTransaction() {
         return true;
-    }
-
-    @Override
-    public void setUp(final TestInfo testInfo) throws Exception {
-        super.setUp(testInfo);
-        // getPageContents() runs the page body through the extractor factory; without a
-        // real extractor registered, extraction itself throws before the scope-routing
-        // under test ever gets a chance to matter.
-        final TikaExtractor tikaExtractor = new TikaExtractor();
-        tikaExtractor.init();
-        ComponentUtil.register(tikaExtractor, "tikaExtractor");
     }
 
     @Override
@@ -160,13 +164,20 @@ public class Microsoft365ClientOneNoteTest extends UnitDsTestCase {
      * previous test above only reached the sections call (its second fixture answered
      * with zero pages), which is exactly the gap that let the SITE/GROUP branches of
      * {@code getPages} and {@code getPageContents} go untested.
+     *
+     * <p>This does not verify content extraction -- see the class javadoc.</p>
      */
     @Test
     public void test_getNotebookContent_siteScopeFullChainUsesSitesPathThroughout() throws Exception {
         try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
             mock.enqueueJson("{\"value\":[{\"id\":\"sec1\",\"displayName\":\"Section One\"}]}");
             mock.enqueueJson("{\"value\":[{\"id\":\"page1\",\"title\":\"Page One\"}]}");
-            mock.enqueueContent("text/html", "<html><body>Site page body</body></html>");
+            // The body is never asserted on: extractorFactory is not defined in test_app.xml, so
+            // ComponentUtil.getExtractorFactory() throws and getPageContents swallows it
+            // (isCrawlerIgnoreContentException defaults to true), returning just the title. What
+            // this test pins is the request path at each hop, which is decided before extraction
+            // runs. The text below is deliberately not something a passing assertion would match.
+            mock.enqueueContent("text/html", "<html><body>UNASSERTED-EXTRACTION-NOT-EXERCISED</body></html>");
             client.client = mock.newGraphClient();
 
             final String content = client.getNotebookContent(NotebookScope.SITE, "site-1", "nb1");
@@ -186,8 +197,11 @@ public class Microsoft365ClientOneNoteTest extends UnitDsTestCase {
                     contentPath.startsWith("/sites/site-1/onenote/pages/page1/content"));
             assertFalse("site page content must not be requested as a user: " + contentPath, contentPath.startsWith("/users/"));
 
-            assertTrue("section content must be included: " + content, content.contains("Section One"));
-            assertTrue("page content must be included: " + content, content.contains("Page One"));
+            // These two only confirm the section/page titles reached the result string, which
+            // getSectionContents/getPageContents append before (and regardless of) extraction --
+            // not that the HTML body above was extracted; see the class javadoc.
+            assertTrue("section title must be included: " + content, content.contains("Section One"));
+            assertTrue("page title must be included: " + content, content.contains("Page One"));
         }
     }
 
@@ -201,7 +215,9 @@ public class Microsoft365ClientOneNoteTest extends UnitDsTestCase {
         try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
             mock.enqueueJson("{\"value\":[{\"id\":\"sec1\",\"displayName\":\"Section One\"}]}");
             mock.enqueueJson("{\"value\":[{\"id\":\"page1\",\"title\":\"Page One\"}]}");
-            mock.enqueueContent("text/html", "<html><body>Group page body</body></html>");
+            // The body is never asserted on -- see the SITE version of this test for why
+            // (extractorFactory is not wired into test_app.xml, so extraction never runs).
+            mock.enqueueContent("text/html", "<html><body>UNASSERTED-EXTRACTION-NOT-EXERCISED</body></html>");
             client.client = mock.newGraphClient();
 
             final String content = client.getNotebookContent(NotebookScope.GROUP, "group-1", "nb1");
@@ -222,8 +238,11 @@ public class Microsoft365ClientOneNoteTest extends UnitDsTestCase {
                     contentPath.startsWith("/groups/group-1/onenote/pages/page1/content"));
             assertFalse("group page content must not be requested as a user: " + contentPath, contentPath.startsWith("/users/"));
 
-            assertTrue("section content must be included: " + content, content.contains("Section One"));
-            assertTrue("page content must be included: " + content, content.contains("Page One"));
+            // These two only confirm the section/page titles reached the result string, which
+            // getSectionContents/getPageContents append before (and regardless of) extraction --
+            // not that the HTML body above was extracted; see the class javadoc.
+            assertTrue("section title must be included: " + content, content.contains("Section One"));
+            assertTrue("page title must be included: " + content, content.contains("Page One"));
         }
     }
 
