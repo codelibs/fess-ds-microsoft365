@@ -8,10 +8,10 @@ on:
     branches:
     - master
     - "*.x"
+  # No branch filter: `branches` here filters on the PR's base, so a stacked PR
+  # whose base is a feature branch would get no CI at all until the branch under
+  # it merged. `push` keeps its filter so feature-branch pushes do not double-build.
   pull_request:
-    branches:
-    - master
-    - "*.x"
 
 jobs:
   build:
