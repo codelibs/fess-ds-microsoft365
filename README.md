@@ -412,12 +412,13 @@ SharePointListDataStore and SharePointPageDataStore it can also be a permanent `
 below.
 
 OneNoteDataStore is a mixed case. Its user and group notebooks resolve permissions from data
-already in hand while enumerating - the same role synthesized from the owner's ID that every
-other DataStore in this plugin uses for that purpose - so `permission_failure_policy` has no
-effect on them. Its site notebooks are different: they call the same `getSitePermissions` helper,
-and the same `GET /sites/{site-id}/permissions` Graph call, that SharePointListDataStore and
-SharePointPageDataStore use, so `permission_failure_policy` governs them too, including the same
-permanent-`403` risk covered below. A failure resolving the site's ACL only skips the site
+already in hand while enumerating - the same mechanism OneDriveDataStore uses for its own
+personal and group drives, synthesizing a role from the owner's ID rather than calling Graph for
+it - so `permission_failure_policy` has no effect on them. Its site notebooks are different: they
+call the same `getSitePermissions` helper, and the same `GET /sites/{site-id}/permissions` Graph
+call, that SharePointListDataStore and SharePointPageDataStore use, so `permission_failure_policy`
+governs them too, including the same permanent-`403` risk covered below. A failure resolving the
+site's ACL only skips the site
 notebooks; user and group notebook crawling continues regardless. TeamsDataStore does not call
 any of the permission-fetch methods this parameter governs either, so this parameter has no
 effect for it too - but not because TeamsDataStore has no permission-fetch failure path of its
@@ -496,10 +497,15 @@ documents indexed by an older version keep their old ACL until they are re-crawl
   notebook, section, page, and page-content request for them to the wrong Graph path; Graph
   returned `404` for all of it, and that was logged only at `debug` level, so the crawl reported
   success while indexing zero notebooks. This is not an ACL correction like the ones above - it
-  is the first time these notebooks are indexed at all. Site notebooks also now carry the site's
-  ACL instead of an empty one (see above), so `permission_failure_policy` governs them for the
-  first time too. A `404` that persists after re-crawling is now logged at `WARN` and means the
-  owner genuinely has no notebooks, not that the crawler is asking the wrong Graph path.
+  is the first time these notebooks are indexed at all. Site notebooks also now attempt to carry
+  the site's permissions instead of an unconditionally empty ACL (see above and the "Permission
+  Mapping" note under OneNote Implementation Details) - though depending on the tenant, that
+  lookup can itself come back empty, in which case the notebooks are indexed with an empty ACL and
+  a `WARN` is logged - so `permission_failure_policy` governs the lookup failure case for them for
+  the first time too. A `404` that persists after re-crawling for a site's or group's notebooks is
+  now logged at `WARN` and means the site or group genuinely has no notebooks, not that the
+  crawler is asking the wrong Graph path; a user's `404` stays at `debug` (see "404 Visibility"
+  below).
 
 Re-crawl the OneDrive, SharePoint document library, SharePoint list, and SharePoint page
 crawlers after upgrading to pick up the corrected ACLs, and re-crawl OneNoteDataStore (with
@@ -603,9 +609,15 @@ The OneNoteDataStore provides comprehensive OneNote notebook crawling with the f
 **Core Functionality:**
 - **Multi-Source Notebook Crawling**: Processes notebooks from three distinct sources in a systematic order
 - **Aggregated Content Extraction**: Consolidates all sections and pages within each notebook into searchable content
-- **Permission Mapping**: Site notebooks inherit the site's ACL, resolved via the same Graph
-  permissions call SharePointListDataStore and SharePointPageDataStore use; user and group
-  notebooks get a role synthesized from the owner's ID instead
+- **Permission Mapping**: Site notebooks are indexed with whatever `GET
+  /sites/{site-id}/permissions` returns, via the same `getSitePermissions` helper
+  SharePointListDataStore and SharePointPageDataStore use; user and group notebooks get a role
+  synthesized from the owner's ID instead. Per Microsoft's documented response shape for that
+  endpoint, it may return only application grants and no user/group grantees at all, depending on
+  the tenant and how the site is shared - in which case the site's notebooks end up with an empty
+  ACL and will not match any user's role filter. This has not been verified against a live tenant
+  with user/group site permissions. When the result is empty, a `WARN` is logged so the condition
+  is visible instead of passing silently.
 
 **Crawling Modes (Processing Order):**
 1. **Site Notebooks**: Crawls notebooks at the root SharePoint site level (`/sites/root/onenote/notebooks`)
@@ -634,9 +646,13 @@ The OneNoteDataStore provides comprehensive OneNote notebook crawling with the f
 - **Graceful Degradation**: Handles invalid parameter values by defaulting to safe configurations
 - **Thread Pool Management**: Proper executor service lifecycle management with shutdown handling
 - **Comprehensive Logging**: Debug-level logging for monitoring crawling progress and troubleshooting
-- **404 Visibility**: A `404` when listing a notebook owner's notebooks is logged at `WARN`, not
-  `debug` - it usually means that owner has no notebooks, but the same response is also what a
-  request sent to the wrong Graph path would return, so it is worth seeing
+- **404 Visibility**: A `404` when listing a site's or group's notebooks is logged at `WARN`, not
+  `debug` - it usually means that site or group has no notebooks, but the same response is also
+  what a request sent to the wrong Graph path would return, so it is worth seeing. A `404` for a
+  *user's* notebooks stays at `debug`: an unprovisioned personal site 404s there routinely for any
+  tenant with unlicensed-for-OneDrive or never-logged-in users, and the user path was never the
+  one this fix repaired, so logging one `WARN` per such user would add volume without adding
+  diagnostic value.
 - **Site Permission Failures**: A failure to resolve the site's ACL for site notebooks (governed
   by `permission_failure_policy`) only skips the site notebooks; user and group notebook crawling
   continues regardless

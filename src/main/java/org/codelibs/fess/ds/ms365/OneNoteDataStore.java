@@ -186,7 +186,18 @@ public class OneNoteDataStore extends Microsoft365DataStore {
     protected void storeSiteNotes(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
             final Microsoft365Client client) {
-        final Site root = client.getSite("root");
+        final Site root;
+        try {
+            root = client.getSite("root");
+        } catch (final ApiException e) {
+            // storeData runs storeSiteNotes, storeUsersNotes and storeGroupsNotes one after
+            // another inside the same try block. Letting this propagate would abort user and
+            // group notebook crawling too, not just site notebooks, so it is caught here and
+            // only site notebooks are skipped.
+            logger.warn("Skipping site notebooks: unable to resolve the root site.", e);
+            return;
+        }
+
         final List<String> roles;
         try {
             // Notebooks under a site inherit the site's ACL. Indexing them with an empty role
@@ -199,6 +210,14 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             // only site notebooks are skipped.
             logger.warn("Skipping site notebooks: unable to resolve permissions for site: {}", root.getId(), e);
             return;
+        }
+        if (roles.isEmpty()) {
+            // GET /sites/{site-id}/permissions succeeding with an empty result is not an error --
+            // it is Microsoft's documented shape for this endpoint on a site with no per-user/group
+            // grantees for it to report. But it leaves the notebook with no ACL, so it is worth
+            // surfacing rather than passing silently.
+            logger.warn("Site {} returned no permissions; its notebooks will be indexed with an empty ACL "
+                    + "and will not match any user's role filter.", root.getId());
         }
         getNotebooks(client, NotebookScope.SITE, root.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig,
                 callback, paramMap, scriptMap, defaultDataMap, client, NotebookScope.SITE, root.getId(), notebook, roles)));
@@ -437,10 +456,17 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             }
         } catch (final ApiException e) {
             if (e.getResponseStatusCode() == 404) {
-                // A 404 here is worth seeing: it usually means the owner has no notebooks,
-                // but it also looked exactly like this when every site and group request was
-                // being sent to the wrong Graph path.
-                logger.warn("No notebooks found for {} {} (404).", scope, ownerId);
+                if (scope == NotebookScope.USER) {
+                    // A user without a provisioned personal site 404s here routinely, and USER was never
+                    // the path this fix repaired -- logging one line per licensed user buys nothing.
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("No notebooks found for {} {} (404).", scope, ownerId);
+                    }
+                } else {
+                    // SITE and GROUP used to 404 because the request went to the wrong Graph root, so
+                    // these stay visible.
+                    logger.warn("No notebooks found for {} {} (404).", scope, ownerId);
+                }
             } else {
                 logger.warn("Failed to retrieve notebooks for {} {}.", scope, ownerId, e);
             }

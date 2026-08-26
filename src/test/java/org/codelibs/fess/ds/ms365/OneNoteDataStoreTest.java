@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -25,9 +27,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -41,6 +45,8 @@ import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
+import com.microsoft.graph.models.AssignedLicense;
+import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.Identity;
 import com.microsoft.graph.models.Notebook;
 import com.microsoft.graph.models.NotebookCollectionResponse;
@@ -48,6 +54,8 @@ import com.microsoft.graph.models.Permission;
 import com.microsoft.graph.models.PermissionCollectionResponse;
 import com.microsoft.graph.models.SharePointIdentitySet;
 import com.microsoft.graph.models.Site;
+import com.microsoft.graph.models.User;
+import com.microsoft.kiota.ApiException;
 
 public class OneNoteDataStoreTest extends UnitDsTestCase {
 
@@ -396,6 +404,161 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         // storeSiteNotes before it starts listing notebooks.
         org.mockito.Mockito.verify(client, org.mockito.Mockito.never())
                 .getNotebookPage(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    /**
+     * A mutation that swaps {@code NotebookScope.USER} for {@code NotebookScope.GROUP} in
+     * {@link OneNoteDataStore#storeUsersNotes} re-introduces, at the DataStore layer, exactly the
+     * bug this branch fixed at the client layer -- notebook requests going to the wrong Graph
+     * root. {@link org.codelibs.fess.ds.ms365.client.Microsoft365ClientOneNoteTest} covers the
+     * client thoroughly per-scope, but nothing exercised which scope
+     * {@code storeUsersNotes} itself asks the client for, so that mutation previously survived
+     * with the full suite green. Pins the DataStore -> client scope wiring directly.
+     */
+    @Test
+    public void test_storeUsersNotes_requestsUserScope() throws Exception {
+        ComponentUtil.register(new SystemHelper(), "systemHelper");
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        final User user = new User();
+        user.setId("user-1");
+        user.setDisplayName("User One");
+        final AssignedLicense license = new AssignedLicense();
+        license.setSkuId(UUID.randomUUID());
+        user.setAssignedLicenses(List.of(license));
+
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<User> consumer = invocation.getArgument(1);
+            consumer.accept(user);
+            return null;
+        }).when(client).getUsers(any(), any());
+
+        final Notebook notebook = new Notebook();
+        notebook.setId("notebook-1");
+        notebook.setDisplayName("User Notebook");
+        final NotebookCollectionResponse notebookResponse = new NotebookCollectionResponse();
+        notebookResponse.setValue(List.of(notebook));
+        when(client.getNotebookPage(NotebookScope.USER, "user-1")).thenReturn(notebookResponse);
+
+        final List<NotebookScope> capturedScopes = new ArrayList<>();
+        final OneNoteDataStore captureDataStore = new OneNoteDataStore() {
+            @Override
+            protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+                    final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
+                    final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
+                // Captures which scope storeUsersNotes actually asked the client for, instead of
+                // running the real indexing pipeline.
+                capturedScopes.add(scope);
+            }
+        };
+
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            captureDataStore.storeUsersNotes(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(),
+                    executorService, client);
+        } finally {
+            executorService.shutdown();
+            assertTrue("processNotebook must have run before the test asserts on the captured scope",
+                    executorService.awaitTermination(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals("processNotebook must run exactly once for the one user notebook returned", 1, capturedScopes.size());
+        assertEquals(NotebookScope.USER, capturedScopes.get(0));
+    }
+
+    /**
+     * The GROUP-side counterpart of {@link #test_storeUsersNotes_requestsUserScope}: pins that
+     * {@link OneNoteDataStore#storeGroupsNotes} requests {@code NotebookScope.GROUP} rather than
+     * silently regressing to {@code NotebookScope.USER}, which sends group notebook requests to
+     * the wrong Graph root -- the same bug class this branch fixed.
+     */
+    @Test
+    public void test_storeGroupsNotes_requestsGroupScope() throws Exception {
+        ComponentUtil.register(new SystemHelper(), "systemHelper");
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        final Group group = new Group();
+        group.setId("group-1");
+        group.setDisplayName("Group One");
+
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<Group> consumer = invocation.getArgument(0);
+            consumer.accept(group);
+            return null;
+        }).when(client).getMicrosoft365Groups(any());
+
+        final Notebook notebook = new Notebook();
+        notebook.setId("notebook-1");
+        notebook.setDisplayName("Group Notebook");
+        final NotebookCollectionResponse notebookResponse = new NotebookCollectionResponse();
+        notebookResponse.setValue(List.of(notebook));
+        when(client.getNotebookPage(NotebookScope.GROUP, "group-1")).thenReturn(notebookResponse);
+
+        final List<NotebookScope> capturedScopes = new ArrayList<>();
+        final OneNoteDataStore captureDataStore = new OneNoteDataStore() {
+            @Override
+            protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+                    final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
+                    final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
+                // Captures which scope storeGroupsNotes actually asked the client for, instead of
+                // running the real indexing pipeline.
+                capturedScopes.add(scope);
+            }
+        };
+
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            captureDataStore.storeGroupsNotes(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(),
+                    executorService, client);
+        } finally {
+            executorService.shutdown();
+            assertTrue("processNotebook must have run before the test asserts on the captured scope",
+                    executorService.awaitTermination(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals("processNotebook must run exactly once for the one group notebook returned", 1, capturedScopes.size());
+        assertEquals(NotebookScope.GROUP, capturedScopes.get(0));
+    }
+
+    /**
+     * {@code storeSiteNotes} used to call {@code client.getSite("root")} outside any try block.
+     * {@code storeData} only catches {@link InterruptedException} around
+     * {@code storeSiteNotes}/{@code storeUsersNotes}/{@code storeGroupsNotes}, so a failure
+     * resolving the root site used to propagate out of {@code storeData} entirely, aborting user
+     * and group notebook crawling too -- not just the site notebooks the README says are the only
+     * thing a site-ACL failure skips. Pins that a root-site failure lets
+     * {@code storeUsersNotes} and {@code storeGroupsNotes} still run to completion.
+     */
+    @Test
+    public void test_storeData_rootSiteFailure_doesNotAbortUserAndGroupCrawling() throws Exception {
+        ComponentUtil.register(new SystemHelper(), "systemHelper");
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.getSite("root")).thenThrow(new ApiException("failed to resolve root site"));
+        // No licensed users/groups to keep this test focused on whether storeUsersNotes and
+        // storeGroupsNotes are reached at all, not on per-notebook processing.
+        doAnswer(invocation -> null).when(client).getUsers(any(), any());
+        doAnswer(invocation -> null).when(client).getMicrosoft365Groups(any());
+
+        final OneNoteDataStore testDataStore = new OneNoteDataStore() {
+            @Override
+            protected Microsoft365Client createClient(final DataStoreParams paramMap) {
+                return client;
+            }
+        };
+
+        // Must return normally: storeData catches only InterruptedException, so if the
+        // getSite("root") failure escaped storeSiteNotes uncaught, this call would throw instead.
+        testDataStore.storeData(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>());
+
+        // storeUsersNotes and storeGroupsNotes must have run (reached the client) despite the
+        // site notebook failure.
+        org.mockito.Mockito.verify(client).getUsers(any(), any());
+        org.mockito.Mockito.verify(client).getMicrosoft365Groups(any());
     }
 
     private void doStoreData() {
