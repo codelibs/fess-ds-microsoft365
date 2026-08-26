@@ -15,7 +15,6 @@
  */
 package org.codelibs.fess.ds.ms365;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -188,7 +187,19 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
             final Microsoft365Client client) {
         final Site root = client.getSite("root");
-        final List<String> roles = Collections.emptyList();
+        final List<String> roles;
+        try {
+            // Notebooks under a site inherit the site's ACL. Indexing them with an empty role
+            // list would hide them from every user who has roles at all.
+            roles = getSitePermissions(client, root.getId(), paramMap);
+        } catch (final PermissionUnavailableException e) {
+            // storeData runs storeSiteNotes, storeUsersNotes and storeGroupsNotes one after
+            // another inside the same try block. Letting this propagate would abort user and
+            // group notebook crawling too, not just site notebooks, so it is caught here and
+            // only site notebooks are skipped.
+            logger.warn("Skipping site notebooks: unable to resolve permissions for site: {}", root.getId(), e);
+            return;
+        }
         getNotebooks(client, NotebookScope.SITE, root.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig,
                 callback, paramMap, scriptMap, defaultDataMap, client, NotebookScope.SITE, root.getId(), notebook, roles)));
     }
