@@ -88,7 +88,7 @@ Each DataStore requires specific Microsoft Graph API permissions. Grant only the
 | DataStore | Required Permissions | Conditional Permissions |
 |-----------|---------------------|------------------------|
 | OneDriveDataStore | Files.Read.All | User.Read.All (*1), Group.Read.All (*2), Sites.Read.All (*3) |
-| OneNoteDataStore | Notes.Read.All | User.Read.All (*1), Group.Read.All (*2), Sites.Read.All (*4) |
+| OneNoteDataStore | Notes.Read.All | User.Read.All (*1), Group.Read.All (*2), Sites.Read.All (*4), Sites.FullControl.All (*4, *8) |
 | TeamsDataStore | Team.ReadBasic.All, Group.Read.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMember.Read.All, User.Read.All | Chat.Read.All (*5), Files.Read.All (*6) |
 | SharePointDocLibDataStore | Files.Read.All, Sites.Read.All (*7) | - |
 | SharePointListDataStore | Sites.Read.All (*7), Sites.FullControl.All (*8) | - |
@@ -102,7 +102,7 @@ Each DataStore requires specific Microsoft Graph API permissions. Grant only the
 - (*5) Required when `chat_id` is specified
 - (*6) Required when `append_attachment=true`
 - (*7) Can be replaced with `Sites.Selected` when `site_id` is specified (requires additional per-site configuration), **for reading site/list/page content only**. It does not satisfy (*8) below -- see the note under [Using Sites.Selected Permission](#using-sitesselected-permission).
-- (*8) SharePointListDataStore and SharePointPageDataStore each call Microsoft Graph's ["List permissions"](https://learn.microsoft.com/en-us/graph/api/site-list-permissions) API (`GET /sites/{site-id}/permissions`) to build every item's/page's ACL. For that specific call, Microsoft documents `Sites.FullControl.All` as the only Application permission -- there is no lower option and `Sites.Selected` is not listed as an alternative. Without it the call returns `403` for every site, which is a permanent failure, not throttling. Under the default `permission_failure_policy=skip` this means the DataStore indexes **zero documents**. See [Permanent 403s on SharePointListDataStore / SharePointPageDataStore](#permanent-403s-on-sharepointlistdatastore--sharepointpagedatastore) below.
+- (*8) SharePointListDataStore and SharePointPageDataStore each call Microsoft Graph's ["List permissions"](https://learn.microsoft.com/en-us/graph/api/site-list-permissions) API (`GET /sites/{site-id}/permissions`) to build every item's/page's ACL; OneNoteDataStore's site notebooks (`site_note_crawler=true`, the default) call the same endpoint, through the same `getSitePermissions` helper, to build their ACL. For that specific call, Microsoft documents `Sites.FullControl.All` as the only Application permission -- there is no lower option and `Sites.Selected` is not listed as an alternative. Without it the call returns `403` for every site, which is a permanent failure, not throttling. Under the default `permission_failure_policy=skip` this means SharePointListDataStore and SharePointPageDataStore index **zero documents**, because every item they index is site-scoped; for OneNoteDataStore it is narrower -- only the site notebooks are skipped, since user and group notebooks resolve their roles from data already in hand and never call this endpoint. See [Permanent 403s on SharePointListDataStore / SharePointPageDataStore](#permanent-403s-on-sharepointlistdatastore--sharepointpagedatastore) below.
 
 #### Using Sites.Selected Permission
 
@@ -411,17 +411,25 @@ SharePointListDataStore and SharePointPageDataStore it can also be a permanent `
 [Permanent 403s on SharePointListDataStore / SharePointPageDataStore](#permanent-403s-on-sharepointlistdatastore--sharepointpagedatastore)
 below.
 
-OneNoteDataStore resolves permissions from data it already has in hand while enumerating
-content, so this parameter has no effect for it. TeamsDataStore does not call any of the
-permission-fetch methods this parameter governs either, so this parameter has no effect for it
-too - but not because TeamsDataStore has no permission-fetch failure path of its own. It makes a
-separate Graph call per message (listing the channel's members, to resolve that message's roles),
-and a failure there is not governed by `permission_failure_policy` at all: it propagates out of
-the per-channel handler as a `DataStoreException`, which aborts the rest of that channel's
-messages rather than skipping just the one message.
+OneNoteDataStore is a mixed case. Its user and group notebooks resolve permissions from data
+already in hand while enumerating - the same role synthesized from the owner's ID that every
+other DataStore in this plugin uses for that purpose - so `permission_failure_policy` has no
+effect on them. Its site notebooks are different: they call the same `getSitePermissions` helper,
+and the same `GET /sites/{site-id}/permissions` Graph call, that SharePointListDataStore and
+SharePointPageDataStore use, so `permission_failure_policy` governs them too, including the same
+permanent-`403` risk covered below. A failure resolving the site's ACL only skips the site
+notebooks; user and group notebook crawling continues regardless. TeamsDataStore does not call
+any of the permission-fetch methods this parameter governs either, so this parameter has no
+effect for it too - but not because TeamsDataStore has no permission-fetch failure path of its
+own. It makes a separate Graph call per message (listing the channel's members, to resolve that
+message's roles), and a failure there is not governed by `permission_failure_policy` at all: it
+propagates out of the per-channel handler as a `DataStoreException`, which aborts the rest of
+that channel's messages rather than skipping just the one message.
 
-`permission_failure_policy` controls what happens when the permissions call fails for the four
-DataStores it does cover, and takes one of two values:
+`permission_failure_policy` controls what happens when the permissions call fails for the
+DataStores and paths it covers - OneDriveDataStore, SharePointDocLibDataStore,
+SharePointListDataStore, SharePointPageDataStore, and OneNoteDataStore's site notebooks - and
+takes one of two values:
 
 | Value | Behavior |
 |-------|----------|
@@ -450,6 +458,12 @@ site, not just occasionally under load. Under the default `permission_failure_po
 means SharePointListDataStore and SharePointPageDataStore index **zero documents**: every item
 fails the ACL lookup and lands in the failed URL list.
 
+OneNoteDataStore's site notebooks call the same endpoint (see note (*8) above) and hit the same
+`403` under the same conditions, but the blast radius is smaller: `storeSiteNotes` catches the
+failure, logs a `WARN`, and skips only the site notebooks. It does not propagate into
+`storeUsersNotes` or `storeGroupsNotes`, so user and group notebooks are still crawled and
+indexed normally even when the site notebooks can't be.
+
 There are two ways to fix this:
 - Grant the app registration `Sites.FullControl.All` and re-run the crawl, or
 - Set `permission_failure_policy=index_without_acl` on the affected DataStore(s) instead, to
@@ -477,9 +491,20 @@ documents indexed by an older version keep their old ACL until they are re-crawl
   match no Fess role and made the ACL inert - it neither granted nor denied access on its own
   strength. Page ACLs now carry the site's permissions in the same encoded role format as every
   other DataStore, so this is the first release where they have any effect.
+- OneNote site and group notebooks (`site_note_crawler` and `group_note_crawler`, both enabled
+  by default) were not indexed by any earlier release at all. A client-side bug sent every
+  notebook, section, page, and page-content request for them to the wrong Graph path; Graph
+  returned `404` for all of it, and that was logged only at `debug` level, so the crawl reported
+  success while indexing zero notebooks. This is not an ACL correction like the ones above - it
+  is the first time these notebooks are indexed at all. Site notebooks also now carry the site's
+  ACL instead of an empty one (see above), so `permission_failure_policy` governs them for the
+  first time too. A `404` that persists after re-crawling is now logged at `WARN` and means the
+  owner genuinely has no notebooks, not that the crawler is asking the wrong Graph path.
 
 Re-crawl the OneDrive, SharePoint document library, SharePoint list, and SharePoint page
-crawlers after upgrading to pick up the corrected ACLs.
+crawlers after upgrading to pick up the corrected ACLs, and re-crawl OneNoteDataStore (with
+`site_note_crawler` and/or `group_note_crawler` enabled) to index the site and group notebooks
+for the first time.
 
 ### Teams-Specific Parameters
 
@@ -578,7 +603,9 @@ The OneNoteDataStore provides comprehensive OneNote notebook crawling with the f
 **Core Functionality:**
 - **Multi-Source Notebook Crawling**: Processes notebooks from three distinct sources in a systematic order
 - **Aggregated Content Extraction**: Consolidates all sections and pages within each notebook into searchable content
-- **Permission Mapping**: Extracts notebook access permissions and maps them to Fess role-based access control
+- **Permission Mapping**: Site notebooks inherit the site's ACL, resolved via the same Graph
+  permissions call SharePointListDataStore and SharePointPageDataStore use; user and group
+  notebooks get a role synthesized from the owner's ID instead
 
 **Crawling Modes (Processing Order):**
 1. **Site Notebooks**: Crawls notebooks at the root SharePoint site level (`/sites/root/onenote/notebooks`)
@@ -607,6 +634,12 @@ The OneNoteDataStore provides comprehensive OneNote notebook crawling with the f
 - **Graceful Degradation**: Handles invalid parameter values by defaulting to safe configurations
 - **Thread Pool Management**: Proper executor service lifecycle management with shutdown handling
 - **Comprehensive Logging**: Debug-level logging for monitoring crawling progress and troubleshooting
+- **404 Visibility**: A `404` when listing a notebook owner's notebooks is logged at `WARN`, not
+  `debug` - it usually means that owner has no notebooks, but the same response is also what a
+  request sent to the wrong Graph path would return, so it is worth seeing
+- **Site Permission Failures**: A failure to resolve the site's ACL for site notebooks (governed
+  by `permission_failure_policy`) only skips the site notebooks; user and group notebook crawling
+  continues regardless
 
 **Content Metadata Fields:**
 The implementation extracts and indexes the following notebook metadata:
