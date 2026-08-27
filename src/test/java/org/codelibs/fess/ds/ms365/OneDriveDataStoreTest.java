@@ -28,6 +28,7 @@ import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.util.ComponentUtil;
 
+import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.Identity;
 import com.microsoft.graph.models.ItemReference;
@@ -218,6 +219,34 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertEquals("text/plain", mimeTypes[0]);
         assertEquals("application/pdf", mimeTypes[1]);
         assertEquals("image/jpeg", mimeTypes[2]);
+    }
+
+    @Test
+    public void test_isTargetDrive_skipsSystemLibrariesByDefault() {
+        // isSystemLibrary and isIgnoreSystemLibraries existed but were only ever evaluated
+        // inside debug log statements, so system libraries were crawled regardless.
+        final OneDriveDataStore dataStore = new OneDriveDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+
+        assertFalse("a style library must be skipped by default",
+                dataStore.isTargetDrive(paramMap, driveWithUrl("https://contoso.sharepoint.com/sites/test/Style%20Library/")));
+        assertTrue("an ordinary document library must be crawled",
+                dataStore.isTargetDrive(paramMap, driveWithUrl("https://contoso.sharepoint.com/sites/test/Shared%20Documents")));
+    }
+
+    @Test
+    public void test_isTargetDrive_ignoreSystemLibrariesFalseKeepsThem() {
+        final OneDriveDataStore dataStore = new OneDriveDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("ignore_system_libraries", "false");
+
+        assertTrue(dataStore.isTargetDrive(paramMap, driveWithUrl("https://contoso.sharepoint.com/sites/test/Style%20Library/")));
+    }
+
+    private static Drive driveWithUrl(final String webUrl) {
+        final Drive drive = new Drive();
+        drive.setWebUrl(webUrl);
+        return drive;
     }
 
     @Test

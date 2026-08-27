@@ -434,6 +434,13 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                             logger.debug("Processing drive in site {} - Name: {}, ID: {}, DriveType: {}, WebUrl: {}", site.getName(),
                                     drive.getName(), drive.getId(), drive.getDriveType(), drive.getWebUrl());
                         }
+                        if (!isTargetDrive(paramMap, drive)) {
+                            if (logger.isDebugEnabled()) {
+                                logger.debug("Skipping system library drive in site {} - Name: {}, WebUrl: {}", site.getName(),
+                                        drive.getName(), drive.getWebUrl());
+                            }
+                            return;
+                        }
                         getDriveItemsInDrive(client, drive.getId(), item -> {
                             if (logger.isDebugEnabled()) {
                                 logger.debug("Processing drive item in drive {} - Name: {}, ID: {}, WebUrl: {}", drive.getName(),
@@ -453,6 +460,17 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 }
             });
         }
+    }
+
+    /**
+     * Decides whether a site's drive should be crawled.
+     *
+     * @param paramMap the data store parameters
+     * @param drive the drive to evaluate
+     * @return true if the drive should be crawled
+     */
+    protected boolean isTargetDrive(final DataStoreParams paramMap, final Drive drive) {
+        return !isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive);
     }
 
     /**
