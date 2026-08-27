@@ -647,6 +647,57 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         */
     }
 
+    @Test
+    public void test_isTargetListType_acceptsNumericTemplateIds() {
+        // The README tells users to write list_template_filter=100,101. Graph returns the
+        // template as a name, so those settings used to match nothing and the crawl produced
+        // no items at all.
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "100,101");
+
+        assertTrue("100 must select genericList", dataStore.isTargetListType(paramMap, listWithTemplate("genericList")));
+        assertTrue("101 must select documentLibrary", dataStore.isTargetListType(paramMap, listWithTemplate("documentLibrary")));
+        assertFalse("a template outside the filter must be rejected", dataStore.isTargetListType(paramMap, listWithTemplate("survey")));
+    }
+
+    @Test
+    public void test_isTargetListType_stillAcceptsTemplateNames() {
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "genericList,documentLibrary");
+
+        assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("genericList")));
+        assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("documentLibrary")));
+        assertFalse(dataStore.isTargetListType(paramMap, listWithTemplate("survey")));
+    }
+
+    @Test
+    public void test_isTargetListType_mixedNumericAndNameIsAccepted() {
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "100,documentLibrary");
+
+        assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("genericList")));
+        assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("documentLibrary")));
+    }
+
+    @Test
+    public void test_isTargetListType_blankFilterAcceptsEverything() {
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+
+        assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("survey")));
+    }
+
+    private static com.microsoft.graph.models.List listWithTemplate(final String template) {
+        final com.microsoft.graph.models.ListInfo info = new com.microsoft.graph.models.ListInfo();
+        info.setTemplate(template);
+        final com.microsoft.graph.models.List list = new com.microsoft.graph.models.List();
+        list.setList(info);
+        return list;
+    }
+
     private static class TestCallback implements IndexUpdateCallback {
         private int count = 0;
         private Map<String, Object> lastDataMap;

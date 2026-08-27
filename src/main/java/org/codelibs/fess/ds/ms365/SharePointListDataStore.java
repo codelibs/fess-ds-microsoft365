@@ -693,7 +693,13 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             final String template = list.getList().getTemplate();
             final String[] templates = templateFilter.split(",");
             for (final String t : templates) {
-                if (template.equals(t.trim())) {
+                final String candidate = t.trim();
+                final String mapped = Microsoft365Constants.templateNameForId(candidate);
+                if (mapped == null && candidate.chars().allMatch(Character::isDigit)) {
+                    logger.warn("Unknown list template ID '{}' in {}; use the Graph template name instead.", candidate,
+                            LIST_TEMPLATE_FILTER);
+                }
+                if (template.equals(mapped != null ? mapped : candidate)) {
                     return true;
                 }
             }
