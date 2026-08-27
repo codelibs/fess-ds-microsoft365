@@ -145,6 +145,11 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         final Map<String, Object> configMap = new LinkedHashMap<>();
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
 
+        // Validate list_template_filter exactly once per crawl. isTargetListType is evaluated
+        // once per list, and (via isProcessableListItemType, see c01b81f) once per list item, so
+        // warning from inside it would repeat once per list item processed.
+        validateListTemplateFilter(paramMap);
+
         if (logger.isDebugEnabled()) {
             logger.debug(
                     "SharePoint lists crawling started - Configuration: SiteID={}, ListID={}, IgnoreError={}, IgnoreSystemLists={}, Threads={}",
@@ -705,11 +710,12 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             final String[] templates = templateFilter.split(",");
             for (final String t : templates) {
                 final String candidate = t.trim();
-                final String mapped = Microsoft365Constants.templateNameForId(candidate);
-                if (mapped == null && candidate.chars().allMatch(Character::isDigit)) {
-                    logger.warn("Unknown list template ID '{}' in {}; use the Graph template name instead.", candidate,
-                            LIST_TEMPLATE_FILTER);
+                if (candidate.isEmpty()) {
+                    // e.g. "100,,101" - nothing to look up, and nothing a list template could
+                    // ever equal.
+                    continue;
                 }
+                final String mapped = Microsoft365Constants.templateNameForId(candidate);
                 if (listTemplate.equals(mapped != null ? mapped : candidate)) {
                     return true;
                 }
@@ -717,6 +723,37 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             return false;
         }
         return true;
+    }
+
+    /**
+     * Validates {@link #LIST_TEMPLATE_FILTER} once per crawl and warns about any token that
+     * looks like a numeric template ID but has no documented mapping.
+     *
+     * <p>{@link #isTargetListType(DataStoreParams, String)} is evaluated once per list while
+     * enumerating a site's lists, and (via {@link #isProcessableListItemType}, see c01b81f) once
+     * per list item while processing a list. Warning from inside that method would therefore
+     * repeat once per list, or once per list item processed, for the same misconfigured filter.
+     * This method performs the same lookup exactly once, when the crawl starts, instead.</p>
+     *
+     * @param paramMap the data store parameters
+     */
+    protected void validateListTemplateFilter(final DataStoreParams paramMap) {
+        final String templateFilter = paramMap.getAsString(LIST_TEMPLATE_FILTER, null);
+        if (StringUtil.isBlank(templateFilter)) {
+            return;
+        }
+
+        for (final String t : templateFilter.split(",")) {
+            final String candidate = t.trim();
+            if (candidate.isEmpty()) {
+                // A blank entry (e.g. "100,,101") is not an unknown numeric ID - it is nothing
+                // at all - so it must not be reported as one.
+                continue;
+            }
+            if (Microsoft365Constants.templateNameForId(candidate) == null && candidate.chars().allMatch(Character::isDigit)) {
+                logger.warn("Unknown list template ID '{}' in {}; use the Graph template name instead.", candidate, LIST_TEMPLATE_FILTER);
+            }
+        }
     }
 
     /**

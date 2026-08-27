@@ -274,7 +274,8 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                     }
                 });
             } else if (logger.isDebugEnabled()) {
-                logger.debug("Skipping drive: {} - Type: {}, System: {}", drive.getName(), drive.getDriveType(), isSystemLibrary(drive));
+                logger.debug("Skipping drive: {} - Type: {}, System: {}, Target: {}", drive.getName(), drive.getDriveType(),
+                        isSystemLibrary(drive), isTargetLibrary(urlFilter, site, drive));
             }
         });
     }

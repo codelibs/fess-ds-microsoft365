@@ -546,12 +546,24 @@ the first place, not just their ACLs, so a re-crawl is needed here too:
   items. Both are fixed now: numeric IDs are accepted, and the filter governs item processing too.
   Re-crawl any configuration that sets `list_template_filter` to anything other than the default to
   pick up items that were previously discarded either way. The default (filter unset) is
-  unchanged - generic lists only.
-- **`ignore_system_libraries`** (SharePointDocLibDataStore, and OneDriveDataStore when it crawls
-  all SharePoint sites' document libraries) existed but was only ever passed as an argument to a
-  `debug` log statement, so the default `true` changed nothing: `_catalogs`, `Forms`, Style
-  Library, and `FormServerTemplates` were indexed like any other library. They are actually
-  excluded now, which is still the default. Re-crawl to remove them from the index, or set
+  unchanged - generic lists only. This can also go the other way when `list_id` is set to crawl a
+  single list directly: that path never consults `list_template_filter` to decide *whether* to
+  crawl the list (only `list_id` does), but it now goes through the same, newly-enforced
+  item-level filter as every other list. A `list_id` whose list's actual template does not match
+  `list_template_filter` used to index all of that list's items regardless of the filter, and now
+  indexes **zero**. If you started using `list_id` as a workaround for `list_template_filter`
+  matching nothing in "all lists" mode, double-check that the filter value you left in place still
+  matches the template of the list `list_id` points at.
+- **`ignore_system_libraries`** was already enforced in SharePointDocLibDataStore before this
+  release - nothing changes there, and no re-crawl is needed on its account. The bug was isolated
+  to OneDriveDataStore: when it crawls all SharePoint sites' document libraries (Crawling Mode 1,
+  which runs whenever `shared_documents_drive_crawler=true`, the default), the same check existed
+  but was only ever passed as an argument to a `debug` log statement, so the default `true` changed
+  nothing there - `_catalogs`, `Forms`, Style Library, and `FormServerTemplates` were crawled like
+  any other library. It is actually enforced in OneDriveDataStore's Mode 1 now too, still the
+  default. Because Mode 1 indexes the files inside those libraries, not just library metadata the
+  way SharePointDocLibDataStore does, the drop in indexed items after a re-crawl can be far larger
+  here. Re-crawl OneDriveDataStore to remove them from the index, or set
   `ignore_system_libraries=false` first if you want to keep indexing them.
 - **`include_pattern` / `exclude_pattern`** (SharePointDocLibDataStore) were declared as constants
   but never read anywhere, so configuring either one had no effect at all. They now filter document
@@ -732,7 +744,7 @@ The implementation extracts and indexes the following notebook metadata:
 | `shared_documents_drive_crawler` | Enable shared documents crawling | `true` | Crawl default user's OneDrive |
 | `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
-| `ignore_system_libraries` | Skip system libraries (`_catalogs`, `Forms`, Style Library, `FormServerTemplates`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives |
+| `ignore_system_libraries` | Skip system libraries (`_catalogs`, `Forms`, Style Library, `FormServerTemplates`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the drive's URL, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below - so a site whose path merely contains a `/Forms/` segment (e.g. a site collection named "Forms") is misdetected as a system library and has all of its files skipped by default, not just an actual Forms system library |
 
 #### OneDrive Implementation Details
 
@@ -809,11 +821,13 @@ The implementation generates user-friendly URLs based on crawling context:
 | `default_permissions` | Default role assignments | - | Additional permissions for all libraries |
 
 > **Behavior changes in this release:**
-> - `ignore_system_libraries` (default `true`) previously had no effect: the check existed but was
->   only ever passed as an argument to a `debug` log statement. It is enforced now, so a default
->   configuration will index fewer document libraries than before - see
+> - `ignore_system_libraries` (default `true`) already worked correctly in this DataStore before
+>   this release: the check was a real conditional here, not just logged, so nothing changes for
+>   SharePointDocLibDataStore and no re-crawl is needed on its account. The bug this release fixes
+>   was isolated to OneDriveDataStore, where the same check was only ever passed as an argument to
+>   a `debug` log statement - see
 >   [Re-crawling after upgrading to the crawl filter fixes](#re-crawling-after-upgrading-to-the-crawl-filter-fixes)
->   above.
+>   above for what changes there.
 > - `include_pattern` / `exclude_pattern` were declared but never referenced anywhere in this
 >   DataStore, so configuring them previously did nothing. They are wired to a Fess `UrlFilter` now,
 >   matched against the library's canonical URL (`doclib.url`, generated by
