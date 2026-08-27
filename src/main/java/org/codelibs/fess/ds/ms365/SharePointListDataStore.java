@@ -345,10 +345,10 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         }
         listTemplate = list.getList().getTemplate();
 
-        if (!Microsoft365Constants.GENERIC_LIST.equals(listTemplate)) {
+        if (!isProcessableListItemType(paramMap, listTemplate)) {
             if (logger.isDebugEnabled()) {
-                logger.debug("Skipping non-generic list item - List: {} (ID: {}, Template: {}), Item ID: {}", list.getDisplayName(),
-                        list.getId(), listTemplate, item.getId());
+                logger.debug("Skipping list item whose template does not match {} - List: {} (ID: {}, Template: {}), Item ID: {}",
+                        LIST_TEMPLATE_FILTER, list.getDisplayName(), list.getId(), listTemplate, item.getId());
 
             }
             return;
@@ -684,13 +684,24 @@ public class SharePointListDataStore extends Microsoft365DataStore {
      * @return true if the list matches the template filter, false otherwise
      */
     protected boolean isTargetListType(final DataStoreParams paramMap, final com.microsoft.graph.models.List list) {
+        final String listTemplate = list.getList() != null ? list.getList().getTemplate() : null;
+        return isTargetListType(paramMap, listTemplate);
+    }
+
+    /**
+     * Checks if the given list template name matches the target template type filter.
+     *
+     * @param paramMap the data store parameters
+     * @param listTemplate the Graph template name of the list, or {@code null} if unknown
+     * @return true if the template matches the template filter, false otherwise
+     */
+    protected boolean isTargetListType(final DataStoreParams paramMap, final String listTemplate) {
         final String templateFilter = paramMap.getAsString(LIST_TEMPLATE_FILTER, null);
         if (StringUtil.isBlank(templateFilter)) {
             return true;
         }
 
-        if (list.getList() != null && list.getList().getTemplate() != null) {
-            final String template = list.getList().getTemplate();
+        if (listTemplate != null) {
             final String[] templates = templateFilter.split(",");
             for (final String t : templates) {
                 final String candidate = t.trim();
@@ -699,13 +710,32 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                     logger.warn("Unknown list template ID '{}' in {}; use the Graph template name instead.", candidate,
                             LIST_TEMPLATE_FILTER);
                 }
-                if (template.equals(mapped != null ? mapped : candidate)) {
+                if (listTemplate.equals(mapped != null ? mapped : candidate)) {
                     return true;
                 }
             }
             return false;
         }
         return true;
+    }
+
+    /**
+     * Decides whether items of the given list template should be processed.
+     *
+     * <p>Without an explicit {@code list_template_filter} this keeps the historical
+     * behaviour of handling generic lists only. Setting the filter used to have no effect
+     * here: items of any other template were dropped further down regardless of it.</p>
+     *
+     * @param paramMap the data store parameters
+     * @param listTemplate the Graph template name of the list owning the item
+     * @return true if items of this template should be processed
+     */
+    protected boolean isProcessableListItemType(final DataStoreParams paramMap, final String listTemplate) {
+        final String templateFilter = paramMap.getAsString(LIST_TEMPLATE_FILTER, null);
+        if (StringUtil.isBlank(templateFilter)) {
+            return Microsoft365Constants.GENERIC_LIST.equals(listTemplate);
+        }
+        return isTargetListType(paramMap, listTemplate);
     }
 
     /**

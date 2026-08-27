@@ -690,6 +690,28 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("survey")));
     }
 
+    @Test
+    public void test_isProcessableListItemType_defaultsToGenericListOnly() {
+        // Unchanged default: without an explicit filter, only generic lists are processed.
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+
+        assertTrue(dataStore.isProcessableListItemType(paramMap, "genericList"));
+        assertFalse(dataStore.isProcessableListItemType(paramMap, "documentLibrary"));
+    }
+
+    @Test
+    public void test_isProcessableListItemType_honoursExplicitFilter() {
+        // Setting the filter used to be pointless: processListItem dropped anything that was
+        // not a generic list regardless.
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "101");
+
+        assertTrue(dataStore.isProcessableListItemType(paramMap, "documentLibrary"));
+        assertFalse(dataStore.isProcessableListItemType(paramMap, "genericList"));
+    }
+
     private static com.microsoft.graph.models.List listWithTemplate(final String template) {
         final com.microsoft.graph.models.ListInfo info = new com.microsoft.graph.models.ListInfo();
         info.setTemplate(template);
