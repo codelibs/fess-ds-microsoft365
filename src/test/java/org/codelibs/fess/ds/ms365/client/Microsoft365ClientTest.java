@@ -150,6 +150,25 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         }, chatId);
     }
 
+    @Test
+    public void test_getCacheSize_malformedValueFallsBackToDefault() {
+        final DataStoreParams params = new DataStoreParams();
+        params.put("cache_size", "abc");
+        assertEquals(Microsoft365Client.DEFAULT_CACHE_SIZE, Microsoft365Client.getCacheSize(params));
+    }
+
+    @Test
+    public void test_getCacheSize_validValueIsUsed() {
+        final DataStoreParams params = new DataStoreParams();
+        params.put("cache_size", "42");
+        assertEquals(42, Microsoft365Client.getCacheSize(params));
+    }
+
+    @Test
+    public void test_getCacheSize_absentValueFallsBackToDefault() {
+        assertEquals(Microsoft365Client.DEFAULT_CACHE_SIZE, Microsoft365Client.getCacheSize(new DataStoreParams()));
+    }
+
     /**
      * Test that DEFAULT_CACHE_SIZE is an int constant and has the correct value.
      */

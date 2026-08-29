@@ -241,59 +241,69 @@ public class Microsoft365Client implements Closeable {
             throw new DataStoreException("Failed to create a client.", e);
         }
 
-        userTypeCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE))))
-                .build(new CacheLoader<String, UserType>() {
-                    @Override
-                    public UserType load(final String key) {
-                        try {
-                            getUser(key, Collections.emptyList());
-                            return UserType.USER;
-                        } catch (final ApiException e) {
-                            if (e.getResponseStatusCode() == 404) {
-                                return UserType.GROUP;
-                            }
-                            logger.warn("Failed to detect an user type.", e);
-                        } catch (final Exception e) {
-                            logger.warn("Failed to get an user.", e);
-                        }
-                        return UserType.UNKNOWN;
+        userTypeCache = CacheBuilder.newBuilder().maximumSize(getCacheSize(params)).build(new CacheLoader<String, UserType>() {
+            @Override
+            public UserType load(final String key) {
+                try {
+                    getUser(key, Collections.emptyList());
+                    return UserType.USER;
+                } catch (final ApiException e) {
+                    if (e.getResponseStatusCode() == 404) {
+                        return UserType.GROUP;
+                    }
+                    logger.warn("Failed to detect an user type.", e);
+                } catch (final Exception e) {
+                    logger.warn("Failed to get an user.", e);
+                }
+                return UserType.UNKNOWN;
+            }
+        });
+
+        groupIdCache = CacheBuilder.newBuilder().maximumSize(getCacheSize(params)).build(new CacheLoader<String, String[]>() {
+            @Override
+            public String[] load(final String email) {
+                final List<String> idList = new ArrayList<>();
+                getGroups(Collections.emptyList(), g -> {
+                    if (email.equals(g.getMail())) {
+                        idList.add(g.getId());
                     }
                 });
+                return idList.toArray(new String[idList.size()]);
+            }
+        });
 
-        groupIdCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE))))
-                .build(new CacheLoader<String, String[]>() {
-                    @Override
-                    public String[] load(final String email) {
-                        final List<String> idList = new ArrayList<>();
-                        getGroups(Collections.emptyList(), g -> {
-                            if (email.equals(g.getMail())) {
-                                idList.add(g.getId());
-                            }
-                        });
-                        return idList.toArray(new String[idList.size()]);
-                    }
-                });
+        upnCache = CacheBuilder.newBuilder().maximumSize(getCacheSize(params)).build(new CacheLoader<String, Optional<String>>() {
+            @Override
+            public Optional<String> load(final String objectId) {
+                return Optional.ofNullable(doResolveUserPrincipalName(objectId));
+            }
+        });
 
-        upnCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE))))
-                .build(new CacheLoader<String, Optional<String>>() {
-                    @Override
-                    public Optional<String> load(final String objectId) {
-                        return Optional.ofNullable(doResolveUserPrincipalName(objectId));
-                    }
-                });
+        groupNameCache = CacheBuilder.newBuilder().maximumSize(getCacheSize(params)).build(new CacheLoader<String, Optional<String>>() {
+            @Override
+            public Optional<String> load(final String objectId) {
+                return Optional.ofNullable(doResolveGroupName(objectId));
+            }
+        });
 
-        groupNameCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE))))
-                .build(new CacheLoader<String, Optional<String>>() {
-                    @Override
-                    public Optional<String> load(final String objectId) {
-                        return Optional.ofNullable(doResolveGroupName(objectId));
-                    }
-                });
+    }
 
+    /**
+     * Returns the configured cache size, falling back to {@link #DEFAULT_CACHE_SIZE} when the
+     * value is absent or not a number. A malformed value must not prevent the client from being
+     * constructed: the caches are an optimisation, not a correctness requirement.
+     *
+     * @param params The data store parameters.
+     * @return the cache size to use.
+     */
+    protected static int getCacheSize(final DataStoreParams params) {
+        final String value = params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE));
+        try {
+            return Integer.parseInt(value);
+        } catch (final NumberFormatException e) {
+            logger.warn("Failed to parse {}={}. Using {}.", CACHE_SIZE, value, DEFAULT_CACHE_SIZE, e);
+            return DEFAULT_CACHE_SIZE;
+        }
     }
 
     @Override
