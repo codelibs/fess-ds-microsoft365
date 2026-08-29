@@ -21,11 +21,14 @@ import org.junit.jupiter.api.TestInfo;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.PermissionHelper;
+import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.util.ComponentUtil;
 
 public class TeamsDataStoreTest extends UnitDsTestCase {
@@ -612,5 +615,68 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         // HTML entities might be processed depending on HTMLStripCharFilter implementation
         final String result = dataStore.stripHtmlTags("&lt;test&gt;");
         assertNotNull(result);
+    }
+
+    // Test buildMessageRoles method
+
+    @Test
+    public void test_buildMessageRoles_doesNotModifyTheCallersList() {
+        registerPermissionHelper();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin");
+
+        final List<String> channelRoles = new java.util.ArrayList<>(List.of("1alice"));
+
+        final List<String> first = dataStore.buildMessageRoles(paramMap, channelRoles);
+        final List<String> second = dataStore.buildMessageRoles(paramMap, channelRoles);
+
+        assertEquals("the caller's list must be untouched", 1, channelRoles.size());
+        assertEquals(first, second);
+        assertEquals(2, first.size());
+    }
+
+    @Test
+    public void test_buildMessageRoles_appendsDefaultPermissions() {
+        registerPermissionHelper();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin,{group}everyone");
+
+        final List<String> roles = dataStore.buildMessageRoles(paramMap, List.of("1alice"));
+
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        assertEquals(List.of("1alice", permissionHelper.encode("{role}admin"), permissionHelper.encode("{group}everyone")), roles);
+    }
+
+    @Test
+    public void test_buildMessageRoles_deduplicates() {
+        registerPermissionHelper();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin");
+
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        final List<String> roles = dataStore.buildMessageRoles(paramMap, List.of(permissionHelper.encode("{role}admin")));
+
+        assertEquals(1, roles.size());
+    }
+
+    /**
+     * permissionHelper is not wired into test_app.xml, and it in turn needs systemHelper (also
+     * not wired) via its {@code @Resource} field, which plain {@link ComponentUtil#register} does
+     * not auto-inject -- the same pattern {@code OneNoteDataStoreTest} and
+     * {@code Microsoft365DataStorePermissionTest} use. {@link TestablePermissionHelper} exposes a
+     * same-package-crossing setter so the field can be wired by hand.
+     */
+    private static void registerPermissionHelper() {
+        final SystemHelper systemHelper = new SystemHelper();
+        ComponentUtil.register(systemHelper, "systemHelper");
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(systemHelper);
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+    }
+
+    private static final class TestablePermissionHelper extends PermissionHelper {
+        void useSystemHelper(final SystemHelper systemHelper) {
+            this.systemHelper = systemHelper;
+        }
     }
 }

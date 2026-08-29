@@ -841,10 +841,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
             resultMap.put(MESSAGE, messageMap);
             resultAppender.accept(resultMap);
 
-            final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
-            StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(permissions::add));
-            messageMap.put(MESSAGE_ROLES, permissions.stream().distinct().collect(Collectors.toList()));
+            messageMap.put(MESSAGE_ROLES, buildMessageRoles(paramMap, permissions));
 
             crawlerStatsHelper.record(statsKey, StatsAction.PREPARED);
 
@@ -910,6 +907,26 @@ public class TeamsDataStore extends Microsoft365DataStore {
         }
 
         return messageMap;
+    }
+
+    /**
+     * Builds the role list for one indexed message: the roles its container contributed, plus the
+     * configured {@code default_permissions}, de-duplicated.
+     *
+     * <p>The returned list is new. The caller's list is never modified -- a channel's membership is
+     * resolved once and shared across every message in that channel, so appending to it here would
+     * accumulate one copy of {@code default_permissions} per message.
+     *
+     * @param paramMap The data store parameters.
+     * @param permissions The roles contributed by the message's channel or chat.
+     * @return a new list of roles for this document.
+     */
+    protected List<String> buildMessageRoles(final DataStoreParams paramMap, final List<String> permissions) {
+        final List<String> roles = new ArrayList<>(permissions);
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
+                .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
+        return roles.stream().distinct().collect(Collectors.toList());
     }
 
     /**
