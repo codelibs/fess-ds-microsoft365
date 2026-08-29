@@ -489,6 +489,37 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         }
     }
 
+    /**
+     * Ported from the deleted {@code test_getSitePermissions_nextLinkFailure_...} test (Task 4
+     * removed {@code getSitePermissions} itself, but this pagination-failure contract is shared
+     * code alive at {@code getDriveItemPermissions}, on the drive-item ACL path Task 4 explicitly
+     * must not weaken). A partial first page must not be treated as the complete ACL: a failure
+     * fetching page 2 must propagate under the default policy rather than let page 1's results
+     * stand in for it, since roles named only on the un-fetched page 2 would otherwise be
+     * silently dropped from the document's permissions.
+     */
+    @Test
+    public void test_getDriveItemPermissions_nextLinkFailure_defaultPolicy_propagatesPermissionUnavailableException() {
+        final String driveId = "drive-1";
+        final DriveItem item = new DriveItem();
+        item.setId("item-1");
+        item.setWebUrl("https://example.com/item-1");
+
+        final PermissionCollectionResponse firstPage = new PermissionCollectionResponse();
+        firstPage.setValue(List.of(userPermission("oid-1")));
+        firstPage.setOdataNextLink("https://graph.microsoft.com/v1.0/next-page");
+        when(client.getDrivePermissions(driveId, "item-1")).thenReturn(firstPage);
+        when(client.getDrivePermissionsByNextLink(org.mockito.ArgumentMatchers.eq(driveId), org.mockito.ArgumentMatchers.eq("item-1"),
+                org.mockito.ArgumentMatchers.anyString())).thenThrow(new RuntimeException("429"));
+
+        try {
+            pageDataStore.getDriveItemPermissions(client, driveId, item, new DataStoreParams());
+            fail("a failure fetching page 2 must not let page 1's partial results stand in as the complete ACL");
+        } catch (final PermissionUnavailableException expected) {
+            // expected: the roles named only on page 2 (never fetched) must not be silently dropped
+        }
+    }
+
     @Test
     public void test_getDriveItemPermissions_indexWithoutAcl_returnsWithoutThrowing() {
         final String driveId = "drive-1";

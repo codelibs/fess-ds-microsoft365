@@ -70,8 +70,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     protected static final String LIST_TEMPLATE_FILTER = "list_template_filter";
     /** The parameter name for the number of threads. */
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
-    /** The parameter name for default permissions. */
-    protected static final String DEFAULT_PERMISSIONS = "default_permissions";
     /** The parameter name for ignoring errors. */
     protected static final String IGNORE_ERROR = "ignore_error";
     /** The parameter name for the include pattern. */

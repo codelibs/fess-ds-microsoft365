@@ -99,8 +99,6 @@ public class TeamsDataStore extends Microsoft365DataStore {
     private static final String CHAT_ID = "chat_id";
     /** Parameter name for the number of threads. */
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
-    /** Parameter name for default permissions. */
-    protected static final String DEFAULT_PERMISSIONS = "default_permissions";
     /** Parameter name for ignoring replies. */
     private static final String IGNORE_REPLIES = "ignore_replies";
     /** Parameter name for appending attachments. */

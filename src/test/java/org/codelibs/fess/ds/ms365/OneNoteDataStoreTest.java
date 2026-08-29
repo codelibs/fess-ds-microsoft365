@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,9 +49,11 @@ import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.AssignedLicense;
+import com.microsoft.graph.models.ExternalLink;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.Notebook;
 import com.microsoft.graph.models.NotebookCollectionResponse;
+import com.microsoft.graph.models.NotebookLinks;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.models.User;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
@@ -393,6 +396,11 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
             for (int i = 0; i < server.requestCount(); i++) {
                 paths.add(server.takePath());
             }
+            // Closes a vacuous-pass gap: client.getSite("root") alone makes zero requests
+            // impossible, but without this a regression that also skipped the notebooks-list
+            // request (leaving only the root-site request, still free of "/permissions") would
+            // still pass the assertion below.
+            assertEquals("expected exactly the root-site and notebooks-list requests, got: " + paths, 2, paths.size());
             assertFalse("no request may end in /permissions, but got: " + paths,
                     paths.stream().anyMatch(path -> path.contains("/permissions")));
         }
@@ -600,6 +608,229 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         assertEquals("processNotebook must run exactly once for the one group notebook returned", 1, capturedScopes.size());
         assertEquals(NotebookScope.GROUP, capturedScopes.get(0));
+    }
+
+    /**
+     * {@code test_defaultPermissions_*} exercises the helper in isolation, and
+     * {@link #test_storeUsersNotes_requestsUserScope} above captures only the {@code scope}
+     * argument -- neither would catch {@code default_permissions} being dropped from
+     * {@link OneNoteDataStore#storeUsersNotes} itself. Pins that a user notebook's roles include
+     * both the user's own role and the configured {@code default_permissions} value.
+     */
+    @Test
+    public void test_storeUsersNotes_appliesDefaultPermissionsToNotebookRoles() throws Exception {
+        registerPermissionHelper();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        final User user = new User();
+        user.setId("user-1");
+        user.setDisplayName("User One");
+        final AssignedLicense license = new AssignedLicense();
+        license.setSkuId(UUID.randomUUID());
+        user.setAssignedLicenses(List.of(license));
+
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<User> consumer = invocation.getArgument(1);
+            consumer.accept(user);
+            return null;
+        }).when(client).getUsers(any(), any());
+
+        final Notebook notebook = new Notebook();
+        notebook.setId("notebook-1");
+        notebook.setDisplayName("User Notebook");
+        final NotebookCollectionResponse notebookResponse = new NotebookCollectionResponse();
+        notebookResponse.setValue(List.of(notebook));
+        when(client.getNotebookPage(NotebookScope.USER, "user-1")).thenReturn(notebookResponse);
+
+        final List<List<String>> capturedRoles = new ArrayList<>();
+        final OneNoteDataStore captureDataStore = new OneNoteDataStore() {
+            @Override
+            protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+                    final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
+                    final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
+                // Captures what storeUsersNotes actually resolved and passed down, instead of
+                // running the real indexing pipeline.
+                capturedRoles.add(roles);
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin");
+
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            captureDataStore.storeUsersNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client);
+        } finally {
+            executorService.shutdown();
+            assertTrue("processNotebook must have run before the test asserts on captured roles",
+                    executorService.awaitTermination(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals("processNotebook must run exactly once for the one user notebook returned", 1, capturedRoles.size());
+        final List<String> roles = capturedRoles.get(0);
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
+        assertTrue("expected the user's own role in the notebook's roles, got " + roles,
+                roles.contains(systemHelper.getSearchRoleByUser("user-1")));
+        assertTrue("expected the configured default_permissions role in the notebook's roles, got " + roles,
+                roles.contains(permissionHelper.encode("{role}admin")));
+    }
+
+    /**
+     * The GROUP-side counterpart of {@link #test_storeUsersNotes_appliesDefaultPermissionsToNotebookRoles}:
+     * pins that a group notebook's roles include both the group's own role and the configured
+     * {@code default_permissions} value.
+     */
+    @Test
+    public void test_storeGroupsNotes_appliesDefaultPermissionsToNotebookRoles() throws Exception {
+        registerPermissionHelper();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        final Group group = new Group();
+        group.setId("group-1");
+        group.setDisplayName("Group One");
+
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<Group> consumer = invocation.getArgument(0);
+            consumer.accept(group);
+            return null;
+        }).when(client).getMicrosoft365Groups(any());
+
+        final Notebook notebook = new Notebook();
+        notebook.setId("notebook-1");
+        notebook.setDisplayName("Group Notebook");
+        final NotebookCollectionResponse notebookResponse = new NotebookCollectionResponse();
+        notebookResponse.setValue(List.of(notebook));
+        when(client.getNotebookPage(NotebookScope.GROUP, "group-1")).thenReturn(notebookResponse);
+
+        final List<List<String>> capturedRoles = new ArrayList<>();
+        final OneNoteDataStore captureDataStore = new OneNoteDataStore() {
+            @Override
+            protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+                    final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
+                    final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
+                // Captures what storeGroupsNotes actually resolved and passed down, instead of
+                // running the real indexing pipeline.
+                capturedRoles.add(roles);
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin");
+
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            captureDataStore.storeGroupsNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client);
+        } finally {
+            executorService.shutdown();
+            assertTrue("processNotebook must have run before the test asserts on captured roles",
+                    executorService.awaitTermination(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals("processNotebook must run exactly once for the one group notebook returned", 1, capturedRoles.size());
+        final List<String> roles = capturedRoles.get(0);
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
+        assertTrue("expected the group's own role in the notebook's roles, got " + roles,
+                roles.contains(systemHelper.getSearchRoleByGroup("group-1")));
+        assertTrue("expected the configured default_permissions role in the notebook's roles, got " + roles,
+                roles.contains(permissionHelper.encode("{role}admin")));
+    }
+
+    /**
+     * Every sibling data store folds the crawl config's own Permissions field -- seeded into
+     * {@code defaultDataMap} under the role index field -- into the roles list before it reaches
+     * the script layer, and de-duplicates the result. {@link OneNoteDataStore#processNotebook}
+     * did neither, so with the documented mapping {@code role=notebook.roles} the script's
+     * {@code dataMap.put("role", roles)} would overwrite whatever the field seeded instead of
+     * adding to it. Pins that a role entry in {@code defaultDataMap} survives into
+     * {@code NOTEBOOK_ROLES} alongside the roles {@code processNotebook} was called with, and
+     * that the {@code roles} argument itself is not mutated in place (it is shared across
+     * concurrent notebook-processing tasks for the same owner in
+     * {@code storeUsersNotes}/{@code storeGroupsNotes}) -- an unmodifiable list is passed in to
+     * make an in-place mutation fail loudly rather than pass silently.
+     */
+    @Test
+    public void test_processNotebook_foldsDefaultDataMapRoleIntoNotebookRoles() throws Exception {
+        ComponentUtil.register(new SystemHelper(), "systemHelper");
+        final org.codelibs.fess.helper.CrawlerStatsHelper crawlerStatsHelper = new org.codelibs.fess.helper.CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.getNotebookContent(NotebookScope.USER, "user-1", "notebook-1")).thenReturn("content");
+
+        final Notebook notebook = new Notebook();
+        notebook.setId("notebook-1");
+        notebook.setDisplayName("Test Notebook");
+        final NotebookLinks links = new NotebookLinks();
+        final ExternalLink oneNoteWebUrl = new ExternalLink();
+        oneNoteWebUrl.setHref("https://example.com/notebook");
+        links.setOneNoteWebUrl(oneNoteWebUrl);
+        notebook.setLinks(links);
+
+        final FessConfig fessConfig = ComponentUtil.getFessConfig();
+        final Map<String, Object> defaultDataMap = new HashMap<>();
+        defaultDataMap.put(fessConfig.getIndexFieldRole(), List.of("Rconfigured-role"));
+
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put(fessConfig.getIndexFieldRole(), "notebook.roles");
+
+        // convertValue's real path goes through ComponentUtil.getScriptEngineFactory(), which
+        // this unit test has no business standing up. "notebook.roles" is the only template used
+        // here, so it is resolved with a direct nested map lookup instead; processNotebook
+        // itself, including the roles-folding logic under test, is exercised completely
+        // unmodified.
+        final OneNoteDataStore captureDataStore = new OneNoteDataStore() {
+            @Override
+            protected Object convertValue(final String scriptType, final String template, final Map<String, Object> resultMap) {
+                if ("notebook.roles".equals(template) && resultMap.get(NOTEBOOK) instanceof final Map<?, ?> notebookMap) {
+                    return notebookMap.get(NOTEBOOK_ROLES);
+                }
+                return super.convertValue(scriptType, template, resultMap);
+            }
+        };
+
+        final List<Map<String, Object>> capturedDataMaps = new ArrayList<>();
+        final IndexUpdateCallback callback = new IndexUpdateCallback() {
+            @Override
+            public void store(final DataStoreParams paramMap, final Map<String, Object> dataMap) {
+                capturedDataMaps.add(dataMap);
+            }
+
+            @Override
+            public long getDocumentSize() {
+                return capturedDataMaps.size();
+            }
+
+            @Override
+            public long getExecuteTime() {
+                return 0;
+            }
+
+            @Override
+            public void commit() {
+                // do nothing
+            }
+        };
+
+        // Passed in as an unmodifiable list: processNotebook must not mutate it in place, since
+        // storeUsersNotes/storeGroupsNotes share this same list reference across every
+        // notebook-processing task for the same owner.
+        final List<String> roles = Collections.singletonList("Rowner-role");
+
+        captureDataStore.processNotebook(new DataConfig(), callback, new DataStoreParams(), scriptMap, defaultDataMap, client,
+                NotebookScope.USER, "user-1", notebook, roles);
+
+        assertEquals("processNotebook must have called the callback exactly once", 1, capturedDataMaps.size());
+        @SuppressWarnings("unchecked")
+        final List<String> finalRoles = (List<String>) capturedDataMaps.get(0).get(fessConfig.getIndexFieldRole());
+        assertTrue("expected the notebook's own role to survive, got " + finalRoles, finalRoles.contains("Rowner-role"));
+        assertTrue("expected the defaultDataMap-seeded role to survive, got " + finalRoles, finalRoles.contains("Rconfigured-role"));
     }
 
     /**

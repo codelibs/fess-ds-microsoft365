@@ -76,8 +76,6 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     protected static final String IGNORE_SYSTEM_PAGES = "ignore_system_pages";
     /** Number of concurrent threads for processing */
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
-    /** Default permissions to assign to crawled pages */
-    protected static final String DEFAULT_PERMISSIONS = "default_permissions";
     /** Flag to continue crawling on errors */
     protected static final String IGNORE_ERROR = "ignore_error";
     /** Regular expression pattern for pages to include */
