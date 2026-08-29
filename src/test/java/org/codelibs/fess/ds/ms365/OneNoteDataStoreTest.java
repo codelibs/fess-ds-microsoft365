@@ -41,6 +41,7 @@ import org.codelibs.fess.ds.ms365.client.GraphMockServer;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.ds.ms365.client.NotebookScope;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
@@ -91,6 +92,61 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
     @Test
     public void test_getName() {
         assertEquals("OneNoteDataStore", dataStore.getName());
+    }
+
+    /**
+     * OneNoteDataStore was the only one of the six data stores that ignored
+     * {@code default_permissions} (confirmed by {@code grep -c DEFAULT_PERMISSIONS
+     * src/main/java/org/codelibs/fess/ds/ms365/*.java}). Task 4 removed site notebooks' only
+     * other role source, so this is now the mechanism that keeps a site notebook from being
+     * indexed with an empty ACL.
+     */
+    @Test
+    public void test_defaultPermissions_areAppliedToNotebookRoles() {
+        registerPermissionHelper();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin,{group}everyone");
+
+        final List<String> roles = dataStore.getDefaultPermissions(paramMap);
+
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        assertEquals(List.of(permissionHelper.encode("{role}admin"), permissionHelper.encode("{group}everyone")), roles);
+    }
+
+    @Test
+    public void test_defaultPermissions_absentYieldsNoRoles() {
+        registerPermissionHelper();
+        assertTrue(dataStore.getDefaultPermissions(new DataStoreParams()).isEmpty());
+    }
+
+    @Test
+    public void test_defaultPermissions_blankEntriesAreSkipped() {
+        registerPermissionHelper();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin, ,");
+        assertEquals(1, dataStore.getDefaultPermissions(paramMap).size());
+    }
+
+    /**
+     * permissionHelper is not wired into test_app.xml, and it in turn needs systemHelper (also
+     * not wired) via its {@code @Resource} field, which plain {@link ComponentUtil#register} does
+     * not auto-inject -- the same pattern {@code Microsoft365DataStorePermissionTest} and this
+     * class's own {@code test_storeSiteNotes_doesNotRequestSitePermissions} predecessor use.
+     * {@link TestablePermissionHelper} exposes a same-package-crossing setter so the field can be
+     * wired by hand.
+     */
+    private static void registerPermissionHelper() {
+        final SystemHelper systemHelper = new SystemHelper();
+        ComponentUtil.register(systemHelper, "systemHelper");
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(systemHelper);
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+    }
+
+    private static final class TestablePermissionHelper extends PermissionHelper {
+        void useSystemHelper(final SystemHelper systemHelper) {
+            this.systemHelper = systemHelper;
+        }
     }
 
     @Test
@@ -310,6 +366,8 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
      */
     @Test
     public void test_storeSiteNotes_doesNotRequestSitePermissions() throws Exception {
+        // storeSiteNotes now reads default_permissions (Task 5), which needs permissionHelper.
+        registerPermissionHelper();
         try (GraphMockServer server = new GraphMockServer();
                 MockableMicrosoft365Client client = new MockableMicrosoft365Client(dummyParams())) {
             server.enqueueJson("{\"id\":\"site-1\",\"displayName\":\"Root\"}"); // GET /sites/root
@@ -338,6 +396,62 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
             assertFalse("no request may end in /permissions, but got: " + paths,
                     paths.stream().anyMatch(path -> path.contains("/permissions")));
         }
+    }
+
+    /**
+     * The helper being correct (see {@code test_defaultPermissions_*} above) proves nothing if
+     * {@code storeSiteNotes} never calls it. Pins that a site notebook's roles actually include
+     * the configured {@code default_permissions} value, by overriding {@code processNotebook} to
+     * capture the roles argument {@code storeSiteNotes} resolved and passed down -- the same
+     * technique the removed {@code test_storeSiteNotes_usesSitePermissionsNotAnEmptyAcl} used for
+     * the site-permissions role source it pinned.
+     */
+    @Test
+    public void test_storeSiteNotes_appliesDefaultPermissionsToNotebookRoles() throws Exception {
+        registerPermissionHelper();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        final Site root = new Site();
+        root.setId("site-1");
+        when(client.getSite("root")).thenReturn(root);
+
+        final Notebook notebook = new Notebook();
+        notebook.setId("notebook-1");
+        notebook.setDisplayName("Site Notebook");
+        final NotebookCollectionResponse notebookResponse = new NotebookCollectionResponse();
+        notebookResponse.setValue(List.of(notebook));
+        when(client.getNotebookPage(NotebookScope.SITE, "site-1")).thenReturn(notebookResponse);
+
+        final List<List<String>> capturedRoles = new ArrayList<>();
+        final OneNoteDataStore captureDataStore = new OneNoteDataStore() {
+            @Override
+            protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+                    final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
+                    final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
+                // Captures what storeSiteNotes actually resolved and passed down, instead of
+                // running the real indexing pipeline.
+                capturedRoles.add(roles);
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin");
+
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            captureDataStore.storeSiteNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client);
+        } finally {
+            executorService.shutdown();
+            assertTrue("processNotebook must have run before the test asserts on captured roles",
+                    executorService.awaitTermination(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals("processNotebook must run exactly once for the one site notebook returned", 1, capturedRoles.size());
+        final List<String> roles = capturedRoles.get(0);
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        assertTrue("expected the configured default_permissions role in the notebook's roles, got " + roles,
+                roles.contains(permissionHelper.encode("{role}admin")));
     }
 
     /** Credentials are never used: GraphMockServer does not authenticate, and ClientSecretCredential
@@ -377,7 +491,9 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
      */
     @Test
     public void test_storeUsersNotes_requestsUserScope() throws Exception {
-        ComponentUtil.register(new SystemHelper(), "systemHelper");
+        // storeUsersNotes now reads default_permissions (Task 5) in addition to the user's own
+        // role, so permissionHelper (and the systemHelper it needs) must be registered too.
+        registerPermissionHelper();
 
         final Microsoft365Client client = mock(Microsoft365Client.class);
 
@@ -436,7 +552,9 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
      */
     @Test
     public void test_storeGroupsNotes_requestsGroupScope() throws Exception {
-        ComponentUtil.register(new SystemHelper(), "systemHelper");
+        // storeGroupsNotes now reads default_permissions (Task 5) in addition to the group's own
+        // role, so permissionHelper (and the systemHelper it needs) must be registered too.
+        registerPermissionHelper();
 
         final Microsoft365Client client = mock(Microsoft365Client.class);
 

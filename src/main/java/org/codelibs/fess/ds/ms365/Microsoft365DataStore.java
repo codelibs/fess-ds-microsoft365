@@ -30,10 +30,12 @@ import java.util.function.Consumer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.lang.StringUtil;
+import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
 import org.codelibs.fess.ds.AbstractDataStore;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -63,6 +65,8 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     protected static final String IGNORE_SYSTEM_LISTS = "ignore_system_lists";
     /** Parameter name for what to do when a document's permissions cannot be retrieved. */
     protected static final String PERMISSION_FAILURE_POLICY = "permission_failure_policy";
+    /** Parameter name for the roles to add to every document's ACL, regardless of what the source system reports. */
+    protected static final String DEFAULT_PERMISSIONS = "default_permissions";
 
     /** Skip the document and record it as a failed URL. The default. */
     protected static final String POLICY_SKIP = "skip";
@@ -247,6 +251,22 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
             logger.debug("Generated role for group {}: {}", group.getDisplayName(), role);
         }
 
+        return roles;
+    }
+
+    /**
+     * Reads {@link #DEFAULT_PERMISSIONS} and encodes each configured entry via
+     * {@link PermissionHelper#encode}, the same pattern every sibling data store applies inline
+     * when adding operator-configured roles on top of whatever the source system reports.
+     *
+     * @param paramMap the data store parameters
+     * @return the encoded default roles, or an empty list when the parameter is absent
+     */
+    protected List<String> getDefaultPermissions(final DataStoreParams paramMap) {
+        final List<String> roles = new ArrayList<>();
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
+                .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
         return roles;
     }
 

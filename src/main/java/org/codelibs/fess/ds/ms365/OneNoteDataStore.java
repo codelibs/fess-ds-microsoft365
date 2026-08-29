@@ -201,9 +201,9 @@ public class OneNoteDataStore extends Microsoft365DataStore {
 
         // Graph has no user/group role-assignment endpoint for a site that this plugin can call
         // without Sites.FullControl.All (see Microsoft365Client's removed getSitePermissions),
-        // so site notebooks carry no owner-derived roles. default_permissions (Task 5) is their
-        // only role source.
-        final List<String> roles = new ArrayList<>();
+        // so site notebooks carry no owner-derived roles. default_permissions is their only role
+        // source.
+        final List<String> roles = getDefaultPermissions(paramMap);
         getNotebooks(client, NotebookScope.SITE, root.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig,
                 callback, paramMap, scriptMap, defaultDataMap, client, NotebookScope.SITE, root.getId(), notebook, roles)));
     }
@@ -228,7 +228,11 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         }
 
         getLicensedUsers(client, user -> {
-            final List<String> roles = getUserRoles(user);
+            // A user notebook already derives roles from its owner; default_permissions adds to
+            // that list, it does not replace it. getUserRoles returns an immutable singleton
+            // list, so the combined list is built fresh here rather than mutated in place.
+            final List<String> roles = new ArrayList<>(getUserRoles(user));
+            roles.addAll(getDefaultPermissions(paramMap));
 
             if (logger.isDebugEnabled()) {
                 logger.debug("Processing notebooks for user: {} (ID: {})", user.getDisplayName(), user.getId());
@@ -268,7 +272,11 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         }
 
         getMicrosoft365Groups(client, group -> {
-            final List<String> roles = getGroupRoles(group);
+            // A group notebook already derives roles from its owner; default_permissions adds to
+            // that list, it does not replace it. getGroupRoles returns an immutable singleton
+            // list, so the combined list is built fresh here rather than mutated in place.
+            final List<String> roles = new ArrayList<>(getGroupRoles(group));
+            roles.addAll(getDefaultPermissions(paramMap));
 
             if (logger.isDebugEnabled()) {
                 logger.debug("Processing notebooks for group: {} (ID: {})", group.getDisplayName(), group.getId());
