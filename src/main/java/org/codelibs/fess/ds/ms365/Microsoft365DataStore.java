@@ -267,11 +267,11 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         final List<String> permissions = new ArrayList<>();
         try {
             PermissionCollectionResponse response = client.getDrivePermissions(driveId, item.getId());
-            final Consumer<Permission> consumer = p -> {
-                if (p.getGrantedToV2() != null) {
-                    assignPermission(client, permissions, p);
-                }
-            };
+            // No grantedToV2 pre-check: a sharing-link permission has grantedToV2 null and link
+            // set, and assignPermission handles both shapes. Gating here made the link branch
+            // unreachable from this path while SharePointDocLibDataStore reached it, so the same
+            // file got a different ACL depending on which DataStore indexed it.
+            final Consumer<Permission> consumer = p -> assignPermission(client, permissions, p);
 
             // Handle pagination with odata.nextLink
             while (response != null && response.getValue() != null) {
@@ -318,11 +318,11 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         final List<String> permissions = new ArrayList<>();
         try {
             PermissionCollectionResponse response = client.getSitePermissions(siteId);
-            final Consumer<Permission> consumer = p -> {
-                if (p.getGrantedToV2() != null) {
-                    assignPermission(client, permissions, p);
-                }
-            };
+            // No grantedToV2 pre-check: a sharing-link permission has grantedToV2 null and link
+            // set, and assignPermission handles both shapes. Gating here made the link branch
+            // unreachable from this path while SharePointDocLibDataStore reached it, so the same
+            // file got a different ACL depending on which DataStore indexed it.
+            final Consumer<Permission> consumer = p -> assignPermission(client, permissions, p);
 
             // Handle pagination with odata.nextLink
             while (response != null && response.getValue() != null) {

@@ -32,6 +32,7 @@ import com.microsoft.graph.models.Identity;
 import com.microsoft.graph.models.Permission;
 import com.microsoft.graph.models.PermissionCollectionResponse;
 import com.microsoft.graph.models.SharePointIdentitySet;
+import com.microsoft.graph.models.SharingLink;
 
 /**
  * Covers how Graph permissions become Fess search roles. A role that is not
@@ -104,6 +105,53 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         final String expected = ComponentUtil.getSystemHelper().getSearchRoleByGroup("gid-1");
         assertTrue("expected the prefix-encoded group role, got " + permissions, permissions.contains(expected));
         assertFalse("the raw display name must never become a role: " + permissions, permissions.contains("Display Name Of gid-1"));
+    }
+
+    // ===== Sharing-link permissions must reach assignPermission from every ACL path =====
+
+    @Test
+    public void test_getDriveItemPermissions_organizationLinkReachesAssignPermission() {
+        final SharingLink link = new SharingLink();
+        link.setScope("organization");
+        final Permission linkPermission = new Permission();
+        linkPermission.setLink(link);
+        // grantedToV2 is deliberately left null: this is the shape Graph returns for a
+        // sharing link, and the shape the old gate discarded.
+
+        final PermissionCollectionResponse response = new PermissionCollectionResponse();
+        response.setValue(List.of(linkPermission));
+
+        final Microsoft365Client mockClient = mock(Microsoft365Client.class);
+        when(mockClient.getDrivePermissions("drive-1", "item-1")).thenReturn(response);
+
+        final DriveItem item = new DriveItem();
+        item.setId("item-1");
+        item.setName("shared.docx");
+
+        final List<String> roles = pageDataStore.getDriveItemPermissions(mockClient, "drive-1", item, new DataStoreParams());
+
+        assertEquals(List.of(ComponentUtil.getSystemHelper().getSearchRoleByGroup("EVERYONE_IN_TENANT")), roles);
+    }
+
+    @Test
+    public void test_getSitePermissions_organizationLinkReachesAssignPermission() {
+        final SharingLink link = new SharingLink();
+        link.setScope("organization");
+        final Permission linkPermission = new Permission();
+        linkPermission.setLink(link);
+        // grantedToV2 is deliberately left null: this is the shape Graph returns for a
+        // sharing link, and the shape the old gate discarded.
+
+        final PermissionCollectionResponse response = new PermissionCollectionResponse();
+        response.setValue(List.of(linkPermission));
+
+        final String siteId = "site-1";
+        final Microsoft365Client mockClient = mock(Microsoft365Client.class);
+        when(mockClient.getSitePermissions(siteId)).thenReturn(response);
+
+        final List<String> roles = pageDataStore.getSitePermissions(mockClient, siteId, new DataStoreParams());
+
+        assertEquals(List.of(ComponentUtil.getSystemHelper().getSearchRoleByGroup("EVERYONE_IN_TENANT")), roles);
     }
 
     /**
