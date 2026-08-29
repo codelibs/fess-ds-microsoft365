@@ -374,17 +374,44 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
     }
 
     /**
-     * Constructs a {@link Microsoft365Client} with the minimum required params, backed by the
-     * given {@link GraphMockServer} with the SDK's own retry middleware disabled.
+     * The minimum required params -- tenant, client_id and client_secret -- with dummy values.
+     * No network call happens during construction, since {@code ClientSecretCredential} is lazy.
      */
-    private static Microsoft365Client newClientBackedBy(final GraphMockServer server) {
+    private static DataStoreParams minimalParams() {
         final DataStoreParams params = new DataStoreParams();
         params.put(Microsoft365Client.TENANT_PARAM, "dummy-tenant");
         params.put(Microsoft365Client.CLIENT_ID_PARAM, "dummy-client-id");
         params.put(Microsoft365Client.CLIENT_SECRET_PARAM, "dummy-client-secret");
-        final Microsoft365Client target = new Microsoft365Client(params);
+        return params;
+    }
+
+    /**
+     * Constructs a {@link Microsoft365Client} with {@link #minimalParams()}. No network call
+     * happens during construction, so this stays offline.
+     */
+    private static Microsoft365Client newMinimalClient() {
+        return new Microsoft365Client(minimalParams());
+    }
+
+    /**
+     * Constructs a {@link Microsoft365Client} with the minimum required params, backed by the
+     * given {@link GraphMockServer} with the SDK's own retry middleware disabled.
+     */
+    private static Microsoft365Client newClientBackedBy(final GraphMockServer server) {
+        final Microsoft365Client target = newMinimalClient();
         target.client = server.newGraphClientWithRetriesDisabled();
         return target;
+    }
+
+    @Test
+    public void test_close_shutsDownTheHttpStack() throws Exception {
+        final Microsoft365Client target = newMinimalClient();
+        assertNotNull("the client must own its OkHttpClient", target.httpClient);
+
+        target.close();
+
+        assertTrue("dispatcher executor should be shut down", target.httpClient.dispatcher().executorService().isShutdown());
+        assertEquals("connection pool should be evicted", 0, target.httpClient.connectionPool().connectionCount());
     }
 
     @Test

@@ -95,6 +95,7 @@ import com.microsoft.kiota.serialization.UntypedNode;
 import com.microsoft.kiota.serialization.UntypedString;
 
 import okhttp3.Authenticator;
+import okhttp3.Cache;
 import okhttp3.Credentials;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -141,6 +142,8 @@ public class Microsoft365Client implements Closeable {
 
     /** The Microsoft Graph service client. */
     protected GraphServiceClient client;
+    /** The OkHttp client backing the Graph client. Owned by this instance and released in {@link #close()}. */
+    protected OkHttpClient httpClient;
     /** The data store parameters. */
     protected DataStoreParams params;
     /** A cache for user types. */
@@ -206,14 +209,11 @@ public class Microsoft365Client implements Closeable {
             final ClientSecretCredential credential = credentialBuilder.build();
 
             // Initialize GraphServiceClient
+            final OkHttpClient.Builder okHttpBuilder = GraphClientFactory.create();
             if (!proxyHost.isEmpty() && !proxyPortStr.isEmpty()) {
                 final int proxyPort = Integer.parseInt(proxyPortStr);
                 final InetSocketAddress proxyAddress = new InetSocketAddress(proxyHost, proxyPort);
-                final Proxy proxy = new Proxy(Proxy.Type.HTTP, proxyAddress);
-
-                final OkHttpClient.Builder okHttpBuilder = GraphClientFactory.create().proxy(proxy);
-
-                // Configure proxy authentication if credentials are provided
+                okHttpBuilder.proxy(new Proxy(Proxy.Type.HTTP, proxyAddress));
                 if (!proxyUsername.isEmpty() && !proxyPassword.isEmpty()) {
                     final String proxyUser = proxyUsername;
                     final String proxyPass = proxyPassword;
@@ -225,16 +225,13 @@ public class Microsoft365Client implements Closeable {
                         }
                     });
                 }
-
-                final OkHttpClient okHttpClient = okHttpBuilder.build();
-                final String[] scopes = new String[] { "https://graph.microsoft.com/.default" };
-                final AzureIdentityAuthenticationProvider authProvider = new AzureIdentityAuthenticationProvider(credential, null, scopes);
-                client = new GraphServiceClient(authProvider, okHttpClient);
                 logger.info("Proxy configured for Graph client: {}:{}", proxyHost, proxyPort);
-            } else {
-                // No proxy - use default initialization
-                client = new GraphServiceClient(credential);
             }
+
+            httpClient = okHttpBuilder.build();
+            final String[] scopes = new String[] { "https://graph.microsoft.com/.default" };
+            final AzureIdentityAuthenticationProvider authProvider = new AzureIdentityAuthenticationProvider(credential, null, scopes);
+            client = new GraphServiceClient(authProvider, httpClient);
         } catch (final NumberFormatException e) {
             throw new DataStoreException("Invalid proxy port: " + proxyPortStr, e);
         } catch (final Exception e) {
@@ -317,6 +314,21 @@ public class Microsoft365Client implements Closeable {
         groupIdCache.invalidateAll();
         upnCache.invalidateAll();
         groupNameCache.invalidateAll();
+        if (httpClient != null) {
+            // OkHttp's documented shutdown: idle dispatcher threads and pooled keep-alive
+            // connections outlive the crawl otherwise, and a Fess instance running several
+            // Microsoft 365 crawls accumulates one stack per client.
+            httpClient.dispatcher().executorService().shutdown();
+            httpClient.connectionPool().evictAll();
+            final Cache cache = httpClient.cache();
+            if (cache != null) {
+                try {
+                    cache.close();
+                } catch (final IOException e) {
+                    logger.warn("Failed to close the HTTP cache.", e);
+                }
+            }
+        }
     }
 
     /**
