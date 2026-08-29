@@ -660,7 +660,8 @@ unlimited). `0`, or leaving one of these parameters unset, keeps that 100-second
 Setting one above `2147483` seconds - the largest whole-second value OkHttp's client builder
 accepts - logs a `WARN` and uses `2147483` instead of failing. A non-numeric value also falls back
 to the 100-second default, with a `WARN` logged. A negative value is treated the same as `0` (the
-100-second default is kept), and nothing is logged for that case.
+100-second default is kept), and now also logs a `WARN` naming the parameter and the value, so an
+`access_timeout=-1` meant as "no timeout" is not silently ignored.
 
 `max_retry_count` (default `3`, maximum `10`) and `retry_interval` (default `3` seconds, maximum
 `180` seconds) configure the SDK's retry handler; which responses get retried is not
@@ -687,10 +688,12 @@ configured one, which is why the default was changed - "no path was found", not 
 An installation that does something unusual with the underlying credential outside this plugin's
 own code could still depend on the old, unrestricted behavior.
 
-Separately, the Graph client now restricts which hosts its bearer token may be sent to - the six
-Microsoft Graph national-cloud hosts - instead of accepting any host. A Graph response whose
-`@odata.nextLink` names a host outside that list is still followed, but without the
-`Authorization` header, rather than leaking the tenant's app-only token to it.
+Separately, a deployment that configures `proxy_host`/`proxy_port` used to send the bearer token
+to any host named by a Graph response's `@odata.nextLink`, even one outside the six Microsoft
+Graph national-cloud hosts. A deployment without a proxy was never affected - it already carried
+that same six-host restriction. The proxied path now gets it too: a `@odata.nextLink` naming a
+host outside that list is still followed, but without the `Authorization` header, rather than
+leaking the tenant's app-only token to it.
 
 ### Teams-Specific Parameters
 

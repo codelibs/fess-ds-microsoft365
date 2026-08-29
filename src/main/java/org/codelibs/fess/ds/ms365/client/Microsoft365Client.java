@@ -174,6 +174,15 @@ public class Microsoft365Client implements Closeable {
     protected AzureIdentityAuthenticationProvider authProvider;
     /** The OkHttp client backing the Graph client. Owned by this instance and released in {@link #close()}. */
     protected OkHttpClient httpClient;
+    /**
+     * The Azure AD credential backing the Graph client. Held as a field -- rather than only a
+     * constructor-local variable -- so a test can reach {@code credential}'s private
+     * {@code identityClient} field by reflection and assert that
+     * {@link #getAdditionallyAllowedTenants(DataStoreParams)}'s result actually reached
+     * {@link ClientSecretCredentialBuilder#additionallyAllowedTenants(String...)}, not merely
+     * computed and discarded.
+     */
+    protected ClientSecretCredential credential;
     /** The data store parameters. */
     protected DataStoreParams params;
     /** A cache for user types. */
@@ -238,7 +247,7 @@ public class Microsoft365Client implements Closeable {
                 logger.info("Proxy configured for Azure Identity: {}:{}", proxyHost, proxyPort);
             }
 
-            final ClientSecretCredential credential = credentialBuilder.build();
+            credential = credentialBuilder.build();
 
             // Initialize GraphServiceClient
             // GraphServiceClient.getGraphClientOptions() (public, static) is included as a
@@ -270,6 +279,11 @@ public class Microsoft365Client implements Closeable {
             }
 
             httpClient = okHttpBuilder.build();
+            // Fixed to the global cloud rather than left empty (base commit's no-proxy path
+            // passed no scopes, so kiota derived "scheme://host/.default" per request). Inert
+            // today, since the base URL below is always the global cloud and that derivation
+            // produces this exact string -- it would only diverge if a response's
+            // @odata.nextLink ever pointed at a national-cloud host.
             final String[] scopes = new String[] { "https://graph.microsoft.com/.default" };
             authProvider = new AzureIdentityAuthenticationProvider(credential, null, scopes);
             client = new GraphServiceClient(authProvider, httpClient);
@@ -425,20 +439,29 @@ public class Microsoft365Client implements Closeable {
     }
 
     /**
-     * Clamps a whole-second timeout to {@link #MAX_TIMEOUT_SECONDS}, warning when it does. An
-     * out-of-range value must not prevent the client from being constructed: OkHttp's
+     * Clamps a whole-second timeout to {@link #MAX_TIMEOUT_SECONDS}, warning when it does, and
+     * resets a negative value to {@code 0} (leave the library default in place), also warning.
+     * An out-of-range value must not prevent the client from being constructed: OkHttp's
      * {@code Builder} throws {@code IllegalArgumentException} for anything larger, and that
      * exception is not a {@link NumberFormatException}, so left unclamped it would abort
      * construction from the generic catch below instead of falling back like a malformed value.
+     * A negative value would otherwise be silently accepted here -- {@code applyTimeouts}'s
+     * {@code > 0} guard already keeps it from being applied, but without a warning an operator
+     * who wrote e.g. {@code access_timeout=-1} meaning "no timeout" has no way to learn the
+     * 100-second default was kept instead.
      *
      * @param key The parameter name, for the warning message.
      * @param value The parsed timeout, in seconds.
-     * @return value, or {@link #MAX_TIMEOUT_SECONDS} if value exceeds it.
+     * @return value, or {@link #MAX_TIMEOUT_SECONDS} if value exceeds it, or {@code 0} if value is negative.
      */
     protected static long clampTimeoutSeconds(final String key, final long value) {
         if (value > MAX_TIMEOUT_SECONDS) {
             logger.warn("{}={} exceeds the maximum timeout OkHttp accepts. Using {}.", key, value, MAX_TIMEOUT_SECONDS);
             return MAX_TIMEOUT_SECONDS;
+        }
+        if (value < 0) {
+            logger.warn("{}={} is negative. The default is kept.", key, value);
+            return 0L;
         }
         return value;
     }

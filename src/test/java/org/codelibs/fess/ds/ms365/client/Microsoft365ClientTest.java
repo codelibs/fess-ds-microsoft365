@@ -19,27 +19,43 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import java.lang.reflect.Field;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.commons.lang3.builder.ToStringBuilder;
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.util.ComponentUtil;
 import org.codelibs.fess.ds.ms365.UnitDsTestCase;
 
+import com.azure.identity.ClientSecretCredential;
+import com.azure.identity.implementation.IdentityClient;
 import com.microsoft.graph.models.Channel;
 import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
+import com.microsoft.kiota.RequestAdapter;
 import com.microsoft.kiota.authentication.AccessTokenProvider;
 import com.microsoft.kiota.authentication.AllowedHostsValidator;
 import com.microsoft.kiota.authentication.AzureIdentityAccessTokenProvider;
+import com.microsoft.kiota.http.OkHttpRequestAdapter;
 import com.microsoft.kiota.http.middleware.RetryHandler;
 import com.microsoft.kiota.http.middleware.options.RetryHandlerOption;
 
+import okhttp3.Authenticator;
+import okhttp3.Credentials;
+import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.Response;
 
@@ -187,13 +203,13 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
     }
 
     /**
-     * Reproduces the crash the reviewer found directly: {@code Integer.parseInt("-1")} succeeds,
-     * so a bare {@code getCacheSize} guard against unparseable input alone is not enough --
-     * Guava's {@code CacheBuilder#maximumSize(long)} rejects a negative size with its own
-     * {@code IllegalArgumentException}, uncaught by anything in the constructor. This constructs
-     * a real client (no network call happens: {@code ClientSecretCredential} is lazy) to prove
-     * the constructor itself survives a negative cache_size end to end, not just that the helper
-     * method returns the right number in isolation.
+     * {@code Integer.parseInt("-1")} succeeds, so a bare {@code getCacheSize} guard against
+     * unparseable input alone is not enough -- Guava's {@code CacheBuilder#maximumSize(long)}
+     * rejects a negative size with its own {@code IllegalArgumentException}, uncaught by
+     * anything in the constructor. This constructs a real client (no network call happens:
+     * {@code ClientSecretCredential} is lazy) to prove the constructor itself survives a
+     * negative cache_size end to end, not just that the helper method returns the right number
+     * in isolation.
      */
     @Test
     public void test_constructorDoesNotThrow_whenCacheSizeIsNegative() throws Exception {
@@ -414,10 +430,53 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
     }
 
     /**
-     * A reviewer commented out {@code connectionPool().evictAll()} and this still passed:
-     * {@code target} never issues a request, so the pool is empty either way and
-     * {@code connectionCount() == 0} cannot fail regardless of whether eviction runs. This
-     * routes one real request through {@code target.httpClient} itself -- not through
+     * Reads back the additionally-allowed-tenants set actually installed on {@code target}'s
+     * {@link ClientSecretCredential}. {@code ClientSecretCredential} exposes no accessor for it,
+     * but its private {@code identityClient} field does, once reached: both
+     * {@code IdentityClient#getIdentityClientOptions()} and
+     * {@code IdentityClientOptions#getAdditionallyAllowedTenants()} are public, so only the one
+     * field lookup needs reflection.
+     */
+    private static Set<String> allowedTenantsOf(final Microsoft365Client target) throws Exception {
+        final Field identityClientField = ClientSecretCredential.class.getDeclaredField("identityClient");
+        identityClientField.setAccessible(true);
+        final IdentityClient identityClient = (IdentityClient) identityClientField.get(target.credential);
+        return identityClient.getIdentityClientOptions().getAdditionallyAllowedTenants();
+    }
+
+    /**
+     * Runs {@code action}, capturing the formatted message of every {@code WARN} logged by
+     * {@link Microsoft365Client} while it runs.
+     */
+    private static List<String> captureMicrosoft365ClientWarnings(final Runnable action) {
+        final List<String> messages = new ArrayList<>();
+        final org.apache.logging.log4j.core.Logger coreLogger =
+                (org.apache.logging.log4j.core.Logger) LogManager.getLogger(Microsoft365Client.class);
+        final AbstractAppender appender =
+                new AbstractAppender("test-microsoft365client-warn-capture", null, null, false, Property.EMPTY_ARRAY) {
+                    @Override
+                    public void append(final LogEvent event) {
+                        if (event.getLevel() == Level.WARN) {
+                            messages.add(event.getMessage().getFormattedMessage());
+                        }
+                    }
+                };
+        appender.start();
+        coreLogger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            coreLogger.removeAppender(appender);
+            appender.stop();
+        }
+        return messages;
+    }
+
+    /**
+     * Commenting out {@code connectionPool().evictAll()} in {@link Microsoft365Client#close()}
+     * still passes here unless a request is issued first: an empty pool makes
+     * {@code connectionCount() == 0} true either way, whether or not eviction ran. This test
+     * must issue a real request through {@code target.httpClient} itself -- not through
      * {@code target.client} or a substitute {@code GraphServiceClient}, which would use a
      * different OkHttpClient entirely -- against a local {@link GraphMockServer}, so the pool
      * this test inspects is verifiably non-empty before {@code close()} is called.
@@ -713,5 +772,145 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         final DataStoreParams params = minimalParams();
         params.put("additionally_allowed_tenants", "tenant-a,, tenant-b ,");
         assertEquals(List.of("tenant-a", "tenant-b"), Microsoft365Client.getAdditionallyAllowedTenants(params));
+    }
+
+    /**
+     * {@code getAdditionallyAllowedTenants(params)}'s result is only useful once it actually
+     * reaches {@code ClientSecretCredentialBuilder}; this and
+     * {@link #test_credential_wildcardTenantReachesTheCredential()} prove it does, on both ends:
+     * an empty default here, and {@code Set.of("*")} there. Either half of the constructor
+     * regressing -- dropping the {@code additionallyAllowedTenants(...)} call, or leaving a
+     * hard-coded {@code "*"} on the builder regardless of {@code params} -- passes one of these
+     * two tests and fails the other.
+     */
+    @Test
+    public void test_credential_defaultAllowsNoAdditionalTenants() throws Exception {
+        final Microsoft365Client target = newMinimalClient();
+        assertEquals(Set.of(), allowedTenantsOf(target));
+    }
+
+    /**
+     * See {@link #test_credential_defaultAllowsNoAdditionalTenants()}.
+     */
+    @Test
+    public void test_credential_wildcardTenantReachesTheCredential() throws Exception {
+        final DataStoreParams params = minimalParams();
+        params.put("additionally_allowed_tenants", "*");
+        final Microsoft365Client target = new Microsoft365Client(params);
+        assertEquals(Set.of("*"), allowedTenantsOf(target));
+    }
+
+    @Test
+    public void test_negativeConnectTimeoutWarnsAndKeepsTheDefault() {
+        final DataStoreParams params = minimalParams();
+        params.put("connect_timeout", "-1");
+        final List<Microsoft365Client> target = new ArrayList<>();
+        final List<String> warnings = captureMicrosoft365ClientWarnings(() -> target.add(new Microsoft365Client(params)));
+
+        assertEquals(100000, target.get(0).httpClient.connectTimeoutMillis());
+        assertTrue("expected a WARN naming connect_timeout=-1 but got: " + warnings,
+                warnings.stream().anyMatch(m -> m.contains("connect_timeout=-1")));
+    }
+
+    @Test
+    public void test_negativeReadTimeoutWarnsAndKeepsTheDefault() {
+        final DataStoreParams params = minimalParams();
+        params.put("read_timeout", "-1");
+        final List<Microsoft365Client> target = new ArrayList<>();
+        final List<String> warnings = captureMicrosoft365ClientWarnings(() -> target.add(new Microsoft365Client(params)));
+
+        assertEquals(100000, target.get(0).httpClient.readTimeoutMillis());
+        assertTrue("expected a WARN naming read_timeout=-1 but got: " + warnings,
+                warnings.stream().anyMatch(m -> m.contains("read_timeout=-1")));
+    }
+
+    /**
+     * {@code access_timeout=-1} meaning "no timeout" used to be accepted without comment,
+     * leaving an operator with no way to learn OkHttp's call timeout stayed at the 100-second
+     * default. {@code max_retry_count=-1} on the same input already warned -- see
+     * {@code newRetryHandlerOption}'s own negative-value branch -- which is what made the
+     * asymmetry visible in the first place.
+     */
+    @Test
+    public void test_negativeAccessTimeoutWarnsAndKeepsTheDefault() {
+        final DataStoreParams params = minimalParams();
+        params.put("access_timeout", "-1");
+        final List<Microsoft365Client> target = new ArrayList<>();
+        final List<String> warnings = captureMicrosoft365ClientWarnings(() -> target.add(new Microsoft365Client(params)));
+
+        assertEquals(100000, target.get(0).httpClient.callTimeoutMillis());
+        assertTrue("expected a WARN naming access_timeout=-1 but got: " + warnings,
+                warnings.stream().anyMatch(m -> m.contains("access_timeout=-1")));
+    }
+
+    /**
+     * {@code close()} evicts {@code target.httpClient}'s connection pool. If the Graph client
+     * were built against a different {@code OkHttpClient} instance, {@code close()} would evict
+     * an empty pool while the crawl's real sockets leak on the instance actually in use.
+     * {@code GraphServiceClient#getRequestAdapter()} is public; the {@code Call.Factory} field
+     * it returns the value of (declared on {@code OkHttpRequestAdapter}, the superclass of the
+     * adapter Graph actually installs) is private, so only that one field lookup needs
+     * reflection.
+     */
+    @Test
+    public void test_httpClient_isTheSameInstanceTheGraphAdapterUses() throws Exception {
+        final Microsoft365Client target = newMinimalClient();
+
+        final RequestAdapter adapter = target.client.getRequestAdapter();
+        final Field callFactoryField = OkHttpRequestAdapter.class.getDeclaredField("client");
+        callFactoryField.setAccessible(true);
+        final Object callFactory = callFactoryField.get(adapter);
+
+        assertSame("the Graph client must use target.httpClient itself, or close() evicting its pool proves nothing", target.httpClient,
+                callFactory);
+    }
+
+    @Test
+    public void test_proxyConfiguration_setsProxyOnTheHttpClient() throws Exception {
+        final DataStoreParams params = minimalParams();
+        params.put("proxy_host", "proxy.example.com");
+        params.put("proxy_port", "8080");
+        final Microsoft365Client target = new Microsoft365Client(params);
+
+        final Proxy proxy = target.httpClient.proxy();
+        assertNotNull("a proxy must be configured on the Graph client's OkHttpClient", proxy);
+        assertEquals(Proxy.Type.HTTP, proxy.type());
+        assertEquals(new InetSocketAddress("proxy.example.com", 8080), proxy.address());
+        assertSame("no proxy credentials were given, so no custom authenticator should be installed", Authenticator.NONE,
+                target.httpClient.proxyAuthenticator());
+
+        // test_authProvider_rejectsANonGraphHost proves this for the no-proxy path; this is the
+        // one path (see the README's "Graph host allowlist" section) whose allowlist behaviour
+        // actually changed relative to the base commit, so it needs its own assertion here.
+        final AccessTokenProvider tokenProvider = target.authProvider.getAccessTokenProvider();
+        final AllowedHostsValidator validator = ((AzureIdentityAccessTokenProvider) tokenProvider).getAllowedHostsValidator();
+        assertFalse("a non-Graph host must not be treated as valid on the proxy path either",
+                validator.isUrlHostValid(new URI("https://evil.example.com/x")));
+    }
+
+    /**
+     * No network is involved: the authenticator is invoked directly against a {@code Response}
+     * built by hand, the same shape OkHttp would hand it after a real 407 from the proxy.
+     */
+    @Test
+    public void test_proxyConfiguration_installsAuthenticatorWithCredentials() throws Exception {
+        final DataStoreParams params = minimalParams();
+        params.put("proxy_host", "proxy.example.com");
+        params.put("proxy_port", "8080");
+        params.put("proxy_username", "proxyuser");
+        params.put("proxy_password", "proxypass");
+        final Microsoft365Client target = new Microsoft365Client(params);
+
+        assertNotSame("proxy credentials were given, so a custom authenticator must be installed", Authenticator.NONE,
+                target.httpClient.proxyAuthenticator());
+
+        final Request request = new Request.Builder().url("http://example.com/").build();
+        final Response response = new Response.Builder().request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(407)
+                .message("Proxy Authentication Required")
+                .build();
+        final Request authenticated = target.httpClient.proxyAuthenticator().authenticate(null, response);
+        assertEquals(Credentials.basic("proxyuser", "proxypass"), authenticated.header("Proxy-Authorization"));
     }
 }
