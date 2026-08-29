@@ -816,20 +816,48 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
      * {@link GraphMockServer}, so the assertion is on actual HTTP traffic, not a mock's
      * bookkeeping. The item's fields are pre-populated so the (unrelated) field-refresh branch
      * makes no request of its own, leaving the permissions call as the only possible traffic.
+     *
+     * <p>After this branch, {@code default_permissions} is the item's <em>only</em> role source
+     * (see the removed {@code getSitePermissions} call above), so this also asserts the roles the
+     * item is actually indexed with -- exactly {@code PermissionHelper#encode}'s output for each
+     * configured entry, nothing more. Deleting the {@code default_permissions} block from
+     * {@link SharePointListDataStore#processListItem} leaves this list findable by nobody while
+     * the earlier assertions above stay green, so without this it is uncovered.
      */
     @Test
     public void test_processListItem_doesNotRequestSitePermissions() throws Exception {
-        // crawlerStatsHelper and permissionHelper are not wired into test_app.xml, and
-        // crawlerStatsHelper in turn needs systemHelper (also not wired), so all three are
-        // registered directly here -- the same pattern Microsoft365DataStorePermissionTest and
-        // OneNoteDataStoreTest use. default_permissions is unset in this test, so
-        // permissionHelper.encode() is never actually called; only the component lookup itself
-        // needs to succeed.
-        ComponentUtil.register(new org.codelibs.fess.helper.SystemHelper(), "systemHelper");
+        // crawlerStatsHelper and permissionHelper are not wired into test_app.xml, and both in
+        // turn need systemHelper (also not wired) -- crawlerStatsHelper directly, permissionHelper
+        // via its @Resource field, which plain ComponentUtil.register(...) does not auto-inject
+        // (see TestablePermissionHelper below) -- so all three are registered directly here, the
+        // same pattern Microsoft365DataStorePermissionTest and OneNoteDataStoreTest use.
+        final org.codelibs.fess.helper.SystemHelper systemHelper = new org.codelibs.fess.helper.SystemHelper();
+        ComponentUtil.register(systemHelper, "systemHelper");
         final org.codelibs.fess.helper.CrawlerStatsHelper crawlerStatsHelper = new org.codelibs.fess.helper.CrawlerStatsHelper();
         crawlerStatsHelper.init();
         ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
-        ComponentUtil.register(new org.codelibs.fess.helper.PermissionHelper(), "permissionHelper");
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(systemHelper);
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put(roleField, "item.roles");
+
+        // convertValue's real path goes through ComponentUtil.getScriptEngineFactory(), which
+        // this unit test has no business standing up -- see OneNoteDataStoreTest's identical seam.
+        // "item.roles" is the only template used here, so it is resolved with a direct nested map
+        // lookup instead; processListItem itself, including the roles-assembly logic under test,
+        // is exercised completely unmodified.
+        final SharePointListDataStore roleAwareDataStore = new SharePointListDataStore() {
+            @Override
+            protected Object convertValue(final String scriptType, final String template, final Map<String, Object> resultMap) {
+                if ("item.roles".equals(template) && resultMap.get(LIST_ITEM) instanceof final Map<?, ?> itemMap) {
+                    return itemMap.get(LIST_ITEM_ROLES);
+                }
+                return super.convertValue(scriptType, template, resultMap);
+            }
+        };
 
         try (GraphMockServer server = new GraphMockServer();
                 MockableMicrosoft365Client client = new MockableMicrosoft365Client(dummyParams())) {
@@ -865,9 +893,12 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
             final Map<String, Object> configMap = new LinkedHashMap<>();
             configMap.put(SharePointListDataStore.IGNORE_ERROR, Boolean.FALSE);
 
+            final DataStoreParams paramMap = new DataStoreParams();
+            paramMap.put(SharePointListDataStore.DEFAULT_PERMISSIONS, "{role}admin,{group}sales");
+
             final TestCallback callback = new TestCallback();
-            dataStore.processListItem(new DataConfig(), callback, configMap, new DataStoreParams(), new HashMap<>(), new HashMap<>(),
-                    client, site, list, item);
+            roleAwareDataStore.processListItem(new DataConfig(), callback, configMap, paramMap, scriptMap, new HashMap<>(), client, site,
+                    list, item);
 
             assertEquals("processListItem must index the item despite there being no site-permission source", 1, callback.getCount());
 
@@ -877,6 +908,15 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
             }
             assertFalse("no request may end in /permissions, but got: " + paths,
                     paths.stream().anyMatch(path -> path.contains("/permissions")));
+
+            @SuppressWarnings("unchecked")
+            final java.util.List<String> roles = (java.util.List<String>) callback.getLastDataMap().get(roleField);
+            final java.util.Set<String> expectedRoles = new java.util.HashSet<>(
+                    java.util.List.of(permissionHelper.encode("{role}admin"), permissionHelper.encode("{group}sales")));
+            assertEquals(
+                    "default_permissions is the item's only role source, so the indexed roles must be exactly its encoded entries, got "
+                            + roles,
+                    expectedRoles, roles == null ? java.util.Set.of() : new java.util.HashSet<>(roles));
         }
     }
 
@@ -903,6 +943,17 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
 
         void useServer(final GraphServiceClient graphClient) {
             this.client = graphClient;
+        }
+    }
+
+    /**
+     * {@code PermissionHelper#systemHelper} is {@code @Resource}-injected, which plain
+     * {@code ComponentUtil.register(...)} does not perform in this minimal test container; this
+     * subclass sets it directly so {@code encode(...)} is safe to call.
+     */
+    private static final class TestablePermissionHelper extends org.codelibs.fess.helper.PermissionHelper {
+        void useSystemHelper(final org.codelibs.fess.helper.SystemHelper systemHelper) {
+            this.systemHelper = systemHelper;
         }
     }
 

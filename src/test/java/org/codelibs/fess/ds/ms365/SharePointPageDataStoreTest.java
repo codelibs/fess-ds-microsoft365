@@ -503,6 +503,13 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
      * actual HTTP traffic, not a mock's bookkeeping. {@code getPageWithContent} is overridden to
      * return a fixture directly: that call is mandatory and unrelated to permissions, and
      * fabricating the exact Graph JSON shape it expects would add risk without adding coverage.
+     *
+     * <p>After this branch, {@code default_permissions} is the page's <em>only</em> role source,
+     * so this also asserts the roles the page is actually indexed with -- exactly
+     * {@code PermissionHelper#encode}'s output for each configured entry, nothing more. Deleting
+     * the {@code default_permissions} block from {@link SharePointPageDataStore#processPage}
+     * leaves this page findable by nobody while the earlier assertions above stay green, so
+     * without this it is uncovered.
      */
     @Test
     public void test_processPage_doesNotRequestSitePermissions() throws Exception {
@@ -519,6 +526,25 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
         permissionHelper.useSystemHelper(systemHelper);
         ComponentUtil.register(permissionHelper, "permissionHelper");
+
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put(roleField, "page.roles");
+
+        // convertValue's real path goes through ComponentUtil.getScriptEngineFactory(), which
+        // this unit test has no business standing up -- see OneNoteDataStoreTest's identical seam.
+        // "page.roles" is the only template used here, so it is resolved with a direct nested map
+        // lookup instead; processPage itself, including the roles-assembly logic under test, is
+        // exercised completely unmodified.
+        final SharePointPageDataStore roleAwareDataStore = new SharePointPageDataStore() {
+            @Override
+            protected Object convertValue(final String scriptType, final String template, final Map<String, Object> resultMap) {
+                if ("page.roles".equals(template) && resultMap.get(PAGE) instanceof final Map<?, ?> pageDataMap) {
+                    return pageDataMap.get(PAGE_ROLES);
+                }
+                return super.convertValue(scriptType, template, resultMap);
+            }
+        };
 
         final SitePage fullPage = new SitePage();
         fullPage.setId("page-1");
@@ -545,10 +571,10 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
             page.setTitle("Test Page");
 
             final DataStoreParams paramMap = new DataStoreParams();
-            paramMap.put(SharePointPageDataStore.DEFAULT_PERMISSIONS, "{role}admin");
+            paramMap.put(SharePointPageDataStore.DEFAULT_PERMISSIONS, "{role}admin,{group}sales");
 
             final TestCallback callback = new TestCallback();
-            dataStore.processPage(new DataConfig(), callback, new LinkedHashMap<>(), paramMap, new HashMap<>(), new HashMap<>(), client,
+            roleAwareDataStore.processPage(new DataConfig(), callback, new LinkedHashMap<>(), paramMap, scriptMap, new HashMap<>(), client,
                     site, page);
 
             assertEquals("processPage must index the page despite there being no site-permission source", 1, callback.getCount());
@@ -559,6 +585,15 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
             }
             assertFalse("no request may end in /permissions, but got: " + paths,
                     paths.stream().anyMatch(path -> path.contains("/permissions")));
+
+            @SuppressWarnings("unchecked")
+            final List<String> roles = (List<String>) callback.getLastDataMap().get(roleField);
+            final java.util.Set<String> expectedRoles =
+                    new java.util.HashSet<>(List.of(permissionHelper.encode("{role}admin"), permissionHelper.encode("{group}sales")));
+            assertEquals(
+                    "default_permissions is the page's only role source, so the indexed roles must be exactly its encoded entries, got "
+                            + roles,
+                    expectedRoles, roles == null ? java.util.Set.of() : new java.util.HashSet<>(roles));
         }
     }
 

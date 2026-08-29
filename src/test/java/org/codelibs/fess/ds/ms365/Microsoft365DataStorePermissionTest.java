@@ -330,6 +330,55 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         assertNull(pageDataStore.describeUnmappableIdentity(userSet));
     }
 
+    /**
+     * A {@code user} identity is structurally mappable, but Graph can still return one with no
+     * id (the unredeemed-external-invitee shape used throughout this class). Before this fix,
+     * {@code describeUnmappableIdentity} treated any non-null {@code getUser()} as mappable and
+     * returned {@code null} here regardless of the id, which is what let this grantee vanish with
+     * no line at any level -- see {@code test_assignIdentity_userWithNoIdIsReported} for the
+     * end-to-end proof that {@code assignIdentity} now actually reaches this.
+     */
+    @Test
+    public void test_describeUnmappableIdentity_userWithBlankIdReturnsKind() {
+        final SharePointIdentitySet userSet = new SharePointIdentitySet();
+        final Identity user = new Identity();
+        user.setDisplayName("jane@fabrikam.com");
+        // id deliberately left blank, mirroring test_assignIdentity_userWithNoIdContributesNoRoleAndDoesNotThrow.
+        userSet.setUser(user);
+        assertEquals("user", pageDataStore.describeUnmappableIdentity(userSet));
+    }
+
+    /**
+     * Same defect as the user case above, but for {@code group}: {@code assignIdentity} already
+     * called {@code logUnmappableIdentity} for a blank-id group before this fix -- unlike the user
+     * branch, which returned early without calling it at all -- but {@code describeUnmappableIdentity}
+     * still treated any non-null {@code getGroup()} as mappable and returned {@code null}, so the
+     * debug line never actually printed anything.
+     */
+    @Test
+    public void test_describeUnmappableIdentity_groupWithBlankIdReturnsKind() {
+        final SharePointIdentitySet groupSet = new SharePointIdentitySet();
+        final Identity group = new Identity();
+        group.setDisplayName("External Sharing Group");
+        // id deliberately left blank, mirroring test_assignIdentity_groupWithNoIdContributesNoRoleAndDoesNotThrow.
+        groupSet.setGroup(group);
+        assertEquals("group", pageDataStore.describeUnmappableIdentity(groupSet));
+    }
+
+    /**
+     * {@code IdentitySet#getDevice()} falls in the same hole as {@code siteUser}/{@code siteGroup}/
+     * {@code sharePointGroup}/{@code application}: a device grantee names a device object, not a
+     * person, and was not reported at all before this fix.
+     */
+    @Test
+    public void test_describeUnmappableIdentity_device() {
+        final SharePointIdentitySet deviceSet = new SharePointIdentitySet();
+        final Identity device = new Identity();
+        device.setId("6a5f4e3d-2c1b-4a5f-8e3d-2c1b4a5f8e3d");
+        deviceSet.setDevice(device);
+        assertEquals("device", pageDataStore.describeUnmappableIdentity(deviceSet));
+    }
+
     @Test
     public void test_assignIdentity_unmappablePrincipalAddsNoRole() {
         final SharePointIdentitySet set = new SharePointIdentitySet();
@@ -373,6 +422,35 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         recordingDataStore.assignIdentity(client, new java.util.ArrayList<>(), set);
 
         assertTrue("expected exactly one call reporting the unmappable identity, got " + logged, logged.size() == 1);
+        assertSame(set, logged.get(0));
+    }
+
+    /**
+     * Before this fix, the {@code user} branch of {@code assignIdentity} unconditionally
+     * {@code return}ed after its blank-id check, so a blank-id user never reached
+     * {@code logUnmappableIdentity} at all -- unlike every other unmappable shape in this class,
+     * which does. Reverting the {@code else { logUnmappableIdentity(identity); }} added by this
+     * fix makes {@code logged} empty and this test fail.
+     */
+    @Test
+    public void test_assignIdentity_userWithNoIdIsReported() {
+        final List<SharePointIdentitySet> logged = new java.util.ArrayList<>();
+        final SharePointPageDataStore recordingDataStore = new SharePointPageDataStore() {
+            @Override
+            protected void logUnmappableIdentity(final SharePointIdentitySet identity) {
+                logged.add(identity);
+            }
+        };
+
+        final SharePointIdentitySet set = new SharePointIdentitySet();
+        final Identity user = new Identity();
+        user.setDisplayName("jane@fabrikam.com");
+        // id deliberately left blank: the shape Graph returns for an unredeemed external invitee.
+        set.setUser(user);
+
+        recordingDataStore.assignIdentity(client, new java.util.ArrayList<>(), set);
+
+        assertTrue("expected exactly one call reporting the blank-id user, got " + logged, logged.size() == 1);
         assertSame(set, logged.get(0));
     }
 

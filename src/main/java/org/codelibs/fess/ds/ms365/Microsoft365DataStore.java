@@ -386,6 +386,12 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Assigned permission to user - ID: {}, Principal: {}", oid, principal);
                 }
+            } else {
+                // A blank-id user must still be reported: it is a directory identity Graph could
+                // not resolve to an id (see the unredeemed-invitee case above), not one of the
+                // structurally-unmappable kinds below -- without this call it vanished with no
+                // line at any level.
+                logUnmappableIdentity(identity);
             }
             return;
         }
@@ -401,7 +407,9 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Assigned permission to group - ID: {}, Principal: {}", gid, principal);
                 }
+                return;
             }
+            // Blank-id group: fall through to logUnmappableIdentity below, same as the user case.
         }
         logUnmappableIdentity(identity);
     }
@@ -431,19 +439,25 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      * Names the principal kind of an identity set this plugin cannot map to a Fess role, or
      * {@code null} when the set names a directory user or group that it can map.
      *
-     * <p>SharePoint-local principals ({@code siteUser}, {@code siteGroup},
-     * {@code sharePointGroup}) carry a site-local numeric id rather than an Entra object id, so
-     * there is nothing to encode as a search role. An {@code application} grantee names an Entra
-     * app registration, not a person. All are reported at debug level rather than dropped
-     * silently, because an ACL that is empty for this reason looks identical to one that is empty
-     * because the site has no grantees.
+     * <p>A {@code user} or {@code group} identity with a blank id is a directory identity Graph
+     * could not resolve to an id (for example an unredeemed external invitee); it is reported
+     * here even though its kind is otherwise mappable. SharePoint-local principals
+     * ({@code siteUser}, {@code siteGroup}, {@code sharePointGroup}) carry a site-local numeric id
+     * rather than an Entra object id, so there is nothing to encode as a search role. An
+     * {@code application} or {@code device} grantee names an Entra app registration or device
+     * object, not a person. All are reported at debug level rather than dropped silently, because
+     * an ACL that is empty for this reason looks identical to one that is empty because the drive
+     * item genuinely has no grantees.
      *
      * @param identity The identity set to inspect.
      * @return the unmappable principal kind, or null when the set is mappable.
      */
     protected String describeUnmappableIdentity(final SharePointIdentitySet identity) {
-        if (identity.getUser() != null || identity.getGroup() != null) {
-            return null;
+        if (identity.getUser() != null) {
+            return StringUtil.isBlank(identity.getUser().getId()) ? "user" : null;
+        }
+        if (identity.getGroup() != null) {
+            return StringUtil.isBlank(identity.getGroup().getId()) ? "group" : null;
         }
         if (identity.getSiteUser() != null) {
             return "siteUser";
@@ -456,6 +470,9 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         }
         if (identity.getApplication() != null) {
             return "application";
+        }
+        if (identity.getDevice() != null) {
+            return "device";
         }
         return null;
     }

@@ -172,28 +172,49 @@ SharePointListDataStore, SharePointPageDataStore, and OneNoteDataStore's site no
 `default_permissions` is the only way those documents get an audience - leave it unset and they
 are indexed with no role at all, which means they are findable by **nobody**, not by everybody.
 
-**Upgrading:** before this release, a tenant that had not granted `Sites.FullControl.All` got a
-`403` from the (now-removed) site-permissions lookup on every site. Under the default
-`permission_failure_policy=skip` that meant SharePointListDataStore and SharePointPageDataStore
-indexed **zero documents**, and OneNoteDataStore skipped site notebooks entirely. After this
-release those documents are indexed instead: a tenant that only ever granted `Sites.Read.All` will
-see a large number of list items, site pages, and site notebooks appear in the index that were
-never there before. They carry no role unless `default_permissions` is set, so **set
-`default_permissions` on SharePointListDataStore, SharePointPageDataStore, and OneNoteDataStore
-when you upgrade**, or these newly-indexed documents are searchable by nobody. The plugin no
-longer logs a warning for this case either - the `WARN` that used to fire when the site-permissions
-lookup came back empty was deleted along with the lookup itself - so nothing in the logs will flag
-a document with no audience; only this note does.
+**Upgrading from 15.8.0:** SharePointListDataStore and SharePointPageDataStore documents were
+already being indexed, and already carried a `default_permissions`-plus-config-Permissions ACL,
+before this release. The removed site-permissions lookup caught every exception it could raise -
+including the `403` a tenant without `Sites.FullControl.All` got - logged it at `WARN`, and
+returned an empty list rather than failing the item; `default_permissions` and the data config's
+Permissions field were appended to that empty list either way, and the item or page was indexed.
+So their audience does not change on upgrade. What does change: `Sites.FullControl.All` is no
+longer needed at all, and the per-site `Failed to retrieve permissions for site` `WARN` these
+tenants have been seeing on every crawl is gone, because the call that produced it no longer
+exists.
+
+The one genuinely new thing in the index after upgrading is OneNote site notebooks. They were
+missing under 15.8.0 because the notebook, section, page, and content requests for them were sent
+to the wrong Graph path and 404'd - not because of a permissions problem. See [Re-crawling after
+upgrading to this fix](#re-crawling-after-upgrading-to-this-fix) below for how that ACL is built.
+
+As always: if `default_permissions` is left unset on SharePointListDataStore,
+SharePointPageDataStore, or OneNoteDataStore's site notebooks, those documents carry no role at
+all and are searchable by nobody, and nothing in the logs flags it - only this note does.
 
 **Organization-shared OneDrive files:** a document whose only Graph permission is an
 organization-scope sharing link (`link.scope == "organization"`, i.e. "Anyone in your organization
 with the link") previously carried no roles at all on the OneDrive path, so it was findable by
 nobody. It now carries a single role, the group named `EVERYONE_IN_TENANT`, which also matches
 nobody unless the operator creates an actual group named `EVERYONE_IN_TENANT` and maps it to a
-Fess role - this mirrors what SharePointDocLibDataStore has always done for the same case. This is
-not a loss of visibility (those files were already unfindable), but it is the only way
-organization-shared OneDrive files become searchable, and the sentinel group name appears nowhere
-else in this document.
+Fess role. This is not a loss of visibility (those files were already unfindable), but it is the
+only way organization-shared OneDrive files become searchable, and the sentinel group name appears
+nowhere else in this document.
+
+**Precedence between a named grantee and a link's scope:** when one permission carries both a
+named grantee (`grantedToV2`, or an entry in `grantedToIdentitiesV2`) and a `link`, only the
+grantee's role is added; the permission does not also widen the ACL to the link's scope. This is
+deliberate and fail-closed - a permission that already names who it is for should not also be
+read as "anyone in the organization" - but it narrows one ACL shape SharePointDocLibDataStore
+already produced before this branch. Its root-drive permission lookup has always run through this
+same code, and the previous version of that code ignored `grantedToIdentitiesV2` entirely, so a root
+permission shaped like `{link: {scope: "organization"}, grantedToIdentitiesV2: [user A]}` used to
+contribute `EVERYONE_IN_TENANT` in addition to A's role. Now it contributes only A's role.
+SharePointDocLibDataStore indexes one document per document library (library metadata, not its
+individual files - see the Data Store Types table below), and computes that document's entire ACL
+once, from the drive's root permissions. So after upgrading, a document library whose root
+permission names grantees alongside an organization-scope link loses `EVERYONE_IN_TENANT` from
+that library's indexed document.
 
 #### Minimum Permissions Examples
 
@@ -213,8 +234,6 @@ Team.ReadBasic.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMembe
 ```
 Requires `append_attachment=false` (default is `true`) to stay within this permission set - see
 conditional note (*6) above.
-
-For detailed permission documentation, see [PERMISSIONS.md](PERMISSIONS.md).
 
 ### Basic Configuration
 
