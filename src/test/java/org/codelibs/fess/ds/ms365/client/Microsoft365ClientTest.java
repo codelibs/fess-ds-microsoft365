@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.Collections;
+import java.util.List;
 
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.logging.log4j.LogManager;
@@ -554,5 +555,30 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
             final Microsoft365Client target = newClientBackedBy(server);
             assertNull(target.getGroupById("missing"));
         }
+    }
+
+    @Test
+    public void test_additionallyAllowedTenants_defaultsToNone() {
+        assertEquals(List.of(), Microsoft365Client.getAdditionallyAllowedTenants(minimalParams()));
+    }
+
+    @Test
+    public void test_additionallyAllowedTenants_wildcardIsOptIn() {
+        final DataStoreParams params = minimalParams();
+        params.put("additionally_allowed_tenants", "*");
+        assertEquals(List.of("*"), Microsoft365Client.getAdditionallyAllowedTenants(params));
+    }
+
+    @Test
+    public void test_additionallyAllowedTenants_acceptsACommaSeparatedList() {
+        // The blank entry must be an *internal* one ("tenant-a,,tenant-b"): a merely trailing
+        // comma is stripped by String#split's own default (limit=0) behaviour before the
+        // isNotBlank filter ever runs, so a test using only a trailing comma would pass even
+        // with that filter removed. This keeps the trailing comma too (surrounding whitespace
+        // must still be trimmed) but adds an internal blank segment to actually exercise the
+        // filter.
+        final DataStoreParams params = minimalParams();
+        params.put("additionally_allowed_tenants", "tenant-a,, tenant-b ,");
+        assertEquals(List.of("tenant-a", "tenant-b"), Microsoft365Client.getAdditionallyAllowedTenants(params));
     }
 }

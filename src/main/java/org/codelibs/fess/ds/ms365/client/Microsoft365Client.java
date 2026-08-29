@@ -39,6 +39,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.CoreLibConstants;
 import org.codelibs.core.lang.StringUtil;
+import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
@@ -144,6 +145,8 @@ public class Microsoft365Client implements Closeable {
     protected static final String PROXY_USERNAME_PARAM = "proxy_username";
     /** The parameter name for the proxy password. */
     protected static final String PROXY_PASSWORD_PARAM = "proxy_password";
+    /** The parameter name for additional tenants this credential may acquire tokens for. */
+    protected static final String ADDITIONALLY_ALLOWED_TENANTS = "additionally_allowed_tenants";
 
     /** Error code for an invalid authentication token. */
     protected static final String INVALID_AUTHENTICATION_TOKEN = "InvalidAuthenticationToken";
@@ -199,10 +202,12 @@ public class Microsoft365Client implements Closeable {
         final String proxyPassword = params.getAsString(PROXY_PASSWORD_PARAM, StringUtil.EMPTY);
 
         try {
-            final ClientSecretCredentialBuilder credentialBuilder = new ClientSecretCredentialBuilder().clientId(clientId)
-                    .clientSecret(clientSecret)
-                    .tenantId(tenant)
-                    .additionallyAllowedTenants("*"); // Allow all tenants for backward compatibility
+            final ClientSecretCredentialBuilder credentialBuilder =
+                    new ClientSecretCredentialBuilder().clientId(clientId).clientSecret(clientSecret).tenantId(tenant);
+            final List<String> allowedTenants = getAdditionallyAllowedTenants(params);
+            if (!allowedTenants.isEmpty()) {
+                credentialBuilder.additionallyAllowedTenants(allowedTenants.toArray(new String[allowedTenants.size()]));
+            }
 
             // Configure proxy for Azure Identity (OAuth token acquisition)
             if (!proxyHost.isEmpty() && !proxyPortStr.isEmpty()) {
@@ -393,6 +398,22 @@ public class Microsoft365Client implements Closeable {
         if (accessTimeout > 0) {
             builder.callTimeout(accessTimeout, TimeUnit.SECONDS);
         }
+    }
+
+    /**
+     * Returns the additional tenants this credential may acquire tokens for. Empty by default:
+     * the plugin only ever requests tokens for the configured tenant, so a credential that will
+     * mint tokens for any tenant it is asked about grants more than the crawl needs. Set
+     * {@code additionally_allowed_tenants=*} to restore the previous behaviour.
+     *
+     * @param params The data store parameters.
+     * @return the configured tenant list, possibly empty; never null.
+     */
+    protected static List<String> getAdditionallyAllowedTenants(final DataStoreParams params) {
+        final List<String> tenants = new ArrayList<>();
+        StreamUtil.split(params.getAsString(ADDITIONALLY_ALLOWED_TENANTS, StringUtil.EMPTY), ",")
+                .of(stream -> stream.map(String::trim).filter(StringUtil::isNotBlank).forEach(tenants::add));
+        return tenants;
     }
 
     @Override
