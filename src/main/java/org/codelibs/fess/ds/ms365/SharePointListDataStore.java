@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -484,11 +485,11 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                 logger.debug("No fields available for item {} after refresh attempts", item.getId());
             }
 
-            // Handle permissions properly
-            final List<String> roles = getSitePermissions(client, site.getId(), paramMap);
-            if (logger.isDebugEnabled()) {
-                logger.debug("Initial permissions for site {} - Count: {}, Permissions: {}", site.getDisplayName(), roles.size(), roles);
-            }
+            // Graph has no user/group role-assignment endpoint for a site that this plugin can
+            // call without Sites.FullControl.All (see Microsoft365Client's removed
+            // getSitePermissions), so list items carry no site-derived roles. default_permissions
+            // below is their only role source.
+            final List<String> roles = new ArrayList<>();
 
             final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
             StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")

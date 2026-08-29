@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -198,27 +199,11 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             return;
         }
 
-        final List<String> roles;
-        try {
-            // Notebooks under a site inherit the site's ACL. Indexing them with an empty role
-            // list would hide them from every user who has roles at all.
-            roles = getSitePermissions(client, root.getId(), paramMap);
-        } catch (final PermissionUnavailableException e) {
-            // storeData runs storeSiteNotes, storeUsersNotes and storeGroupsNotes one after
-            // another inside the same try block. Letting this propagate would abort user and
-            // group notebook crawling too, not just site notebooks, so it is caught here and
-            // only site notebooks are skipped.
-            logger.warn("Skipping site notebooks: unable to resolve permissions for site: {}", root.getId(), e);
-            return;
-        }
-        if (roles.isEmpty()) {
-            // GET /sites/{site-id}/permissions succeeding with an empty result is not an error --
-            // it is Microsoft's documented shape for this endpoint on a site with no per-user/group
-            // grantees for it to report. But it leaves the notebook with no ACL, so it is worth
-            // surfacing rather than passing silently.
-            logger.warn("Site {} returned no permissions; its notebooks will be indexed with an empty ACL "
-                    + "and will not match any user's role filter.", root.getId());
-        }
+        // Graph has no user/group role-assignment endpoint for a site that this plugin can call
+        // without Sites.FullControl.All (see Microsoft365Client's removed getSitePermissions),
+        // so site notebooks carry no owner-derived roles. default_permissions (Task 5) is their
+        // only role source.
+        final List<String> roles = new ArrayList<>();
         getNotebooks(client, NotebookScope.SITE, root.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig,
                 callback, paramMap, scriptMap, defaultDataMap, client, NotebookScope.SITE, root.getId(), notebook, roles)));
     }

@@ -37,6 +37,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.crawler.extractor.impl.TikaExtractor;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
+import org.codelibs.fess.ds.ms365.client.GraphMockServer;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.ds.ms365.client.NotebookScope;
 import org.codelibs.fess.entity.DataStoreParams;
@@ -47,14 +48,11 @@ import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.AssignedLicense;
 import com.microsoft.graph.models.Group;
-import com.microsoft.graph.models.Identity;
 import com.microsoft.graph.models.Notebook;
 import com.microsoft.graph.models.NotebookCollectionResponse;
-import com.microsoft.graph.models.Permission;
-import com.microsoft.graph.models.PermissionCollectionResponse;
-import com.microsoft.graph.models.SharePointIdentitySet;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.models.User;
+import com.microsoft.graph.serviceclient.GraphServiceClient;
 import com.microsoft.kiota.ApiException;
 
 public class OneNoteDataStoreTest extends UnitDsTestCase {
@@ -304,106 +302,68 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
     }
 
     /**
-     * A notebook indexed with an empty role list matches no user's role filter, so "we now
-     * crawl site notebooks" would deliver documents nobody can find. This drives
-     * {@link OneNoteDataStore#storeSiteNotes} itself (not just {@code getSitePermissions} in
-     * isolation) by overriding {@code processNotebook} to capture its {@code roles} argument, so
-     * a regression that stops wiring the resolved permissions into that argument -- not only a
-     * regression inside {@code getSitePermissions} -- turns this test red.
+     * Site notebooks must not touch {@code GET /sites/{id}/permissions}: it needs
+     * {@code Sites.FullControl.All} and returns only application grants, never user or group
+     * roles. Runs {@link OneNoteDataStore#storeSiteNotes} against a real
+     * {@link Microsoft365Client} wired to a {@link GraphMockServer} so the assertion is on actual
+     * HTTP traffic, not a mock's bookkeeping.
      */
     @Test
-    public void test_storeSiteNotes_usesSitePermissionsNotAnEmptyAcl() throws Exception {
-        // getSitePermissions ultimately calls ComponentUtil.getSystemHelper(); systemHelper is
-        // not wired into test_app.xml (see Microsoft365DataStorePermissionTest), so it is
-        // registered directly here.
-        ComponentUtil.register(new SystemHelper(), "systemHelper");
+    public void test_storeSiteNotes_doesNotRequestSitePermissions() throws Exception {
+        try (GraphMockServer server = new GraphMockServer();
+                MockableMicrosoft365Client client = new MockableMicrosoft365Client(dummyParams())) {
+            server.enqueueJson("{\"id\":\"site-1\",\"displayName\":\"Root\"}"); // GET /sites/root
+            server.enqueueJson("{\"value\":[]}"); // GET /sites/site-1/onenote/notebooks
+            // Queued defensively, not consumed by the fixed code: if a regression reintroduces a
+            // site-permissions request between the two above, this lets it complete (with an
+            // empty result) instead of blocking the test on an unfulfilled mock response, so the
+            // /permissions assertion below is what fails, quickly and legibly.
+            server.enqueueJson("{\"value\":[]}");
 
-        final Microsoft365Client client = mock(Microsoft365Client.class);
+            client.useServer(server.newGraphClient());
 
-        final Site root = new Site();
-        root.setId("site-1");
-        when(client.getSite("root")).thenReturn(root);
-
-        final Identity grantedUser = new Identity();
-        grantedUser.setId("oid-1");
-        final SharePointIdentitySet granted = new SharePointIdentitySet();
-        granted.setUser(grantedUser);
-        final Permission permission = new Permission();
-        permission.setGrantedToV2(granted);
-        final PermissionCollectionResponse permissionResponse = new PermissionCollectionResponse();
-        permissionResponse.setValue(List.of(permission));
-        when(client.getSitePermissions("site-1")).thenReturn(permissionResponse);
-
-        final Notebook notebook = new Notebook();
-        notebook.setId("notebook-1");
-        notebook.setDisplayName("Site Notebook");
-        final NotebookCollectionResponse notebookResponse = new NotebookCollectionResponse();
-        notebookResponse.setValue(List.of(notebook));
-        when(client.getNotebookPage(NotebookScope.SITE, "site-1")).thenReturn(notebookResponse);
-
-        final List<List<String>> capturedRoles = new ArrayList<>();
-        final OneNoteDataStore captureDataStore = new OneNoteDataStore() {
-            @Override
-            protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
-                    final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
-                    final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
-                // Captures what storeSiteNotes actually resolved and passed down, instead of
-                // running the real indexing pipeline (which needs a live IndexUpdateCallback,
-                // extractor, etc. that this test does not set up).
-                capturedRoles.add(roles);
+            final ExecutorService executorService = Executors.newSingleThreadExecutor();
+            try {
+                dataStore.storeSiteNotes(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), executorService,
+                        client);
+            } finally {
+                executorService.shutdown();
+                assertTrue(executorService.awaitTermination(5, TimeUnit.SECONDS));
             }
-        };
 
-        final ExecutorService executorService = Executors.newSingleThreadExecutor();
-        try {
-            captureDataStore.storeSiteNotes(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(),
-                    executorService, client);
-        } finally {
-            executorService.shutdown();
-            assertTrue("processNotebook must have run before the test asserts on captured roles",
-                    executorService.awaitTermination(5, TimeUnit.SECONDS));
+            final List<String> paths = new ArrayList<>();
+            for (int i = 0; i < server.requestCount(); i++) {
+                paths.add(server.takePath());
+            }
+            assertFalse("no request may end in /permissions, but got: " + paths,
+                    paths.stream().anyMatch(path -> path.contains("/permissions")));
         }
+    }
 
-        assertEquals("processNotebook must run exactly once for the one site notebook returned", 1, capturedRoles.size());
-        final List<String> roles = capturedRoles.get(0);
-        assertFalse("site notebooks must not be indexed with an empty ACL: " + roles, roles.isEmpty());
-        final String expectedRole = ComponentUtil.getSystemHelper().getSearchRoleByUser("oid-1");
-        assertTrue("expected the site's resolved permission role in the notebook's roles, got " + roles, roles.contains(expectedRole));
+    /** Credentials are never used: GraphMockServer does not authenticate, and ClientSecretCredential
+     *  acquires tokens lazily, so construction is offline. */
+    private static DataStoreParams dummyParams() {
+        final DataStoreParams params = new DataStoreParams();
+        params.put("tenant", "dummy-tenant");
+        params.put("client_id", "dummy-client-id");
+        params.put("client_secret", "dummy-client-secret");
+        return params;
     }
 
     /**
-     * getSitePermissions throws {@link PermissionUnavailableException} under the default
-     * {@code permission_failure_policy}. storeData runs storeSiteNotes, storeUsersNotes and
-     * storeGroupsNotes one after another inside the same try block with no catch of its own, so
-     * letting this propagate out of storeSiteNotes would abort the entire crawl -- user and group
-     * notebooks too -- over a site-only permission failure. Pins that storeSiteNotes instead
-     * swallows it and returns normally, skipping only the site notebooks.
+     * {@link Microsoft365Client#client} is {@code protected}, reachable directly only from its
+     * own {@code client} package (see {@code Microsoft365ClientMockTest}); this subclass exposes
+     * it to tests in this package too, so a real {@code Microsoft365Client} can be pointed at a
+     * {@link GraphMockServer} instead of stubbing individual methods with Mockito.
      */
-    @Test
-    public void test_storeSiteNotes_permissionFailure_doesNotPropagate() throws Exception {
-        ComponentUtil.register(new SystemHelper(), "systemHelper");
-
-        final Microsoft365Client client = mock(Microsoft365Client.class);
-
-        final Site root = new Site();
-        root.setId("site-1");
-        when(client.getSite("root")).thenReturn(root);
-        when(client.getSitePermissions("site-1")).thenThrow(new RuntimeException("503"));
-
-        final ExecutorService executorService = Executors.newSingleThreadExecutor();
-        try {
-            // Must return normally: no exception, no site notebooks indexed.
-            dataStore.storeSiteNotes(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), executorService,
-                    client);
-        } finally {
-            executorService.shutdown();
-            assertTrue(executorService.awaitTermination(5, TimeUnit.SECONDS));
+    private static final class MockableMicrosoft365Client extends Microsoft365Client {
+        MockableMicrosoft365Client(final DataStoreParams params) {
+            super(params);
         }
 
-        // getNotebookPage must never be reached: the permission failure must short-circuit
-        // storeSiteNotes before it starts listing notebooks.
-        org.mockito.Mockito.verify(client, org.mockito.Mockito.never())
-                .getNotebookPage(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString());
+        void useServer(final GraphServiceClient graphClient) {
+            this.client = graphClient;
+        }
     }
 
     /**

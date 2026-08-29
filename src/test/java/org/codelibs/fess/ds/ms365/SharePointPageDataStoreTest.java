@@ -20,6 +20,7 @@ import org.junit.jupiter.api.TestInfo;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -28,7 +29,12 @@ import java.util.regex.Pattern;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
+import org.codelibs.fess.ds.ms365.client.GraphMockServer;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.PermissionHelper;
+import org.codelibs.fess.opensearch.config.exentity.DataConfig;
+import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.BaseSitePage;
 import com.microsoft.graph.models.CanvasLayout;
@@ -40,6 +46,7 @@ import com.microsoft.graph.models.StandardWebPart;
 import com.microsoft.graph.models.TextWebPart;
 import com.microsoft.graph.models.VerticalSection;
 import com.microsoft.graph.models.WebPart;
+import com.microsoft.graph.serviceclient.GraphServiceClient;
 
 public class SharePointPageDataStoreTest extends UnitDsTestCase {
 
@@ -487,6 +494,111 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         return page;
     }
 
+    /**
+     * Pages must not touch {@code GET /sites/{id}/permissions}: it needs
+     * {@code Sites.FullControl.All} and returns only application grants, never user or group
+     * roles. Runs {@link SharePointPageDataStore#processPage} -- which now computes a page's
+     * roles inline, the former {@code getPagePermissions} helper is gone -- against a real
+     * {@link Microsoft365Client} wired to a {@link GraphMockServer}, so the assertion is on
+     * actual HTTP traffic, not a mock's bookkeeping. {@code getPageWithContent} is overridden to
+     * return a fixture directly: that call is mandatory and unrelated to permissions, and
+     * fabricating the exact Graph JSON shape it expects would add risk without adding coverage.
+     */
+    @Test
+    public void test_processPage_doesNotRequestSitePermissions() throws Exception {
+        // crawlerStatsHelper and permissionHelper are not wired into test_app.xml, and both in
+        // turn need systemHelper (also not wired) -- crawlerStatsHelper directly, permissionHelper
+        // via its @Resource field, which plain ComponentUtil.register(...) does not auto-inject
+        // (see TestablePermissionHelper below) -- so all three are registered directly here, the
+        // same pattern Microsoft365DataStorePermissionTest and OneNoteDataStoreTest use.
+        final org.codelibs.fess.helper.SystemHelper systemHelper = new org.codelibs.fess.helper.SystemHelper();
+        ComponentUtil.register(systemHelper, "systemHelper");
+        final org.codelibs.fess.helper.CrawlerStatsHelper crawlerStatsHelper = new org.codelibs.fess.helper.CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(systemHelper);
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+
+        final SitePage fullPage = new SitePage();
+        fullPage.setId("page-1");
+        fullPage.setTitle("Test Page");
+        fullPage.setWebUrl("https://example.sharepoint.com/sites/site-1/SitePages/test.aspx");
+
+        try (GraphMockServer server = new GraphMockServer();
+                PageContentStubbedMicrosoft365Client client = new PageContentStubbedMicrosoft365Client(dummyParams(), fullPage)) {
+            // Queued defensively, not consumed by the fixed code: if a regression reintroduces a
+            // site-permissions request, this lets it complete (with an empty result) instead of
+            // blocking the test on an unfulfilled mock response, so the /permissions assertion
+            // below is what fails, quickly and legibly.
+            server.enqueueJson("{\"value\":[]}");
+            client.useServer(server.newGraphClient());
+
+            final Site site = new Site();
+            site.setId("site-1");
+            site.setDisplayName("Site");
+            site.setWebUrl("https://example.sharepoint.com/sites/site-1");
+
+            final SitePage page = new SitePage();
+            page.setId("page-1");
+            page.setWebUrl("https://example.sharepoint.com/sites/site-1/SitePages/test.aspx");
+            page.setTitle("Test Page");
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            paramMap.put(SharePointPageDataStore.DEFAULT_PERMISSIONS, "{role}admin");
+
+            final TestCallback callback = new TestCallback();
+            dataStore.processPage(new DataConfig(), callback, new LinkedHashMap<>(), paramMap, new HashMap<>(), new HashMap<>(), client,
+                    site, page);
+
+            assertEquals("processPage must index the page despite there being no site-permission source", 1, callback.getCount());
+
+            final List<String> paths = new ArrayList<>();
+            for (int i = 0; i < server.requestCount(); i++) {
+                paths.add(server.takePath());
+            }
+            assertFalse("no request may end in /permissions, but got: " + paths,
+                    paths.stream().anyMatch(path -> path.contains("/permissions")));
+        }
+    }
+
+    /** Credentials are never used: GraphMockServer does not authenticate, and ClientSecretCredential
+     *  acquires tokens lazily, so construction is offline. */
+    private static DataStoreParams dummyParams() {
+        final DataStoreParams params = new DataStoreParams();
+        params.put("tenant", "dummy-tenant");
+        params.put("client_id", "dummy-client-id");
+        params.put("client_secret", "dummy-client-secret");
+        return params;
+    }
+
+    /**
+     * {@link Microsoft365Client#client} is {@code protected}, reachable directly only from its
+     * own {@code client} package; this subclass exposes it to tests in this package too, so a
+     * real {@code Microsoft365Client} can be pointed at a {@link GraphMockServer} instead of
+     * stubbing individual methods with Mockito. It also overrides {@code getPageWithContent} to
+     * return a fixture directly, bypassing HTTP for that one, permissions-unrelated call: any
+     * other call this test does not expect (a resurrected site-permissions lookup among them)
+     * still reaches the mock server and shows up in its recorded request paths.
+     */
+    private static final class PageContentStubbedMicrosoft365Client extends Microsoft365Client {
+        private final BaseSitePage fullPage;
+
+        PageContentStubbedMicrosoft365Client(final DataStoreParams params, final BaseSitePage fullPage) {
+            super(params);
+            this.fullPage = fullPage;
+        }
+
+        void useServer(final GraphServiceClient graphClient) {
+            this.client = graphClient;
+        }
+
+        @Override
+        public BaseSitePage getPageWithContent(final String siteId, final String pageId) {
+            return fullPage;
+        }
+    }
+
     @Test
     public void testStoreData() {
         // This test requires actual Microsoft 365 credentials and would be integration test
@@ -516,6 +628,18 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         logger.info("Callback count: {}", callback.getCount());
         assertTrue(callback.getCount() > 0);
         */
+    }
+
+    /**
+     * {@link PermissionHelper#systemHelper} is {@code protected} and {@code @Resource}-injected
+     * by the full LastaFlute container, which this minimal test container does not run;
+     * {@link ComponentUtil#register} stores a plain instance without processing that annotation.
+     * This subclass exposes a same-package-crossing setter so the field can be wired by hand.
+     */
+    private static final class TestablePermissionHelper extends PermissionHelper {
+        void useSystemHelper(final org.codelibs.fess.helper.SystemHelper systemHelper) {
+            this.systemHelper = systemHelper;
+        }
     }
 
     private static class TestCallback implements IndexUpdateCallback {

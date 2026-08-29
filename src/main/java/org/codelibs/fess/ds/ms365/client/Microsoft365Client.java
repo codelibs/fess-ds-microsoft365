@@ -1025,45 +1025,6 @@ public class Microsoft365Client implements Closeable {
     }
 
     /**
-     * Retrieves permissions for a SharePoint site.
-     *
-     * @param siteId The ID of the SharePoint site
-     * @return PermissionCollectionResponse containing the site permissions
-     * @throws IllegalArgumentException if siteId is null or empty
-     */
-    public PermissionCollectionResponse getSitePermissions(final String siteId) {
-        if (StringUtil.isBlank(siteId)) {
-            throw new IllegalArgumentException("siteId cannot be null or empty");
-        }
-        if (logger.isDebugEnabled()) {
-            logger.debug("Getting site permissions - Site ID: {}", siteId);
-        }
-        final PermissionCollectionResponse response = client.sites().bySiteId(siteId).permissions().get();
-        if (logger.isDebugEnabled()) {
-            logger.debug("Retrieved {} site permissions for Site ID: {}", response.getValue() != null ? response.getValue().size() : 0,
-                    siteId);
-        }
-        return response;
-    }
-
-    /**
-     * Retrieves the next page of permissions for a SharePoint site using pagination.
-     *
-     * @param siteId The ID of the SharePoint site
-     * @param nextLink The next link URL for pagination
-     * @return PermissionCollectionResponse containing the next page of site permissions, or null if nextLink is blank
-     */
-    public PermissionCollectionResponse getSitePermissionsByNextLink(final String siteId, final String nextLink) {
-        if (StringUtil.isBlank(nextLink)) {
-            return null;
-        }
-        if (logger.isDebugEnabled()) {
-            logger.debug("Getting site permissions via next link - Site ID: {}", siteId);
-        }
-        return client.sites().bySiteId(siteId).permissions().withUrl(nextLink).get();
-    }
-
-    /**
      * Retrieves all items from a specific list with pagination support.
      *
      * @param siteId The ID of the site.

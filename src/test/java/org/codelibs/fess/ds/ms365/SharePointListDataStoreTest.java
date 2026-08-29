@@ -18,7 +18,9 @@ package org.codelibs.fess.ds.ms365;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -30,9 +32,18 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
+import org.codelibs.fess.ds.ms365.client.GraphMockServer;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.opensearch.config.exentity.DataConfig;
+import org.codelibs.fess.util.ComponentUtil;
 
+import com.microsoft.graph.models.FieldValueSet;
 import com.microsoft.graph.models.List;
+import com.microsoft.graph.models.ListInfo;
+import com.microsoft.graph.models.ListItem;
+import com.microsoft.graph.models.Site;
+import com.microsoft.graph.serviceclient.GraphServiceClient;
 
 public class SharePointListDataStoreTest extends UnitDsTestCase {
 
@@ -794,6 +805,104 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         } finally {
             coreLogger.removeAppender(appender);
             appender.stop();
+        }
+    }
+
+    /**
+     * List items must not touch {@code GET /sites/{id}/permissions}: it needs
+     * {@code Sites.FullControl.All} and returns only application grants, never user or group
+     * roles. Runs {@link SharePointListDataStore#processListItem} -- the method that used to call
+     * it once per item -- against a real {@link Microsoft365Client} wired to a
+     * {@link GraphMockServer}, so the assertion is on actual HTTP traffic, not a mock's
+     * bookkeeping. The item's fields are pre-populated so the (unrelated) field-refresh branch
+     * makes no request of its own, leaving the permissions call as the only possible traffic.
+     */
+    @Test
+    public void test_processListItem_doesNotRequestSitePermissions() throws Exception {
+        // crawlerStatsHelper and permissionHelper are not wired into test_app.xml, and
+        // crawlerStatsHelper in turn needs systemHelper (also not wired), so all three are
+        // registered directly here -- the same pattern Microsoft365DataStorePermissionTest and
+        // OneNoteDataStoreTest use. default_permissions is unset in this test, so
+        // permissionHelper.encode() is never actually called; only the component lookup itself
+        // needs to succeed.
+        ComponentUtil.register(new org.codelibs.fess.helper.SystemHelper(), "systemHelper");
+        final org.codelibs.fess.helper.CrawlerStatsHelper crawlerStatsHelper = new org.codelibs.fess.helper.CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+        ComponentUtil.register(new org.codelibs.fess.helper.PermissionHelper(), "permissionHelper");
+
+        try (GraphMockServer server = new GraphMockServer();
+                MockableMicrosoft365Client client = new MockableMicrosoft365Client(dummyParams())) {
+            // Queued defensively, not consumed by the fixed code: if a regression reintroduces a
+            // site-permissions request, this lets it complete (with an empty result) instead of
+            // blocking the test on an unfulfilled mock response, so the /permissions assertion
+            // below is what fails, quickly and legibly.
+            server.enqueueJson("{\"value\":[]}");
+            client.useServer(server.newGraphClient());
+
+            final Site site = new Site();
+            site.setId("site-1");
+            site.setDisplayName("Site");
+            site.setWebUrl("https://example.sharepoint.com/sites/site-1");
+
+            final ListInfo info = new ListInfo();
+            info.setTemplate("genericList");
+            final List list = new List();
+            list.setId("list-1");
+            list.setDisplayName("List");
+            list.setWebUrl("https://example.sharepoint.com/sites/site-1/Lists/List");
+            list.setList(info);
+
+            final ListItem item = new ListItem();
+            item.setId("item-1");
+            item.setWebUrl("https://example.sharepoint.com/sites/site-1/Lists/List/DispForm.aspx?ID=1");
+            final FieldValueSet fields = new FieldValueSet();
+            final Map<String, Object> additionalData = new HashMap<>();
+            additionalData.put("Title", "Test Item");
+            fields.setAdditionalData(additionalData);
+            item.setFields(fields);
+
+            final Map<String, Object> configMap = new LinkedHashMap<>();
+            configMap.put(SharePointListDataStore.IGNORE_ERROR, Boolean.FALSE);
+
+            final TestCallback callback = new TestCallback();
+            dataStore.processListItem(new DataConfig(), callback, configMap, new DataStoreParams(), new HashMap<>(), new HashMap<>(),
+                    client, site, list, item);
+
+            assertEquals("processListItem must index the item despite there being no site-permission source", 1, callback.getCount());
+
+            final java.util.List<String> paths = new ArrayList<>();
+            for (int i = 0; i < server.requestCount(); i++) {
+                paths.add(server.takePath());
+            }
+            assertFalse("no request may end in /permissions, but got: " + paths,
+                    paths.stream().anyMatch(path -> path.contains("/permissions")));
+        }
+    }
+
+    /** Credentials are never used: GraphMockServer does not authenticate, and ClientSecretCredential
+     *  acquires tokens lazily, so construction is offline. */
+    private static DataStoreParams dummyParams() {
+        final DataStoreParams params = new DataStoreParams();
+        params.put("tenant", "dummy-tenant");
+        params.put("client_id", "dummy-client-id");
+        params.put("client_secret", "dummy-client-secret");
+        return params;
+    }
+
+    /**
+     * {@link Microsoft365Client#client} is {@code protected}, reachable directly only from its
+     * own {@code client} package (see {@code Microsoft365ClientMockTest}); this subclass exposes
+     * it to tests in this package too, so a real {@code Microsoft365Client} can be pointed at a
+     * {@link GraphMockServer} instead of stubbing individual methods with Mockito.
+     */
+    private static final class MockableMicrosoft365Client extends Microsoft365Client {
+        MockableMicrosoft365Client(final DataStoreParams params) {
+            super(params);
+        }
+
+        void useServer(final GraphServiceClient graphClient) {
+            this.client = graphClient;
         }
     }
 

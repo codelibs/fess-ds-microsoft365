@@ -304,62 +304,6 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     }
 
     /**
-     * Retrieves and processes permissions for a SharePoint site, converting them to role strings.
-     *
-     * @param client The Microsoft365Client instance to use for API calls
-     * @param siteId The ID of the SharePoint site
-     * @param paramMap the data store parameters, consulted for {@link #PERMISSION_FAILURE_POLICY}
-     * @return List of permission strings in the format "user:email" or "group:id"
-     */
-    protected List<String> getSitePermissions(final Microsoft365Client client, final String siteId, final DataStoreParams paramMap) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("Retrieving permissions for site - SiteId: {}", siteId);
-        }
-
-        final List<String> permissions = new ArrayList<>();
-        try {
-            PermissionCollectionResponse response = client.getSitePermissions(siteId);
-            // No grantedToV2 pre-check: a sharing-link permission has grantedToV2 null and link
-            // set, and assignPermission handles both shapes. Gating here made the link branch
-            // unreachable from this path while SharePointDocLibDataStore reached it, so the same
-            // file got a different ACL depending on which DataStore indexed it.
-            final Consumer<Permission> consumer = p -> assignPermission(client, permissions, p);
-
-            // Handle pagination with odata.nextLink
-            while (response != null && response.getValue() != null) {
-                response.getValue().forEach(consumer);
-
-                // Check if there's a next page
-                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                    // No more pages, exit loop
-                    break;
-                }
-                // Request the next page using a helper method in Microsoft365Client
-                try {
-                    response = client.getSitePermissionsByNextLink(siteId, response.getOdataNextLink());
-                } catch (final Exception e) {
-                    // A partial page must not be treated as the complete ACL: roles named only on
-                    // later pages would otherwise be silently dropped from the document's permissions.
-                    handlePermissionFailure(paramMap, siteId, e);
-                    break;
-                }
-            }
-
-            if (logger.isDebugEnabled()) {
-                logger.debug("Successfully retrieved {} permissions for site: {}", permissions.size(), siteId);
-            }
-        } catch (final Exception e) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Failed to retrieve permissions for site: {}", siteId, e);
-            } else {
-                logger.warn("Failed to retrieve permissions for site: {} - {}", siteId, e.getMessage());
-            }
-            handlePermissionFailure(paramMap, siteId, e);
-        }
-        return permissions;
-    }
-
-    /**
      * Assigns the roles named by a permission to the given list.
      *
      * <p>Graph carries grantees in two fields: {@code grantedToV2} for a permission granted
