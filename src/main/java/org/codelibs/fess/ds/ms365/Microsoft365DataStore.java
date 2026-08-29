@@ -42,6 +42,7 @@ import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.Permission;
 import com.microsoft.graph.models.PermissionCollectionResponse;
+import com.microsoft.graph.models.SharePointIdentitySet;
 import com.microsoft.graph.models.User;
 
 /**
@@ -359,47 +360,74 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     }
 
     /**
-     * Assigns a permission to a user or group.
+     * Assigns the roles named by a permission to the given list.
+     *
+     * <p>Graph carries grantees in two fields: {@code grantedToV2} for a permission granted
+     * directly to one identity, and {@code grantedToIdentitiesV2} for the grantees of a link
+     * shared with specific people. Both are read. The deprecated {@code grantedTo} /
+     * {@code grantedToIdentities} pair is deliberately not read.
      *
      * @param client The Microsoft365Client.
      * @param permissions The list of permissions.
      * @param permission The permission to assign.
      */
     protected void assignPermission(final Microsoft365Client client, final List<String> permissions, final Permission permission) {
-        final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
+        final int before = permissions.size();
         if (permission.getGrantedToV2() != null) {
-            if (permission.getGrantedToV2().getUser() != null) {
-                final String oid = permission.getGrantedToV2().getUser().getId();
-                permissions.add(systemHelper.getSearchRoleByUser(oid));
-                final String principal = client.tryResolveUserPrincipalName(oid);
-                if (StringUtil.isNotBlank(principal) && !principal.equals(oid)) {
-                    permissions.add(systemHelper.getSearchRoleByUser(principal));
+            assignIdentity(client, permissions, permission.getGrantedToV2());
+        }
+        if (permission.getGrantedToIdentitiesV2() != null) {
+            permission.getGrantedToIdentitiesV2().forEach(identity -> {
+                if (identity != null) {
+                    assignIdentity(client, permissions, identity);
                 }
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Assigned permission to user - ID: {}, Principal: {}", oid, principal);
-
-                }
-                return;
-            }
-            if (permission.getGrantedToV2().getGroup() != null) {
-                final String gid = permission.getGrantedToV2().getGroup().getId();
-                permissions.add(systemHelper.getSearchRoleByGroup(gid));
-                final String principal = client.tryResolveGroupName(gid);
-                if (StringUtil.isNotBlank(principal) && !principal.equals(gid)) {
-                    permissions.add(systemHelper.getSearchRoleByGroup(principal));
-                }
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Assigned permission to group - ID: {}, Principal: {}", gid, principal);
-                }
-                return;
-            }
+            });
+        }
+        if (permissions.size() > before) {
+            // A named grantee is more specific than the link's scope; do not widen the ACL.
+            return;
         }
         if (permission.getLink() != null) {
             final var link = permission.getLink();
             if ("organization".equalsIgnoreCase(link.getScope())) {
-                permissions.add(systemHelper.getSearchRoleByGroup("EVERYONE_IN_TENANT"));
+                permissions.add(ComponentUtil.getSystemHelper().getSearchRoleByGroup("EVERYONE_IN_TENANT"));
             }
             // "anonymous" ?
+        }
+    }
+
+    /**
+     * Assigns the role named by a single identity set. A user identity takes precedence over a
+     * group identity within one set.
+     *
+     * @param client The Microsoft365Client.
+     * @param permissions The list of permissions.
+     * @param identity The identity set to read.
+     */
+    protected void assignIdentity(final Microsoft365Client client, final List<String> permissions, final SharePointIdentitySet identity) {
+        final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
+        if (identity.getUser() != null) {
+            final String oid = identity.getUser().getId();
+            permissions.add(systemHelper.getSearchRoleByUser(oid));
+            final String principal = client.tryResolveUserPrincipalName(oid);
+            if (StringUtil.isNotBlank(principal) && !principal.equals(oid)) {
+                permissions.add(systemHelper.getSearchRoleByUser(principal));
+            }
+            if (logger.isDebugEnabled()) {
+                logger.debug("Assigned permission to user - ID: {}, Principal: {}", oid, principal);
+            }
+            return;
+        }
+        if (identity.getGroup() != null) {
+            final String gid = identity.getGroup().getId();
+            permissions.add(systemHelper.getSearchRoleByGroup(gid));
+            final String principal = client.tryResolveGroupName(gid);
+            if (StringUtil.isNotBlank(principal) && !principal.equals(gid)) {
+                permissions.add(systemHelper.getSearchRoleByGroup(principal));
+            }
+            if (logger.isDebugEnabled()) {
+                logger.debug("Assigned permission to group - ID: {}, Principal: {}", gid, principal);
+            }
         }
     }
 

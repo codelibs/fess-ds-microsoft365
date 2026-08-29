@@ -107,6 +107,113 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         assertFalse("the raw display name must never become a role: " + permissions, permissions.contains("Display Name Of gid-1"));
     }
 
+    // ===== The plural grantedToIdentitiesV2 collection must also be read =====
+
+    @Test
+    public void test_assignPermission_readsGrantedToIdentitiesV2Users() {
+        final SharePointIdentitySet first = new SharePointIdentitySet();
+        final Identity firstUser = new Identity();
+        firstUser.setId("11111111-1111-1111-1111-111111111111");
+        first.setUser(firstUser);
+
+        final SharePointIdentitySet second = new SharePointIdentitySet();
+        final Identity secondUser = new Identity();
+        secondUser.setId("22222222-2222-2222-2222-222222222222");
+        second.setUser(secondUser);
+
+        final Permission permission = new Permission();
+        permission.setGrantedToIdentitiesV2(List.of(first, second));
+
+        final List<String> permissions = new java.util.ArrayList<>();
+        pageDataStore.assignPermission(client, permissions, permission);
+
+        final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
+        assertEquals(List.of(systemHelper.getSearchRoleByUser("11111111-1111-1111-1111-111111111111"),
+                systemHelper.getSearchRoleByUser("22222222-2222-2222-2222-222222222222")), permissions);
+    }
+
+    @Test
+    public void test_assignPermission_readsGrantedToIdentitiesV2Groups() {
+        final SharePointIdentitySet set = new SharePointIdentitySet();
+        final Identity group = new Identity();
+        group.setId("33333333-3333-3333-3333-333333333333");
+        set.setGroup(group);
+
+        final Permission permission = new Permission();
+        permission.setGrantedToIdentitiesV2(List.of(set));
+
+        final List<String> permissions = new java.util.ArrayList<>();
+        pageDataStore.assignPermission(client, permissions, permission);
+
+        assertEquals(List.of(ComponentUtil.getSystemHelper().getSearchRoleByGroup("33333333-3333-3333-3333-333333333333")), permissions);
+    }
+
+    @Test
+    public void test_assignPermission_singularAndPluralAreBothRead() {
+        final SharePointIdentitySet singular = new SharePointIdentitySet();
+        final Identity singularUser = new Identity();
+        singularUser.setId("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        singular.setUser(singularUser);
+
+        final SharePointIdentitySet plural = new SharePointIdentitySet();
+        final Identity pluralUser = new Identity();
+        pluralUser.setId("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        plural.setUser(pluralUser);
+
+        final Permission permission = new Permission();
+        permission.setGrantedToV2(singular);
+        permission.setGrantedToIdentitiesV2(List.of(plural));
+
+        final List<String> permissions = new java.util.ArrayList<>();
+        pageDataStore.assignPermission(client, permissions, permission);
+
+        final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
+        assertEquals(List.of(systemHelper.getSearchRoleByUser("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                systemHelper.getSearchRoleByUser("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")), permissions);
+    }
+
+    @Test
+    public void test_assignPermission_linkRoleOnlyWhenNoIdentityMatched() {
+        final SharePointIdentitySet set = new SharePointIdentitySet();
+        final Identity user = new Identity();
+        user.setId("cccccccc-cccc-cccc-cccc-cccccccccccc");
+        set.setUser(user);
+
+        final SharingLink link = new SharingLink();
+        link.setScope("organization");
+
+        final Permission permission = new Permission();
+        permission.setGrantedToIdentitiesV2(List.of(set));
+        permission.setLink(link);
+
+        final List<String> permissions = new java.util.ArrayList<>();
+        pageDataStore.assignPermission(client, permissions, permission);
+
+        // The named grantee wins; EVERYONE_IN_TENANT is not also added.
+        assertEquals(List.of(ComponentUtil.getSystemHelper().getSearchRoleByUser("cccccccc-cccc-cccc-cccc-cccccccccccc")), permissions);
+    }
+
+    /**
+     * Pins the precedence documented on {@code assignIdentity}: within one identity set a user
+     * wins over a group. Without the {@code return} after the user branch, a set naming both
+     * would contribute both roles instead of just the user's.
+     */
+    @Test
+    public void test_assignIdentity_userTakesPrecedenceOverGroupWithinOneIdentity() {
+        final SharePointIdentitySet set = new SharePointIdentitySet();
+        final Identity user = new Identity();
+        user.setId("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        set.setUser(user);
+        final Identity group = new Identity();
+        group.setId("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+        set.setGroup(group);
+
+        final List<String> permissions = new java.util.ArrayList<>();
+        pageDataStore.assignIdentity(client, permissions, set);
+
+        assertEquals(List.of(ComponentUtil.getSystemHelper().getSearchRoleByUser("dddddddd-dddd-dddd-dddd-dddddddddddd")), permissions);
+    }
+
     // ===== Sharing-link permissions must reach assignPermission from every ACL path =====
 
     @Test
