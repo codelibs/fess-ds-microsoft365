@@ -408,32 +408,58 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
         if (identity.getUser() != null) {
             final String oid = identity.getUser().getId();
-            permissions.add(systemHelper.getSearchRoleByUser(oid));
-            final String principal = client.tryResolveUserPrincipalName(oid);
-            if (StringUtil.isNotBlank(principal) && !principal.equals(oid)) {
-                permissions.add(systemHelper.getSearchRoleByUser(principal));
-            }
-            if (logger.isDebugEnabled()) {
-                logger.debug("Assigned permission to user - ID: {}, Principal: {}", oid, principal);
+            // An unredeemed external invitee has a displayName/email but no directory object id;
+            // getSearchRoleByUser(null) reaches FessProp#getCanonicalLdapName, which NPEs on
+            // null.split(...) under the default ldap.ignore.netbios.name=true. Skip rather than
+            // encode a role that cannot be built -- and must not throw, or the whole document is
+            // dropped by the caller's outer catch.
+            if (StringUtil.isNotBlank(oid)) {
+                permissions.add(systemHelper.getSearchRoleByUser(oid));
+                final String principal = client.tryResolveUserPrincipalName(oid);
+                if (StringUtil.isNotBlank(principal) && !principal.equals(oid)) {
+                    permissions.add(systemHelper.getSearchRoleByUser(principal));
+                }
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Assigned permission to user - ID: {}, Principal: {}", oid, principal);
+                }
             }
             return;
         }
         if (identity.getGroup() != null) {
             final String gid = identity.getGroup().getId();
-            permissions.add(systemHelper.getSearchRoleByGroup(gid));
-            final String principal = client.tryResolveGroupName(gid);
-            if (StringUtil.isNotBlank(principal) && !principal.equals(gid)) {
-                permissions.add(systemHelper.getSearchRoleByGroup(principal));
-            }
-            if (logger.isDebugEnabled()) {
-                logger.debug("Assigned permission to group - ID: {}, Principal: {}", gid, principal);
+            // Same hazard as the user branch above: a group identity with no id must not throw.
+            if (StringUtil.isNotBlank(gid)) {
+                permissions.add(systemHelper.getSearchRoleByGroup(gid));
+                final String principal = client.tryResolveGroupName(gid);
+                if (StringUtil.isNotBlank(principal) && !principal.equals(gid)) {
+                    permissions.add(systemHelper.getSearchRoleByGroup(principal));
+                }
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Assigned permission to group - ID: {}, Principal: {}", gid, principal);
+                }
             }
         }
-        if (logger.isDebugEnabled()) {
-            final String kind = describeUnmappableIdentity(identity);
-            if (kind != null) {
-                logger.debug("Skipped a {} grantee: it carries no Entra object id, so it cannot become a search role.", kind);
-            }
+        logUnmappableIdentity(identity);
+    }
+
+    /**
+     * Logs that a grantee could not be mapped to a search role, naming its principal kind.
+     *
+     * <p>Extracted out of {@link #assignIdentity} so a test can override it and record the
+     * calls: the debug log line it produces has no other assertable effect, so without this seam
+     * the entire production effect of reporting an unmappable grantee -- the actual deliverable
+     * here -- would have no coverage; deleting the call from {@code assignIdentity} would leave
+     * the suite green.
+     *
+     * @param identity The identity set to describe, when it names an unmappable principal.
+     */
+    protected void logUnmappableIdentity(final SharePointIdentitySet identity) {
+        if (!logger.isDebugEnabled()) {
+            return;
+        }
+        final String kind = describeUnmappableIdentity(identity);
+        if (kind != null) {
+            logger.debug("Skipped a {} grantee: it carries no Entra object id, so it cannot become a search role.", kind);
         }
     }
 

@@ -31,6 +31,7 @@ import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.Identity;
 import com.microsoft.graph.models.Permission;
 import com.microsoft.graph.models.PermissionCollectionResponse;
+import com.microsoft.graph.models.SharePointGroupIdentity;
 import com.microsoft.graph.models.SharePointIdentity;
 import com.microsoft.graph.models.SharePointIdentitySet;
 import com.microsoft.graph.models.SharingLink;
@@ -195,6 +196,26 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
     }
 
     /**
+     * The "organization" scope check on the link branch is unchanged by this phase's diff, but
+     * Task 1 made the branch reachable from two more ACL paths (OneDrive and site), so a
+     * regression here -- e.g. dropping the {@code equalsIgnoreCase} condition so any scope widens
+     * the ACL -- would now widen those two ACLs too. Every other link fixture in this class uses
+     * "organization"; this is the only one that pins "anonymous" contributing nothing.
+     */
+    @Test
+    public void test_assignPermission_anonymousLinkWithNoGranteesContributesNoRole() {
+        final SharingLink link = new SharingLink();
+        link.setScope("anonymous");
+        final Permission permission = new Permission();
+        permission.setLink(link);
+
+        final List<String> permissions = new java.util.ArrayList<>();
+        pageDataStore.assignPermission(client, permissions, permission);
+
+        assertTrue(permissions.isEmpty());
+    }
+
+    /**
      * Pins the precedence documented on {@code assignIdentity}: within one identity set a user
      * wins over a group. Without the {@code return} after the user branch, a set naming both
      * would contribute both roles instead of just the user's.
@@ -215,29 +236,93 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         assertEquals(List.of(ComponentUtil.getSystemHelper().getSearchRoleByUser("dddddddd-dddd-dddd-dddd-dddddddddddd")), permissions);
     }
 
+    // ===== An identity with no usable id must not throw and must not drop the whole document =====
+
+    /**
+     * A file shared with an unredeemed external invitee returns a user object with a display
+     * name/email but no directory object id. Before the guard, {@code getSearchRoleByUser(null)}
+     * reached {@code FessProp#getCanonicalLdapName}, which NPEs on {@code null.split(...)} under
+     * the default {@code ldap.ignore.netbios.name=true}. That NPE propagated out of
+     * assignPermission, was caught by the caller's outer catch, and under the default
+     * permission_failure_policy dropped the whole document from the index -- worse than the
+     * pre-Task-2 behaviour, which simply ignored the ungranted identity.
+     */
+    @Test
+    public void test_assignIdentity_userWithNoIdContributesNoRoleAndDoesNotThrow() {
+        final SharePointIdentitySet set = new SharePointIdentitySet();
+        final Identity user = new Identity();
+        user.setDisplayName("jane@fabrikam.com");
+        // id deliberately left null: the shape Graph returns for an unredeemed external invitee.
+        set.setUser(user);
+
+        final List<String> permissions = new java.util.ArrayList<>();
+        pageDataStore.assignIdentity(client, permissions, set);
+
+        assertTrue(permissions.isEmpty());
+    }
+
+    @Test
+    public void test_assignIdentity_groupWithNoIdContributesNoRoleAndDoesNotThrow() {
+        final SharePointIdentitySet set = new SharePointIdentitySet();
+        final Identity group = new Identity();
+        group.setDisplayName("External Sharing Group");
+        // id deliberately left null, mirroring the user case above.
+        set.setGroup(group);
+
+        final List<String> permissions = new java.util.ArrayList<>();
+        pageDataStore.assignIdentity(client, permissions, set);
+
+        assertTrue(permissions.isEmpty());
+    }
+
     // ===== SharePoint-local principals cannot be mapped, but must not vanish silently =====
 
     @Test
-    public void test_describeUnmappableIdentity_namesEachUnsupportedPrincipalKind() {
+    public void test_describeUnmappableIdentity_siteGroup() {
         final SharePointIdentitySet siteGroupSet = new SharePointIdentitySet();
         final SharePointIdentity siteGroup = new SharePointIdentity();
         siteGroup.setId("17");
         siteGroup.setDisplayName("Test Site Group");
         siteGroupSet.setSiteGroup(siteGroup);
         assertEquals("siteGroup", pageDataStore.describeUnmappableIdentity(siteGroupSet));
+    }
 
+    @Test
+    public void test_describeUnmappableIdentity_siteUser() {
         final SharePointIdentitySet siteUserSet = new SharePointIdentitySet();
         final SharePointIdentity siteUser = new SharePointIdentity();
         siteUser.setId("9");
         siteUserSet.setSiteUser(siteUser);
         assertEquals("siteUser", pageDataStore.describeUnmappableIdentity(siteUserSet));
+    }
 
+    /**
+     * {@code SharePointGroupIdentity} is a distinct type from {@code SharePointIdentity} (setter
+     * names confirmed with {@code javap} against microsoft-graph 6.67.0: {@code setPrincipalId} /
+     * {@code setTitle}, not {@code setId} / {@code setDisplayName}), so this kind needs its own
+     * fixture rather than reusing the {@code SharePointIdentity} helper above.
+     */
+    @Test
+    public void test_describeUnmappableIdentity_sharePointGroup() {
+        final SharePointIdentitySet sharePointGroupSet = new SharePointIdentitySet();
+        final SharePointGroupIdentity sharePointGroup = new SharePointGroupIdentity();
+        sharePointGroup.setPrincipalId("21");
+        sharePointGroup.setTitle("Test SharePoint Group");
+        sharePointGroupSet.setSharePointGroup(sharePointGroup);
+        assertEquals("sharePointGroup", pageDataStore.describeUnmappableIdentity(sharePointGroupSet));
+    }
+
+    @Test
+    public void test_describeUnmappableIdentity_application() {
         final SharePointIdentitySet appSet = new SharePointIdentitySet();
         final Identity app = new Identity();
         app.setId("89ea5c94-7736-4e25-95ad-3fa95f62b66e");
         appSet.setApplication(app);
         assertEquals("application", pageDataStore.describeUnmappableIdentity(appSet));
+    }
 
+    @Test
+    public void test_describeUnmappableIdentity_mappableUserReturnsNull() {
         final SharePointIdentitySet userSet = new SharePointIdentitySet();
         final Identity user = new Identity();
         user.setId("dddddddd-dddd-dddd-dddd-dddddddddddd");
@@ -259,6 +344,36 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         // A site-local principal id is not an Entra object id; encoding it would produce a role
         // that matches nobody. It must not silently become a role.
         assertTrue(permissions.isEmpty());
+    }
+
+    /**
+     * assignIdentity's debug log line is not itself assertable, so this overrides
+     * {@code logUnmappableIdentity} on a dedicated instance to record the calls it receives --
+     * the seam that {@code logUnmappableIdentity} exists for. Without it, deleting the call from
+     * {@code assignIdentity} leaves the rest of the suite green: Task 3's actual deliverable
+     * (that an unmappable grantee is reported rather than silently dropped) would have no
+     * coverage at all.
+     */
+    @Test
+    public void test_assignIdentity_unmappablePrincipalIsReported() {
+        final List<SharePointIdentitySet> logged = new java.util.ArrayList<>();
+        final SharePointPageDataStore recordingDataStore = new SharePointPageDataStore() {
+            @Override
+            protected void logUnmappableIdentity(final SharePointIdentitySet identity) {
+                logged.add(identity);
+            }
+        };
+
+        final SharePointIdentitySet set = new SharePointIdentitySet();
+        final SharePointIdentity siteGroup = new SharePointIdentity();
+        siteGroup.setId("17");
+        siteGroup.setDisplayName("Test Site Group");
+        set.setSiteGroup(siteGroup);
+
+        recordingDataStore.assignIdentity(client, new java.util.ArrayList<>(), set);
+
+        assertTrue("expected exactly one call reporting the unmappable identity, got " + logged, logged.size() == 1);
+        assertSame(set, logged.get(0));
     }
 
     // ===== Sharing-link permissions must reach assignPermission from every ACL path =====
@@ -285,6 +400,41 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         final List<String> roles = pageDataStore.getDriveItemPermissions(mockClient, "drive-1", item, new DataStoreParams());
 
         assertEquals(List.of(ComponentUtil.getSystemHelper().getSearchRoleByGroup("EVERYONE_IN_TENANT")), roles);
+    }
+
+    /**
+     * Pins the "before" guard in assignPermission against the mutation
+     * {@code if (permissions.size() > before)} -> {@code if (!permissions.isEmpty())} (or
+     * equivalently capturing {@code before = 0}), which every other test in this class cannot
+     * catch because they all start from an empty list. A drive whose permission page is
+     * {@code [user U, organization link]} must keep both roles: the second permission's own
+     * {@code before} must be re-captured at the top of its own call, not fixed at zero for the
+     * whole page.
+     */
+    @Test
+    public void test_getDriveItemPermissions_namedUserThenOrganizationLinkKeepsBothRoles() {
+        final SharingLink link = new SharingLink();
+        link.setScope("organization");
+        final Permission linkPermission = new Permission();
+        linkPermission.setLink(link);
+
+        final PermissionCollectionResponse response = new PermissionCollectionResponse();
+        response.setValue(List.of(userPermission("oid-page"), linkPermission));
+
+        final Microsoft365Client mockClient = mock(Microsoft365Client.class);
+        when(mockClient.tryResolveUserPrincipalName(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
+        when(mockClient.getDrivePermissions("drive-1", "item-1")).thenReturn(response);
+
+        final DriveItem item = new DriveItem();
+        item.setId("item-1");
+        item.setName("shared.docx");
+
+        final List<String> roles = pageDataStore.getDriveItemPermissions(mockClient, "drive-1", item, new DataStoreParams());
+
+        final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
+        assertTrue("expected the named user's role, got " + roles, roles.contains(systemHelper.getSearchRoleByUser("oid-page")));
+        assertTrue("expected EVERYONE_IN_TENANT from the second, link-only permission, got " + roles,
+                roles.contains(systemHelper.getSearchRoleByGroup("EVERYONE_IN_TENANT")));
     }
 
     @Test
