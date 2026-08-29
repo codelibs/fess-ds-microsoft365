@@ -169,6 +169,35 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         assertEquals(Microsoft365Client.DEFAULT_CACHE_SIZE, Microsoft365Client.getCacheSize(new DataStoreParams()));
     }
 
+    @Test
+    public void test_getCacheSize_negativeValueFallsBackToDefault() {
+        final DataStoreParams params = new DataStoreParams();
+        params.put("cache_size", "-1");
+        assertEquals(Microsoft365Client.DEFAULT_CACHE_SIZE, Microsoft365Client.getCacheSize(params));
+    }
+
+    /**
+     * Reproduces the crash the reviewer found directly: {@code Integer.parseInt("-1")} succeeds,
+     * so a bare {@code getCacheSize} guard against unparseable input alone is not enough --
+     * Guava's {@code CacheBuilder#maximumSize(long)} rejects a negative size with its own
+     * {@code IllegalArgumentException}, uncaught by anything in the constructor. This constructs
+     * a real client (no network call happens: {@code ClientSecretCredential} is lazy) to prove
+     * the constructor itself survives a negative cache_size end to end, not just that the helper
+     * method returns the right number in isolation.
+     */
+    @Test
+    public void test_constructorDoesNotThrow_whenCacheSizeIsNegative() throws Exception {
+        final DataStoreParams params = new DataStoreParams();
+        params.put(Microsoft365Client.TENANT_PARAM, "dummy-tenant");
+        params.put(Microsoft365Client.CLIENT_ID_PARAM, "dummy-client-id");
+        params.put(Microsoft365Client.CLIENT_SECRET_PARAM, "dummy-client-secret");
+        params.put("cache_size", "-1");
+
+        try (Microsoft365Client target = new Microsoft365Client(params)) {
+            assertNotNull(target.userTypeCache);
+        }
+    }
+
     /**
      * Test that DEFAULT_CACHE_SIZE is an int constant and has the correct value.
      */
@@ -370,6 +399,26 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
             assertEquals(1, server.requestCount());
             final String path = server.takePath();
             assertTrue("expected a single-group path but was: " + path, path.startsWith("/groups/group-1"));
+        }
+    }
+
+    /**
+     * getGroupById's old getGroups-backed implementation returned groupTypes on every Group it
+     * enumerated; the single-group $select list copied from getTeams does not include it. This
+     * asserts the $select query parameter itself, via the recorded request path, so a future
+     * edit that drops the field again is caught here rather than by a script silently seeing
+     * team.groupTypes as null.
+     */
+    @Test
+    public void test_getGroupById_selectsGroupTypes() throws Exception {
+        try (GraphMockServer server = new GraphMockServer()) {
+            server.enqueueJson("{\"id\":\"group-1\",\"displayName\":\"Contoso Team\"}");
+
+            final Microsoft365Client target = newClientBackedBy(server);
+            target.getGroupById("group-1");
+
+            final String path = server.takePath();
+            assertTrue("expected the $select query to include groupTypes but was: " + path, path.contains("groupTypes"));
         }
     }
 

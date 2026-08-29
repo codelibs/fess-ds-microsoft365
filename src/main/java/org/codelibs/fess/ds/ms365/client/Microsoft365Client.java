@@ -299,7 +299,12 @@ public class Microsoft365Client implements Closeable {
     protected static int getCacheSize(final DataStoreParams params) {
         final String value = params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE));
         try {
-            return Integer.parseInt(value);
+            final int size = Integer.parseInt(value);
+            if (size < 0) {
+                logger.warn("{}={} must not be negative. Using {}.", CACHE_SIZE, value, DEFAULT_CACHE_SIZE);
+                return DEFAULT_CACHE_SIZE;
+            }
+            return size;
         } catch (final NumberFormatException e) {
             logger.warn("Failed to parse {}={}. Using {}.", CACHE_SIZE, value, DEFAULT_CACHE_SIZE, e);
             return DEFAULT_CACHE_SIZE;
@@ -605,8 +610,8 @@ public class Microsoft365Client implements Closeable {
     public Group getGroupById(final String id) {
         try {
             final Group group = client.groups().byGroupId(id).get(requestConfiguration -> {
-                requestConfiguration.queryParameters.select =
-                        new String[] { "id", "displayName", "mail", "description", "resourceProvisioningOptions", "visibility" };
+                requestConfiguration.queryParameters.select = new String[] { "id", "displayName", "mail", "description",
+                        "resourceProvisioningOptions", "visibility", "groupTypes" };
             });
             if (logger.isDebugEnabled() && group != null) {
                 logger.debug("Group: {}", ToStringBuilder.reflectionToString(group));
