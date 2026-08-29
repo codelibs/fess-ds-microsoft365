@@ -31,6 +31,7 @@ import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.Identity;
 import com.microsoft.graph.models.Permission;
 import com.microsoft.graph.models.PermissionCollectionResponse;
+import com.microsoft.graph.models.SharePointIdentity;
 import com.microsoft.graph.models.SharePointIdentitySet;
 import com.microsoft.graph.models.SharingLink;
 
@@ -212,6 +213,52 @@ public class Microsoft365DataStorePermissionTest extends UnitDsTestCase {
         pageDataStore.assignIdentity(client, permissions, set);
 
         assertEquals(List.of(ComponentUtil.getSystemHelper().getSearchRoleByUser("dddddddd-dddd-dddd-dddd-dddddddddddd")), permissions);
+    }
+
+    // ===== SharePoint-local principals cannot be mapped, but must not vanish silently =====
+
+    @Test
+    public void test_describeUnmappableIdentity_namesEachUnsupportedPrincipalKind() {
+        final SharePointIdentitySet siteGroupSet = new SharePointIdentitySet();
+        final SharePointIdentity siteGroup = new SharePointIdentity();
+        siteGroup.setId("17");
+        siteGroup.setDisplayName("Test Site Group");
+        siteGroupSet.setSiteGroup(siteGroup);
+        assertEquals("siteGroup", pageDataStore.describeUnmappableIdentity(siteGroupSet));
+
+        final SharePointIdentitySet siteUserSet = new SharePointIdentitySet();
+        final SharePointIdentity siteUser = new SharePointIdentity();
+        siteUser.setId("9");
+        siteUserSet.setSiteUser(siteUser);
+        assertEquals("siteUser", pageDataStore.describeUnmappableIdentity(siteUserSet));
+
+        final SharePointIdentitySet appSet = new SharePointIdentitySet();
+        final Identity app = new Identity();
+        app.setId("89ea5c94-7736-4e25-95ad-3fa95f62b66e");
+        appSet.setApplication(app);
+        assertEquals("application", pageDataStore.describeUnmappableIdentity(appSet));
+
+        final SharePointIdentitySet userSet = new SharePointIdentitySet();
+        final Identity user = new Identity();
+        user.setId("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        userSet.setUser(user);
+        assertNull(pageDataStore.describeUnmappableIdentity(userSet));
+    }
+
+    @Test
+    public void test_assignIdentity_unmappablePrincipalAddsNoRole() {
+        final SharePointIdentitySet set = new SharePointIdentitySet();
+        final SharePointIdentity siteGroup = new SharePointIdentity();
+        siteGroup.setId("17");
+        siteGroup.setDisplayName("Test Site Group");
+        set.setSiteGroup(siteGroup);
+
+        final List<String> permissions = new java.util.ArrayList<>();
+        pageDataStore.assignIdentity(client, permissions, set);
+
+        // A site-local principal id is not an Entra object id; encoding it would produce a role
+        // that matches nobody. It must not silently become a role.
+        assertTrue(permissions.isEmpty());
     }
 
     // ===== Sharing-link permissions must reach assignPermission from every ACL path =====

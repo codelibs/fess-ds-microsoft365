@@ -429,6 +429,45 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 logger.debug("Assigned permission to group - ID: {}, Principal: {}", gid, principal);
             }
         }
+        if (logger.isDebugEnabled()) {
+            final String kind = describeUnmappableIdentity(identity);
+            if (kind != null) {
+                logger.debug("Skipped a {} grantee: it carries no Entra object id, so it cannot become a search role.", kind);
+            }
+        }
+    }
+
+    /**
+     * Names the principal kind of an identity set this plugin cannot map to a Fess role, or
+     * {@code null} when the set names a directory user or group that it can map.
+     *
+     * <p>SharePoint-local principals ({@code siteUser}, {@code siteGroup},
+     * {@code sharePointGroup}) carry a site-local numeric id rather than an Entra object id, so
+     * there is nothing to encode as a search role. An {@code application} grantee names an Entra
+     * app registration, not a person. All are reported at debug level rather than dropped
+     * silently, because an ACL that is empty for this reason looks identical to one that is empty
+     * because the site has no grantees.
+     *
+     * @param identity The identity set to inspect.
+     * @return the unmappable principal kind, or null when the set is mappable.
+     */
+    protected String describeUnmappableIdentity(final SharePointIdentitySet identity) {
+        if (identity.getUser() != null || identity.getGroup() != null) {
+            return null;
+        }
+        if (identity.getSiteUser() != null) {
+            return "siteUser";
+        }
+        if (identity.getSiteGroup() != null) {
+            return "siteGroup";
+        }
+        if (identity.getSharePointGroup() != null) {
+            return "sharePointGroup";
+        }
+        if (identity.getApplication() != null) {
+            return "application";
+        }
+        return null;
     }
 
     /**
