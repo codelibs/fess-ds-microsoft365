@@ -56,6 +56,7 @@ import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.microsoft.graph.core.authentication.AzureIdentityAuthenticationProvider;
 import com.microsoft.graph.core.requests.GraphClientFactory;
 import com.microsoft.graph.models.BaseSitePage;
 import com.microsoft.graph.models.Channel;
@@ -92,14 +93,12 @@ import com.microsoft.graph.serviceclient.GraphServiceClient;
 import com.microsoft.kiota.ApiException;
 import com.microsoft.kiota.RequestOption;
 import com.microsoft.kiota.ResponseHeaders;
-import com.microsoft.kiota.authentication.AzureIdentityAuthenticationProvider;
 import com.microsoft.kiota.http.middleware.options.RetryHandlerOption;
 import com.microsoft.kiota.serialization.UntypedArray;
 import com.microsoft.kiota.serialization.UntypedNode;
 import com.microsoft.kiota.serialization.UntypedString;
 
 import okhttp3.Authenticator;
-import okhttp3.Cache;
 import okhttp3.Credentials;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -121,7 +120,7 @@ public class Microsoft365Client implements Closeable {
     protected static final String CLIENT_ID_PARAM = "client_id";
     /** The parameter name for the Azure AD client secret. */
     protected static final String CLIENT_SECRET_PARAM = "client_secret";
-    /** The parameter name for the access timeout. */
+    /** The parameter name for the access (call) timeout, in seconds. 0 keeps the library default. */
     protected static final String ACCESS_TIMEOUT = "access_timeout";
     /** The parameter name for the connect timeout, in seconds. 0 keeps the library default. */
     protected static final String CONNECT_TIMEOUT = "connect_timeout";
@@ -154,8 +153,25 @@ public class Microsoft365Client implements Closeable {
     /** Default cache size for user type, group ID, UPN, and group name caches. */
     protected static final int DEFAULT_CACHE_SIZE = 10000;
 
+    /**
+     * The largest whole-second timeout OkHttp's {@code OkHttpClient.Builder} will accept.
+     * {@code checkDuration} requires the value in milliseconds to fit in an {@code int}, so
+     * {@code Integer.MAX_VALUE / 1000} seconds is the true ceiling; anything past it throws
+     * {@code IllegalArgumentException: timeout too large} from the constructor.
+     */
+    protected static final long MAX_TIMEOUT_SECONDS = Integer.MAX_VALUE / 1000L;
+
     /** The Microsoft Graph service client. */
     protected GraphServiceClient client;
+    /**
+     * The token authentication provider backing the Graph client. Deliberately
+     * {@code com.microsoft.graph.core.authentication.AzureIdentityAuthenticationProvider}, not
+     * kiota's own class of the same simple name: passed a null/empty allowed-hosts array, the
+     * Graph one installs the six Graph national-cloud hosts on its {@code AllowedHostsValidator},
+     * while kiota's leaves the validator's host set empty -- which makes it accept every host,
+     * including a non-Graph host named by a server-supplied {@code @odata.nextLink}.
+     */
+    protected AzureIdentityAuthenticationProvider authProvider;
     /** The OkHttp client backing the Graph client. Owned by this instance and released in {@link #close()}. */
     protected OkHttpClient httpClient;
     /** The data store parameters. */
@@ -225,7 +241,15 @@ public class Microsoft365Client implements Closeable {
             final ClientSecretCredential credential = credentialBuilder.build();
 
             // Initialize GraphServiceClient
-            final OkHttpClient.Builder okHttpBuilder = GraphClientFactory.create(new RequestOption[] { newRetryHandlerOption(params) });
+            // GraphServiceClient.getGraphClientOptions() (public, static) is included as a
+            // RequestOption so the SdkVersion telemetry header carries the client library
+            // version (graph-java/<version>), same as GraphServiceClient(TokenCredential, ...)
+            // builds internally. Without it, GraphClientFactory falls back to a bare
+            // GraphClientOption, and the header loses the version suffix -- e.g.
+            // "graph-java, graph-java-core/3.6.6" instead of "graph-java/6.67.0, ...". No
+            // functional effect; this only restores what Microsoft-side telemetry sees.
+            final OkHttpClient.Builder okHttpBuilder = GraphClientFactory
+                    .create(new RequestOption[] { newRetryHandlerOption(params), GraphServiceClient.getGraphClientOptions() });
             applyTimeouts(okHttpBuilder, params);
             if (!proxyHost.isEmpty() && !proxyPortStr.isEmpty()) {
                 final int proxyPort = Integer.parseInt(proxyPortStr);
@@ -247,7 +271,7 @@ public class Microsoft365Client implements Closeable {
 
             httpClient = okHttpBuilder.build();
             final String[] scopes = new String[] { "https://graph.microsoft.com/.default" };
-            final AzureIdentityAuthenticationProvider authProvider = new AzureIdentityAuthenticationProvider(credential, null, scopes);
+            authProvider = new AzureIdentityAuthenticationProvider(credential, null, scopes);
             client = new GraphServiceClient(authProvider, httpClient);
         } catch (final NumberFormatException e) {
             throw new DataStoreException("Invalid proxy port: " + proxyPortStr, e);
@@ -386,18 +410,37 @@ public class Microsoft365Client implements Closeable {
      * @param params The data store parameters.
      */
     protected static void applyTimeouts(final OkHttpClient.Builder builder, final DataStoreParams params) {
-        final long connectTimeout = getLongParam(params, CONNECT_TIMEOUT, 0L);
+        final long connectTimeout = clampTimeoutSeconds(CONNECT_TIMEOUT, getLongParam(params, CONNECT_TIMEOUT, 0L));
         if (connectTimeout > 0) {
             builder.connectTimeout(connectTimeout, TimeUnit.SECONDS);
         }
-        final long readTimeout = getLongParam(params, READ_TIMEOUT, 0L);
+        final long readTimeout = clampTimeoutSeconds(READ_TIMEOUT, getLongParam(params, READ_TIMEOUT, 0L));
         if (readTimeout > 0) {
             builder.readTimeout(readTimeout, TimeUnit.SECONDS);
         }
-        final long accessTimeout = getLongParam(params, ACCESS_TIMEOUT, 0L);
+        final long accessTimeout = clampTimeoutSeconds(ACCESS_TIMEOUT, getLongParam(params, ACCESS_TIMEOUT, 0L));
         if (accessTimeout > 0) {
             builder.callTimeout(accessTimeout, TimeUnit.SECONDS);
         }
+    }
+
+    /**
+     * Clamps a whole-second timeout to {@link #MAX_TIMEOUT_SECONDS}, warning when it does. An
+     * out-of-range value must not prevent the client from being constructed: OkHttp's
+     * {@code Builder} throws {@code IllegalArgumentException} for anything larger, and that
+     * exception is not a {@link NumberFormatException}, so left unclamped it would abort
+     * construction from the generic catch below instead of falling back like a malformed value.
+     *
+     * @param key The parameter name, for the warning message.
+     * @param value The parsed timeout, in seconds.
+     * @return value, or {@link #MAX_TIMEOUT_SECONDS} if value exceeds it.
+     */
+    protected static long clampTimeoutSeconds(final String key, final long value) {
+        if (value > MAX_TIMEOUT_SECONDS) {
+            logger.warn("{}={} exceeds the maximum timeout OkHttp accepts. Using {}.", key, value, MAX_TIMEOUT_SECONDS);
+            return MAX_TIMEOUT_SECONDS;
+        }
+        return value;
     }
 
     /**
@@ -423,19 +466,13 @@ public class Microsoft365Client implements Closeable {
         upnCache.invalidateAll();
         groupNameCache.invalidateAll();
         if (httpClient != null) {
-            // OkHttp's documented shutdown: idle dispatcher threads and pooled keep-alive
-            // connections outlive the crawl otherwise, and a Fess instance running several
-            // Microsoft 365 crawls accumulates one stack per client.
+            // OkHttp's documented shutdown. The leak this plugin actually had is the pooled
+            // keep-alive sockets evicted below: kiota's OkHttpRequestAdapter calls Call#execute,
+            // never Call#enqueue, so the dispatcher's executor is created lazily and never used
+            // by request processing -- shutting it down here is a no-op today, kept only because
+            // it is correct and harmless if kiota (or a future transport) ever goes async.
             httpClient.dispatcher().executorService().shutdown();
             httpClient.connectionPool().evictAll();
-            final Cache cache = httpClient.cache();
-            if (cache != null) {
-                try {
-                    cache.close();
-                } catch (final IOException e) {
-                    logger.warn("Failed to close the HTTP cache.", e);
-                }
-            }
         }
     }
 

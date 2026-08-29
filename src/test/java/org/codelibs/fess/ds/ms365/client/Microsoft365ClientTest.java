@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import java.net.URI;
 import java.util.Collections;
 import java.util.List;
 
@@ -33,8 +34,14 @@ import com.microsoft.graph.models.Channel;
 import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
+import com.microsoft.kiota.authentication.AccessTokenProvider;
+import com.microsoft.kiota.authentication.AllowedHostsValidator;
+import com.microsoft.kiota.authentication.AzureIdentityAccessTokenProvider;
 import com.microsoft.kiota.http.middleware.RetryHandler;
 import com.microsoft.kiota.http.middleware.options.RetryHandlerOption;
+
+import okhttp3.Request;
+import okhttp3.Response;
 
 public class Microsoft365ClientTest extends UnitDsTestCase {
 
@@ -406,15 +413,81 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         return target;
     }
 
+    /**
+     * A reviewer commented out {@code connectionPool().evictAll()} and this still passed:
+     * {@code target} never issues a request, so the pool is empty either way and
+     * {@code connectionCount() == 0} cannot fail regardless of whether eviction runs. This
+     * routes one real request through {@code target.httpClient} itself -- not through
+     * {@code target.client} or a substitute {@code GraphServiceClient}, which would use a
+     * different OkHttpClient entirely -- against a local {@link GraphMockServer}, so the pool
+     * this test inspects is verifiably non-empty before {@code close()} is called.
+     */
     @Test
     public void test_close_shutsDownTheHttpStack() throws Exception {
+        try (GraphMockServer server = new GraphMockServer()) {
+            server.enqueueStatus(200, null);
+            final Microsoft365Client target = newMinimalClient();
+            assertNotNull("the client must own its OkHttpClient", target.httpClient);
+
+            try (Response response = target.httpClient.newCall(new Request.Builder().url(server.url("/ping")).build()).execute()) {
+                assertEquals(200, response.code());
+            }
+            assertTrue("the pool must be non-empty before close(), or evicting it proves nothing",
+                    target.httpClient.connectionPool().connectionCount() > 0);
+
+            target.close();
+
+            assertTrue("dispatcher executor should be shut down", target.httpClient.dispatcher().executorService().isShutdown());
+            assertEquals("connection pool should be evicted", 0, target.httpClient.connectionPool().connectionCount());
+        }
+    }
+
+    /**
+     * Two different classes share the simple name {@code AzureIdentityAuthenticationProvider}:
+     * kiota's own, and {@code com.microsoft.graph.core.authentication}'s. Passed a null/empty
+     * allowed-hosts array (as this client does), the Graph one installs the six Graph
+     * national-cloud hosts on the underlying {@code AllowedHostsValidator}; kiota's leaves the
+     * validator's host set empty, which makes {@code isUrlHostValid} return true for -- and so
+     * attach the bearer token to -- every host. That matters here because roughly twenty methods
+     * on this class call {@code …withUrl(response.getOdataNextLink())} with a server-supplied
+     * {@code @odata.nextLink}: a non-Graph host named there must not receive the tenant's token.
+     */
+    @Test
+    public void test_authProvider_rejectsANonGraphHost() throws Exception {
         final Microsoft365Client target = newMinimalClient();
-        assertNotNull("the client must own its OkHttpClient", target.httpClient);
 
-        target.close();
+        final AccessTokenProvider tokenProvider = target.authProvider.getAccessTokenProvider();
+        final AllowedHostsValidator validator = ((AzureIdentityAccessTokenProvider) tokenProvider).getAllowedHostsValidator();
 
-        assertTrue("dispatcher executor should be shut down", target.httpClient.dispatcher().executorService().isShutdown());
-        assertEquals("connection pool should be evicted", 0, target.httpClient.connectionPool().connectionCount());
+        assertFalse("a non-Graph host must not be treated as valid", validator.isUrlHostValid(new URI("https://evil.example.com/x")));
+        assertTrue("the configured Graph cloud host must still be valid",
+                validator.isUrlHostValid(new URI("https://graph.microsoft.com/v1.0/users")));
+    }
+
+    /**
+     * A bare {@code GraphClientOption} (what {@code GraphClientFactory.create(RequestOption[])}
+     * falls back to when the array holds none) leaves {@code clientLibraryVersion} unset, so the
+     * {@code SdkVersion} header comes out as {@code "graph-java, graph-java-core/..."} -- missing
+     * the client library's own version. {@code GraphServiceClient.getGraphClientOptions()} is
+     * public and static, and including it in the {@code RequestOption[]} array is enough to
+     * restore {@code "graph-java/<version>, ..."}, matching what
+     * {@code GraphServiceClient(TokenCredential, ...)} builds internally.
+     */
+    @Test
+    public void test_sdkVersionHeader_includesTheClientLibraryVersion() throws Exception {
+        try (GraphMockServer server = new GraphMockServer()) {
+            server.enqueueStatus(200, null);
+            final Microsoft365Client target = newMinimalClient();
+
+            try (Response response = target.httpClient.newCall(new Request.Builder().url(server.url("/ping")).build()).execute()) {
+                assertEquals(200, response.code());
+            }
+
+            final String sdkVersion = server.takeHeader("SdkVersion");
+            assertNotNull("SdkVersion header must be present", sdkVersion);
+            assertTrue("expected the client library version in the SdkVersion header but was: " + sdkVersion,
+                    sdkVersion.contains("graph-java/"));
+        }
     }
 
     @Test
@@ -457,6 +530,66 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         // See test_timeouts_defaultToTheUnderlyingDefaults: 100000ms is GraphClientFactory's own
         // hard-coded default, left untouched because getLongParam falls back to 0 (do not apply).
         assertEquals(100000, target.httpClient.callTimeoutMillis());
+    }
+
+    /**
+     * OkHttp's {@code Builder} requires the timeout in milliseconds to fit an {@code int}: at most
+     * {@code Integer.MAX_VALUE / 1000} = 2147483 seconds. At that exact boundary construction must
+     * succeed and apply the value as given.
+     */
+    @Test
+    public void test_accessTimeout_atLibraryMaximumIsApplied() {
+        final DataStoreParams params = minimalParams();
+        params.put("access_timeout", String.valueOf(Microsoft365Client.MAX_TIMEOUT_SECONDS));
+        final Microsoft365Client target = new Microsoft365Client(params);
+        assertEquals((int) (Microsoft365Client.MAX_TIMEOUT_SECONDS * 1000), target.httpClient.callTimeoutMillis());
+    }
+
+    /**
+     * One second past the boundary: OkHttp itself throws {@code IllegalArgumentException: timeout
+     * too large} for this value, which -- unlike a {@code NumberFormatException} -- was not caught
+     * by getLongParam, so it used to abort the whole constructor with
+     * {@code DataStoreException: Failed to create a client.} instead of falling back like any
+     * other malformed value. It must now be clamped instead.
+     */
+    @Test
+    public void test_accessTimeout_beyondLibraryMaximumIsClamped() {
+        final DataStoreParams params = minimalParams();
+        params.put("access_timeout", String.valueOf(Microsoft365Client.MAX_TIMEOUT_SECONDS + 1));
+        final Microsoft365Client target = new Microsoft365Client(params);
+        assertEquals((int) (Microsoft365Client.MAX_TIMEOUT_SECONDS * 1000), target.httpClient.callTimeoutMillis());
+    }
+
+    @Test
+    public void test_connectTimeout_atLibraryMaximumIsApplied() {
+        final DataStoreParams params = minimalParams();
+        params.put("connect_timeout", String.valueOf(Microsoft365Client.MAX_TIMEOUT_SECONDS));
+        final Microsoft365Client target = new Microsoft365Client(params);
+        assertEquals((int) (Microsoft365Client.MAX_TIMEOUT_SECONDS * 1000), target.httpClient.connectTimeoutMillis());
+    }
+
+    @Test
+    public void test_connectTimeout_beyondLibraryMaximumIsClamped() {
+        final DataStoreParams params = minimalParams();
+        params.put("connect_timeout", String.valueOf(Microsoft365Client.MAX_TIMEOUT_SECONDS + 1));
+        final Microsoft365Client target = new Microsoft365Client(params);
+        assertEquals((int) (Microsoft365Client.MAX_TIMEOUT_SECONDS * 1000), target.httpClient.connectTimeoutMillis());
+    }
+
+    @Test
+    public void test_readTimeout_atLibraryMaximumIsApplied() {
+        final DataStoreParams params = minimalParams();
+        params.put("read_timeout", String.valueOf(Microsoft365Client.MAX_TIMEOUT_SECONDS));
+        final Microsoft365Client target = new Microsoft365Client(params);
+        assertEquals((int) (Microsoft365Client.MAX_TIMEOUT_SECONDS * 1000), target.httpClient.readTimeoutMillis());
+    }
+
+    @Test
+    public void test_readTimeout_beyondLibraryMaximumIsClamped() {
+        final DataStoreParams params = minimalParams();
+        params.put("read_timeout", String.valueOf(Microsoft365Client.MAX_TIMEOUT_SECONDS + 1));
+        final Microsoft365Client target = new Microsoft365Client(params);
+        assertEquals((int) (Microsoft365Client.MAX_TIMEOUT_SECONDS * 1000), target.httpClient.readTimeoutMillis());
     }
 
     @Test
