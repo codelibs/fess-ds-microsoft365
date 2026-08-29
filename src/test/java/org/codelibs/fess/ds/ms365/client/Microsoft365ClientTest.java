@@ -32,6 +32,8 @@ import com.microsoft.graph.models.Channel;
 import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
+import com.microsoft.kiota.http.middleware.RetryHandler;
+import com.microsoft.kiota.http.middleware.options.RetryHandlerOption;
 
 public class Microsoft365ClientTest extends UnitDsTestCase {
 
@@ -412,6 +414,101 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
 
         assertTrue("dispatcher executor should be shut down", target.httpClient.dispatcher().executorService().isShutdown());
         assertEquals("connection pool should be evicted", 0, target.httpClient.connectionPool().connectionCount());
+    }
+
+    @Test
+    public void test_timeouts_defaultToTheUnderlyingDefaults() {
+        // GraphClientFactory.create() (via KiotaClientFactory.create()) hard-codes a 100-second
+        // connect/read/call timeout on every OkHttpClient.Builder it returns -- confirmed by
+        // disassembling microsoft-kiota-http-okHttp's KiotaClientFactory.create(Interceptor[]),
+        // which calls builder.connectTimeout/readTimeout/callTimeout(Duration.ofSeconds(100))
+        // unconditionally. That is "the underlying default" a 0 parameter leaves untouched, and
+        // it applied identically before this change: the old no-proxy path's
+        // new GraphServiceClient(credential) also builds its OkHttpClient through this same
+        // factory internally. It is not OkHttp's own raw default (0/10000/10000ms).
+        final Microsoft365Client target = newMinimalClient();
+        assertEquals(100000, target.httpClient.callTimeoutMillis());
+    }
+
+    @Test
+    public void test_accessTimeoutIsAppliedAsCallTimeout() {
+        final DataStoreParams params = minimalParams();
+        params.put("access_timeout", "45");
+        final Microsoft365Client target = new Microsoft365Client(params);
+        assertEquals(45000, target.httpClient.callTimeoutMillis());
+    }
+
+    @Test
+    public void test_connectAndReadTimeoutsAreApplied() {
+        final DataStoreParams params = minimalParams();
+        params.put("connect_timeout", "5");
+        params.put("read_timeout", "70");
+        final Microsoft365Client target = new Microsoft365Client(params);
+        assertEquals(5000, target.httpClient.connectTimeoutMillis());
+        assertEquals(70000, target.httpClient.readTimeoutMillis());
+    }
+
+    @Test
+    public void test_malformedTimeoutFallsBackToTheDefault() {
+        final DataStoreParams params = minimalParams();
+        params.put("access_timeout", "soon");
+        final Microsoft365Client target = new Microsoft365Client(params);
+        // See test_timeouts_defaultToTheUnderlyingDefaults: 100000ms is GraphClientFactory's own
+        // hard-coded default, left untouched because getLongParam falls back to 0 (do not apply).
+        assertEquals(100000, target.httpClient.callTimeoutMillis());
+    }
+
+    @Test
+    public void test_retryHandlerOption_usesConfiguredValues() {
+        final DataStoreParams params = minimalParams();
+        params.put("max_retry_count", "5");
+        params.put("retry_interval", "7");
+        final RetryHandlerOption option = Microsoft365Client.newRetryHandlerOption(params);
+        assertEquals(5, option.maxRetries());
+        assertEquals(7L, option.delay());
+    }
+
+    /**
+     * Verifies newRetryHandlerOption's result is actually wired into the constructed
+     * OkHttpClient, not merely computed and discarded: GraphClientFactory.create(RequestOption[])
+     * installs a {@link RetryHandler} interceptor carrying whichever {@link RetryHandlerOption}
+     * it was given, and RetryHandler#getRetryOptions() reads it back. Passing an empty
+     * RequestOption[] here would still produce a RetryHandler (the library's own default one,
+     * maxRetries=3/delay=3), so this only passes when our configured values reach it.
+     */
+    @Test
+    public void test_retryHandlerOption_isWiredIntoTheHttpClient() {
+        final DataStoreParams params = minimalParams();
+        params.put("max_retry_count", "5");
+        params.put("retry_interval", "7");
+        final Microsoft365Client target = new Microsoft365Client(params);
+
+        final RetryHandlerOption installed = target.httpClient.interceptors()
+                .stream()
+                .filter(RetryHandler.class::isInstance)
+                .map(RetryHandler.class::cast)
+                .findFirst()
+                .map(RetryHandler::getRetryOptions)
+                .orElse(null);
+
+        assertNotNull("the built OkHttpClient must carry a RetryHandler", installed);
+        assertEquals(5, installed.maxRetries());
+        assertEquals(7L, installed.delay());
+    }
+
+    @Test
+    public void test_retryHandlerOption_clampsToTheLibraryMaximum() {
+        final DataStoreParams params = minimalParams();
+        params.put("max_retry_count", String.valueOf(RetryHandlerOption.MAX_RETRIES + 1));
+        final RetryHandlerOption option = Microsoft365Client.newRetryHandlerOption(params);
+        assertEquals(RetryHandlerOption.MAX_RETRIES, option.maxRetries());
+    }
+
+    @Test
+    public void test_retryHandlerOption_defaultsWhenUnset() {
+        final RetryHandlerOption option = Microsoft365Client.newRetryHandlerOption(minimalParams());
+        assertEquals(RetryHandlerOption.DEFAULT_MAX_RETRIES, option.maxRetries());
+        assertEquals(RetryHandlerOption.DEFAULT_DELAY, option.delay());
     }
 
     @Test

@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -88,8 +89,10 @@ import com.microsoft.graph.models.User;
 import com.microsoft.graph.models.UserCollectionResponse;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
 import com.microsoft.kiota.ApiException;
+import com.microsoft.kiota.RequestOption;
 import com.microsoft.kiota.ResponseHeaders;
 import com.microsoft.kiota.authentication.AzureIdentityAuthenticationProvider;
+import com.microsoft.kiota.http.middleware.options.RetryHandlerOption;
 import com.microsoft.kiota.serialization.UntypedArray;
 import com.microsoft.kiota.serialization.UntypedNode;
 import com.microsoft.kiota.serialization.UntypedString;
@@ -119,6 +122,14 @@ public class Microsoft365Client implements Closeable {
     protected static final String CLIENT_SECRET_PARAM = "client_secret";
     /** The parameter name for the access timeout. */
     protected static final String ACCESS_TIMEOUT = "access_timeout";
+    /** The parameter name for the connect timeout, in seconds. 0 keeps the library default. */
+    protected static final String CONNECT_TIMEOUT = "connect_timeout";
+    /** The parameter name for the read timeout, in seconds. 0 keeps the library default. */
+    protected static final String READ_TIMEOUT = "read_timeout";
+    /** The parameter name for the maximum number of retries. */
+    protected static final String MAX_RETRY_COUNT = "max_retry_count";
+    /** The parameter name for the delay between retries, in seconds. */
+    protected static final String RETRY_INTERVAL = "retry_interval";
     /** The parameter name for the refresh token interval. */
     protected static final String REFRESH_TOKEN_INTERVAL = "refresh_token_interval";
     /** The parameter name for the cache size. */
@@ -209,7 +220,8 @@ public class Microsoft365Client implements Closeable {
             final ClientSecretCredential credential = credentialBuilder.build();
 
             // Initialize GraphServiceClient
-            final OkHttpClient.Builder okHttpBuilder = GraphClientFactory.create();
+            final OkHttpClient.Builder okHttpBuilder = GraphClientFactory.create(new RequestOption[] { newRetryHandlerOption(params) });
+            applyTimeouts(okHttpBuilder, params);
             if (!proxyHost.isEmpty() && !proxyPortStr.isEmpty()) {
                 final int proxyPort = Integer.parseInt(proxyPortStr);
                 final InetSocketAddress proxyAddress = new InetSocketAddress(proxyHost, proxyPort);
@@ -305,6 +317,81 @@ public class Microsoft365Client implements Closeable {
         } catch (final NumberFormatException e) {
             logger.warn("Failed to parse {}={}. Using {}.", CACHE_SIZE, value, DEFAULT_CACHE_SIZE, e);
             return DEFAULT_CACHE_SIZE;
+        }
+    }
+
+    /**
+     * Parses a whole-second parameter, returning {@code defaultValue} when it is absent, blank or
+     * not a number. A malformed value must not prevent the client from being constructed.
+     *
+     * @param params The data store parameters.
+     * @param key The parameter name.
+     * @param defaultValue The value to use when the parameter is absent or malformed.
+     * @return the parsed value, or defaultValue.
+     */
+    protected static long getLongParam(final DataStoreParams params, final String key, final long defaultValue) {
+        final String value = params.getAsString(key, StringUtil.EMPTY);
+        if (StringUtil.isBlank(value)) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (final NumberFormatException e) {
+            logger.warn("Failed to parse {}={}. Using {}.", key, value, defaultValue, e);
+            return defaultValue;
+        }
+    }
+
+    /**
+     * Builds the retry configuration for the Graph client. Only the retry count and the delay are
+     * configurable; which responses are retried stays on the library's default predicate.
+     *
+     * @param params The data store parameters.
+     * @return the retry handler option to install on the client.
+     */
+    protected static RetryHandlerOption newRetryHandlerOption(final DataStoreParams params) {
+        long maxRetries = getLongParam(params, MAX_RETRY_COUNT, RetryHandlerOption.DEFAULT_MAX_RETRIES);
+        if (maxRetries > RetryHandlerOption.MAX_RETRIES) {
+            logger.warn("{}={} exceeds the maximum supported by the Graph client. Using {}.", MAX_RETRY_COUNT, maxRetries,
+                    RetryHandlerOption.MAX_RETRIES);
+            maxRetries = RetryHandlerOption.MAX_RETRIES;
+        }
+        if (maxRetries < 0) {
+            logger.warn("{}={} is negative. Using 0.", MAX_RETRY_COUNT, maxRetries);
+            maxRetries = 0;
+        }
+        long delay = getLongParam(params, RETRY_INTERVAL, RetryHandlerOption.DEFAULT_DELAY);
+        if (delay > RetryHandlerOption.MAX_DELAY) {
+            logger.warn("{}={} exceeds the maximum supported by the Graph client. Using {}.", RETRY_INTERVAL, delay,
+                    RetryHandlerOption.MAX_DELAY);
+            delay = RetryHandlerOption.MAX_DELAY;
+        }
+        if (delay < 0) {
+            logger.warn("{}={} is negative. Using 0.", RETRY_INTERVAL, delay);
+            delay = 0;
+        }
+        return new RetryHandlerOption(RetryHandlerOption.DEFAULT_SHOULD_RETRY, (int) maxRetries, delay);
+    }
+
+    /**
+     * Applies the configured timeouts to the HTTP client builder. A value of 0 leaves the
+     * library's own default in place.
+     *
+     * @param builder The OkHttp client builder.
+     * @param params The data store parameters.
+     */
+    protected static void applyTimeouts(final OkHttpClient.Builder builder, final DataStoreParams params) {
+        final long connectTimeout = getLongParam(params, CONNECT_TIMEOUT, 0L);
+        if (connectTimeout > 0) {
+            builder.connectTimeout(connectTimeout, TimeUnit.SECONDS);
+        }
+        final long readTimeout = getLongParam(params, READ_TIMEOUT, 0L);
+        if (readTimeout > 0) {
+            builder.readTimeout(readTimeout, TimeUnit.SECONDS);
+        }
+        final long accessTimeout = getLongParam(params, ACCESS_TIMEOUT, 0L);
+        if (accessTimeout > 0) {
+            builder.callTimeout(accessTimeout, TimeUnit.SECONDS);
         }
     }
 
