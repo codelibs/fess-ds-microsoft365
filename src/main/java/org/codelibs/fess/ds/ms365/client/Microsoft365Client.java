@@ -603,19 +603,24 @@ public class Microsoft365Client implements Closeable {
      * @return The Group object, or null if not found.
      */
     public Group getGroupById(final String id) {
-        final List<Group> groupList = new ArrayList<>();
-        getGroups(Collections.emptyList(), g -> {
-            if (id.equals(g.getId())) {
-                groupList.add(g);
+        try {
+            final Group group = client.groups().byGroupId(id).get(requestConfiguration -> {
+                requestConfiguration.queryParameters.select =
+                        new String[] { "id", "displayName", "mail", "description", "resourceProvisioningOptions", "visibility" };
+            });
+            if (logger.isDebugEnabled() && group != null) {
+                logger.debug("Group: {}", ToStringBuilder.reflectionToString(group));
             }
-        });
-        if (logger.isDebugEnabled()) {
-            groupList.forEach(group -> logger.debug("Group: {}", ToStringBuilder.reflectionToString(group)));
+            return group;
+        } catch (final ApiException e) {
+            if (e.getResponseStatusCode() == 404) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Group not found: {}", id);
+                }
+                return null;
+            }
+            throw e;
         }
-        if (groupList.size() == 1) {
-            return groupList.get(0);
-        }
-        return null;
     }
 
     /**

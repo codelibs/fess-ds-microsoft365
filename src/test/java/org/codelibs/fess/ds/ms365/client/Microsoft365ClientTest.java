@@ -343,4 +343,43 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
             }
         }
     }
+
+    /**
+     * Constructs a {@link Microsoft365Client} with the minimum required params, backed by the
+     * given {@link GraphMockServer} with the SDK's own retry middleware disabled.
+     */
+    private static Microsoft365Client newClientBackedBy(final GraphMockServer server) {
+        final DataStoreParams params = new DataStoreParams();
+        params.put(Microsoft365Client.TENANT_PARAM, "dummy-tenant");
+        params.put(Microsoft365Client.CLIENT_ID_PARAM, "dummy-client-id");
+        params.put(Microsoft365Client.CLIENT_SECRET_PARAM, "dummy-client-secret");
+        final Microsoft365Client target = new Microsoft365Client(params);
+        target.client = server.newGraphClientWithRetriesDisabled();
+        return target;
+    }
+
+    @Test
+    public void test_getGroupById_requestsTheSingleGroupNotTheCollection() throws Exception {
+        try (GraphMockServer server = new GraphMockServer()) {
+            server.enqueueJson("{\"id\":\"group-1\",\"displayName\":\"Contoso Team\"}");
+
+            final Microsoft365Client target = newClientBackedBy(server);
+            final Group group = target.getGroupById("group-1");
+
+            assertEquals("group-1", group.getId());
+            assertEquals(1, server.requestCount());
+            final String path = server.takePath();
+            assertTrue("expected a single-group path but was: " + path, path.startsWith("/groups/group-1"));
+        }
+    }
+
+    @Test
+    public void test_getGroupById_notFoundReturnsNull() throws Exception {
+        try (GraphMockServer server = new GraphMockServer()) {
+            server.enqueueStatus(404, null);
+
+            final Microsoft365Client target = newClientBackedBy(server);
+            assertNull(target.getGroupById("missing"));
+        }
+    }
 }
