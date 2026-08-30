@@ -480,16 +480,19 @@ public class TeamsDataStore extends Microsoft365DataStore {
         }
 
         try {
+            // One channel has one membership. Resolving it inside the per-message lambda issued the
+            // same paged GET /teams/{id}/channels/{id}/members once per message and once per reply.
+            final List<String> channelRoles = getGroupRoles(client, group.getId(), channel.getId());
             client.getTeamMessages(Collections.emptyList(), message -> {
                 final Map<String, Object> processedMessage = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
-                        defaultDataMap, getGroupRoles(client, group.getId(), channel.getId()), message, map -> {
+                        defaultDataMap, channelRoles, message, map -> {
                             map.put(TEAM, group);
                             map.put(CHANNEL, channel);
                         }, client);
                 if (processedMessage != null && !ignoreReplies) {
                     client.getTeamReplyMessages(Collections.emptyList(), reply -> {
-                        processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap,
-                                getGroupRoles(client, group.getId(), channel.getId()), reply, map -> {
+                        processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, channelRoles, reply,
+                                map -> {
                                     map.put(TEAM, group);
                                     map.put(CHANNEL, channel);
                                     map.put(PARENT, processedMessage);

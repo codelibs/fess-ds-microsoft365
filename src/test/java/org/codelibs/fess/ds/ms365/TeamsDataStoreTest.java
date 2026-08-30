@@ -20,16 +20,26 @@ import org.junit.jupiter.api.TestInfo;
 
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codelibs.fess.ds.callback.IndexUpdateCallback;
+import org.codelibs.fess.ds.ms365.client.GraphMockServer;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.helper.SystemHelper;
+import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
+
+import com.microsoft.graph.models.Channel;
+import com.microsoft.graph.models.Group;
+import com.microsoft.graph.serviceclient.GraphServiceClient;
 
 public class TeamsDataStoreTest extends UnitDsTestCase {
 
@@ -677,6 +687,122 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     private static final class TestablePermissionHelper extends PermissionHelper {
         void useSystemHelper(final SystemHelper systemHelper) {
             this.systemHelper = systemHelper;
+        }
+    }
+
+    // Test processChannelMessages resolves channel membership once per channel
+
+    /**
+     * {@code getGroupRoles(client, teamId, channelId)} pages {@code GET
+     * /teams/{id}/channels/{id}/members} to exhaustion. Before this task it was called once per
+     * message and once per reply, every call returning the same membership -- a channel with 500
+     * messages and 2000 replies issued 2500 identical listings. Runs
+     * {@link TeamsDataStore#processChannelMessages} against a real {@link Microsoft365Client}
+     * wired to a {@link GraphMockServer} so the assertion is on actual HTTP traffic, not a mock's
+     * bookkeeping.
+     */
+    @Test
+    public void test_processChannelMessages_resolvesChannelMembersOncePerChannel() throws Exception {
+        registerPermissionHelper();
+        registerCrawlerStatsHelper();
+
+        try (GraphMockServer server = new GraphMockServer();
+                MockableMicrosoft365Client client = new MockableMicrosoft365Client(dummyParams())) {
+            // Observed order after hoisting: one membership listing, then the messages page, then
+            // one (empty) replies listing per message.
+            server.enqueueJson("{\"value\":[{\"id\":\"m1\",\"userId\":\"11111111-1111-1111-1111-111111111111\"}]}");
+            server.enqueueJson("{\"value\":[{\"id\":\"msg-1\",\"webUrl\":\"https://example.com/msg-1\"},"
+                    + "{\"id\":\"msg-2\",\"webUrl\":\"https://example.com/msg-2\"}]}");
+            server.enqueueJson("{\"value\":[]}");
+            server.enqueueJson("{\"value\":[]}");
+            client.useServer(server.newGraphClient());
+
+            final Group group = new Group();
+            group.setId("team-1");
+            group.setDisplayName("Team One");
+
+            final Channel channel = new Channel();
+            channel.setId("channel-1");
+            channel.setDisplayName("General");
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            final Map<String, Object> configMap = new HashMap<>();
+            configMap.put("ignore_replies", dataStore.isIgnoreReplies(paramMap));
+            configMap.put("append_attachment", dataStore.isAppendAttachment(paramMap));
+            configMap.put("title_dateformat", dataStore.getTitleDateformat(paramMap));
+            configMap.put("title_timezone_offset", dataStore.getTitleTimezone(paramMap));
+            configMap.put("ignore_system_events", dataStore.isIgnoreSystemEvents(paramMap));
+
+            final IndexUpdateCallback callback = new IndexUpdateCallback() {
+                @Override
+                public void store(final DataStoreParams storeParamMap, final Map<String, Object> dataMap) {
+                    // no-op: this test asserts only on the HTTP traffic reaching Graph
+                }
+
+                @Override
+                public long getDocumentSize() {
+                    return 0;
+                }
+
+                @Override
+                public long getExecuteTime() {
+                    return 0;
+                }
+
+                @Override
+                public void commit() {
+                    // do nothing
+                }
+            };
+
+            dataStore.processChannelMessages(new DataConfig(), callback, paramMap, new HashMap<>(), new HashMap<>(), configMap, client,
+                    group, channel);
+
+            final List<String> paths = new ArrayList<>();
+            for (int i = 0; i < server.requestCount(); i++) {
+                paths.add(server.takePath());
+            }
+            final long memberRequests = paths.stream().filter(path -> path.contains("/members")).count();
+            assertEquals("channel membership must be fetched once, but paths were: " + paths, 1L, memberRequests);
+        }
+    }
+
+    /**
+     * Credentials are never used: {@link GraphMockServer} does not authenticate, and
+     * {@code ClientSecretCredential} acquires tokens lazily, so construction is offline.
+     */
+    private static DataStoreParams dummyParams() {
+        final DataStoreParams params = new DataStoreParams();
+        params.put("tenant", "dummy-tenant");
+        params.put("client_id", "dummy-client-id");
+        params.put("client_secret", "dummy-client-secret");
+        return params;
+    }
+
+    /**
+     * crawlerStatsHelper is not wired into test_app.xml either -- {@code processChatMessage}
+     * calls {@code ComponentUtil.getCrawlerStatsHelper()} directly, the same pattern
+     * {@code SharePointPageDataStoreTest} and {@code SharePointListDataStoreTest} use.
+     */
+    private static void registerCrawlerStatsHelper() {
+        final CrawlerStatsHelper crawlerStatsHelper = new CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+    }
+
+    /**
+     * {@link Microsoft365Client#client} is {@code protected}, reachable directly only from its
+     * own {@code client} package (see {@code Microsoft365ClientMockTest}); this subclass exposes
+     * it to tests in this package too, so a real {@code Microsoft365Client} can be pointed at a
+     * {@link GraphMockServer} instead of stubbing individual methods with Mockito.
+     */
+    private static final class MockableMicrosoft365Client extends Microsoft365Client {
+        MockableMicrosoft365Client(final DataStoreParams params) {
+            super(params);
+        }
+
+        void useServer(final GraphServiceClient graphClient) {
+            this.client = graphClient;
         }
     }
 }
