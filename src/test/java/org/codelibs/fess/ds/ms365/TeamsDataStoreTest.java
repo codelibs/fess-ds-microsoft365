@@ -810,6 +810,64 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     /**
+     * Hoisting the membership lookup out of the per-message lambda made it unconditional: a channel
+     * that yields no messages started issuing -- and could newly fail on -- a
+     * {@code GET /teams/{id}/channels/{id}/members} whose result nothing would ever read. Resolving
+     * it on first use keeps "once per channel" without paying for a channel that yields nothing.
+     */
+    @Test
+    public void test_processChannelMessages_doesNotResolveMembersForAChannelWithNoMessages() throws Exception {
+        registerPermissionHelper();
+        registerCrawlerStatsHelper();
+
+        try (CountingMicrosoft365Client client = new CountingMicrosoft365Client(dummyParams(), List.of())) {
+            final Group group = new Group();
+            group.setId("team-1");
+            group.setDisplayName("Team One");
+
+            final Channel channel = new Channel();
+            channel.setId("channel-empty");
+            channel.setDisplayName("Empty");
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            final Map<String, Object> configMap = new HashMap<>();
+            configMap.put("ignore_replies", dataStore.isIgnoreReplies(paramMap));
+            configMap.put("append_attachment", dataStore.isAppendAttachment(paramMap));
+            configMap.put("title_dateformat", dataStore.getTitleDateformat(paramMap));
+            configMap.put("title_timezone_offset", dataStore.getTitleTimezone(paramMap));
+            configMap.put("ignore_system_events", dataStore.isIgnoreSystemEvents(paramMap));
+
+            final IndexUpdateCallback callback = new IndexUpdateCallback() {
+                @Override
+                public void store(final DataStoreParams storeParamMap, final Map<String, Object> dataMap) {
+                    fail("a channel with no messages must not store anything");
+                }
+
+                @Override
+                public long getDocumentSize() {
+                    return 0;
+                }
+
+                @Override
+                public long getExecuteTime() {
+                    return 0;
+                }
+
+                @Override
+                public void commit() {
+                    // do nothing
+                }
+            };
+
+            dataStore.processChannelMessages(new DataConfig(), callback, paramMap, new HashMap<>(), new HashMap<>(), configMap, client,
+                    group, channel);
+
+            assertEquals("a channel with no messages must issue no members request, but issued " + client.getChannelMembersCallCount(), 0,
+                    client.getChannelMembersCallCount());
+        }
+    }
+
+    /**
      * Credentials are never used: {@code ClientSecretCredential} acquires tokens lazily, so
      * construction is offline.
      */

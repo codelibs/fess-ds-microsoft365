@@ -179,8 +179,14 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     /**
      * Returns how long to wait for submitted crawling tasks to finish, in seconds.
      *
+     * <p>Zero and negative values are rejected as well as non-numeric ones: a wait of zero or less
+     * would cancel every in-flight task the moment the shutdown starts, which is never what an
+     * operator setting this parameter is asking for. Each rejected value logs a warning naming the
+     * value that was ignored and the default used instead.
+     *
      * @param paramMap The data store parameters.
-     * @return the configured wait, or {@link #EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS} when absent or malformed.
+     * @return the configured wait, or {@link #EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS} when the value is
+     *         absent, malformed, zero or negative.
      */
     protected long getShutdownTimeoutSeconds(final DataStoreParams paramMap) {
         final String value = paramMap.getAsString(EXECUTOR_SHUTDOWN_TIMEOUT, String.valueOf(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS));
@@ -218,14 +224,18 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new InterruptedRuntimeException(e);
-        }
-        // A snapshot: on the timed-out path tasks are still running and may fail after this read,
-        // so the number reported can undercount. It is also never read when the wait is
-        // interrupted, because the throw above leaves the method first.
-        final int failures = executorService.getFailureCount();
-        if (failures > 0) {
-            logger.error("{}: {} crawling task(s) failed; their documents are missing from this crawl. See the errors above.", getName(),
-                    failures);
+        } finally {
+            // Reported from a finally block because this line, not the per-task warning, is the
+            // one notification a crawl with failures produces; skipping it when the wait is
+            // interrupted would be the difference between one notification and none.
+            //
+            // The count is a snapshot: on the timed-out path the tasks about to be cancelled are
+            // still running and can fail after this read, so it can undercount.
+            final int failures = executorService.getFailureCount();
+            if (failures > 0) {
+                logger.error("{}: {} crawling task(s) failed; their documents are missing from this crawl. See the warnings above.",
+                        getName(), failures);
+            }
         }
     }
 
@@ -235,8 +245,23 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      * <p>Tasks are submitted with {@link #execute(Runnable)}, which discards whatever escapes them,
      * while the saturation policy runs a rejected task on the submitting thread, where the same
      * throwable would instead abort the crawl. One failure therefore had two outcomes depending on
-     * whether the queue happened to be full. Both paths now log at {@code ERROR} and increment
+     * whether the queue happened to be full. Both paths now log at {@code WARN} and increment
      * {@link #getFailureCount()}, and the crawl continues; the count is reported at shutdown.
+     *
+     * <p>{@code WARN} rather than {@code ERROR} because two data stores submit one task per
+     * document -- {@code SharePointListDataStore} per list item and {@code SharePointPageDataStore}
+     * per page -- and both rethrow under the default {@code ignore_error=false}, so a bad crawl
+     * produces one report per failed document. In this project {@code ERROR} from
+     * {@code org.codelibs} is wired to operator notification, and that would be one notification
+     * per document. The single end-of-crawl summary {@code shutdownExecutor} logs is the
+     * {@code ERROR}: it carries the count, and it is bounded at one per crawl.
+     *
+     * <p>Only {@link #execute(Runnable)} is covered. {@link #afterExecute} receives a non-null
+     * {@code Throwable} only for a task submitted that way; {@code submit(...)} wraps the task in a
+     * {@link java.util.concurrent.FutureTask}, which captures the throwable into the returned
+     * {@code Future} instead, so a failure submitted that way would once again disappear unnoticed.
+     * Every submission site in this plugin uses {@code execute}; keep it that way, or make
+     * {@code submit} report too.
      *
      * <p>{@link Error} is not caught on the submitting thread: an {@code OutOfMemoryError} must not
      * be swallowed to keep crawling. On a pool thread it is still reported before the thread dies.
@@ -290,11 +315,17 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         }
 
         /**
+         * Reports one failed task, identically whichever thread ran it.
+         *
+         * <p>{@code WARN}, not {@code ERROR}: this line is emitted once per failed task, and two
+         * data stores submit one task per document. The bounded end-of-crawl summary is what
+         * notifies.
+         *
          * @param throwable the failure to report.
          */
         protected void report(final Throwable throwable) {
             failureCount.incrementAndGet();
-            logger.error("{}: a crawling task failed.", storeName, throwable);
+            logger.warn("{}: a crawling task failed.", storeName, throwable);
         }
 
         /**

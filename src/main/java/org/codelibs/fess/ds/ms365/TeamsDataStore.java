@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -469,11 +470,15 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     group.getDisplayName());
         }
 
+        // One channel has one membership. Resolving it inside the per-message lambda issued the
+        // same paged GET /teams/{id}/channels/{id}/members once per message and once per reply;
+        // resolving it before the listing instead made a channel that yields no messages pay for --
+        // and newly able to fail on -- a membership it would never read. The holder keeps it at once
+        // per channel while deferring it to the first message that actually needs it.
+        final AtomicReference<List<String>> channelRolesHolder = new AtomicReference<>();
         try {
-            // One channel has one membership. Resolving it inside the per-message lambda issued the
-            // same paged GET /teams/{id}/channels/{id}/members once per message and once per reply.
-            final List<String> channelRoles = getGroupRoles(client, group.getId(), channel.getId());
             client.getTeamMessages(Collections.emptyList(), message -> {
+                final List<String> channelRoles = resolveChannelRoles(channelRolesHolder, client, group, channel);
                 final Map<String, Object> processedMessage = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
                         defaultDataMap, channelRoles, message, map -> {
                             map.put(TEAM, group);
@@ -495,6 +500,32 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     group.getDisplayName(), e);
             throw new DataStoreException("Failed to process channel: " + channel.getId(), e);
         }
+    }
+
+    /**
+     * Returns the channel's search roles, resolving them the first time a message needs them and
+     * reusing that result for every later message and reply in the same channel.
+     *
+     * <p>No synchronisation: {@code holder} is confined to one thread. {@code processChannelMessages}
+     * <em>is</em> the pool task body -- {@code submitChannelMessages} passes a call to it straight to
+     * {@code executorService.execute} -- and both Graph consumers below run inline on that same
+     * thread, so the slot is never touched concurrently.
+     *
+     * @param holder The single-slot cache for this channel, confined to the calling thread.
+     * @param client The Microsoft365Client.
+     * @param group The Microsoft 365 group (team).
+     * @param channel The Teams channel.
+     * @return The channel's roles.
+     */
+    protected List<String> resolveChannelRoles(final AtomicReference<List<String>> holder, final Microsoft365Client client,
+            final Group group, final Channel channel) {
+        final List<String> cached = holder.get();
+        if (cached != null) {
+            return cached;
+        }
+        final List<String> resolved = getGroupRoles(client, group.getId(), channel.getId());
+        holder.set(resolved);
+        return resolved;
     }
 
     /**

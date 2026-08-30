@@ -489,7 +489,7 @@ role=page.roles
 | Parameter | Description | Default | Example |
 |-----------|-------------|---------|----------|
 | `number_of_threads` | Concurrent crawling threads | `1` | `3` |
-| `executor_shutdown_timeout` | How long to wait for submitted crawling tasks to finish, in whole seconds. Whatever has not finished by then is cancelled and its documents are missing from the crawl, which is reported at `ERROR`. Raise it for a large tenant. | `60` | `600` |
+| `executor_shutdown_timeout` | How long to wait for submitted crawling tasks to finish, in whole seconds. Whatever has not finished by then is cancelled and its documents are missing from the crawl, which is reported at `ERROR` - see below. Raise it for a large tenant. A value that is not a positive whole number keeps this default and logs a `WARN`. | `60` | `600` |
 | `ignore_error` | Continue on errors | `true` | `false` |
 | `include_pattern` | Regex pattern for inclusion - semantics differ by DataStore, see below | - | `.*\.pdf$` |
 | `exclude_pattern` | Regex pattern for exclusion - semantics differ by DataStore, see below | - | `.*temp.*` |
@@ -695,6 +695,48 @@ Graph national-cloud hosts. A deployment without a proxy was never affected - it
 that same six-host restriction. The proxied path now gets it too: a `@odata.nextLink` naming a
 host outside that list is still followed, but without the `Authorization` header, rather than
 leaking the tenant's app-only token to it.
+
+#### What the two crawl-completion `ERROR` messages mean
+
+Every DataStore in this plugin now shuts down its crawling thread pool through one shared helper,
+which can log two new kinds of `ERROR` on a code path that previously said nothing at all. In this
+project, `ERROR` from `org.codelibs` is wired to notifications, so upgrading can mean a crawl
+configuration that looked clean starts producing notifications - the failures documented below
+were already happening; only the reporting is new. Both are bounded at one line per crawl.
+
+- `<name>: N crawling task(s) were still running and M had not started after T seconds. They are
+  about to be cancelled, and the documents they would have produced are missing from this crawl.
+  Raise executor_shutdown_timeout for a large tenant.` - the wait configured by
+  `executor_shutdown_timeout` expired while tasks were still queued or in flight; those tasks are
+  cancelled and their documents never get produced. Before this release, the same expiry cancelled
+  those tasks just as silently, and the crawl reported success anyway. Raising
+  `executor_shutdown_timeout` is the direct fix; `number_of_threads` is the other lever, but note
+  that it is capped (see below), and the effective value sets both the pool size and the queue
+  capacity - so at most `2 x` the *effective* thread count can be running or queued when the wait
+  begins.
+- `<name>: N crawling task(s) failed; their documents are missing from this crawl. See the warnings
+  above.` - a count of tasks that ended by throwing, logged once per crawl. Each individual failure
+  it counts is logged separately at `WARN`, as `<name>: a crawling task failed.`, one line per
+  failed task - `WARN` rather than `ERROR` because `SharePointListDataStore` and
+  `SharePointPageDataStore` submit one task per document, so a bad crawl would otherwise raise one
+  notification per document. This `ERROR` is the notification, and there is at most one of it per
+  crawl. Its count is a snapshot taken as the shutdown ends, and on a timed-out shutdown the tasks
+  being cancelled can still go on to fail after it is read, so it can undercount; the `WARN` lines
+  are the complete record. Before this release, an escaped failure either vanished with no log line
+  at all, or - when the pool's queue was already full - ran on the submitting thread instead and
+  propagated out of the crawl itself, aborting it outright; which of the two happened depended on
+  queue timing, not on anything the operator controlled.
+
+Both messages, and the per-task failure line, name the concrete DataStore by its Java class name
+(e.g. `OneDriveDataStore`), so an operator running several Microsoft 365 crawls in one Fess
+instance can tell which one produced it.
+
+#### `number_of_threads` is capped
+
+The requested value is capped to `min(number_of_threads, availableProcessors() x 2)`, and the
+capped value sets both the pool size and the queue capacity. On a 4-core host, `number_of_threads`
+of 32 gives 16 threads and a 16-deep queue, not 32 and 32; raising the parameter past the cap has
+no effect at all. The cap is logged at `DEBUG` when it applies.
 
 ### Teams-Specific Parameters
 
