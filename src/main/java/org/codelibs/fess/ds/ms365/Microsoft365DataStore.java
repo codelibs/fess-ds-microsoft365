@@ -27,6 +27,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -83,9 +84,13 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     protected static final String SITE_ID = "site_id";
     /** Parameter name for the comma-separated list of site IDs to exclude from crawling. */
     protected static final String EXCLUDE_SITE_ID = "exclude_site_id";
-    /** Parameter name for the regular expression pattern of URLs to include. */
+    /** Parameter name for the regular expression content must match to be crawled. What content
+     *  it is matched against, and whether the match is full or partial, is decided per DataStore
+     *  - see the README's "semantics differ by DataStore" table. */
     protected static final String INCLUDE_PATTERN = "include_pattern";
-    /** Parameter name for the regular expression pattern of URLs to exclude. */
+    /** Parameter name for the regular expression content must not match to be crawled. What
+     *  content it is matched against, and whether the match is full or partial, is decided per
+     *  DataStore - see the README's "semantics differ by DataStore" table. */
     protected static final String EXCLUDE_PATTERN = "exclude_pattern";
     /** Key used to stash the {@link org.codelibs.fess.crawler.filter.UrlFilter} built from {@link #INCLUDE_PATTERN}/{@link #EXCLUDE_PATTERN} in the config map. */
     protected static final String URL_FILTER = "url_filter";
@@ -476,6 +481,29 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
             roleTypeList.stream().map(s -> (String) s).forEach(merged::add);
         }
         return merged;
+    }
+
+    /**
+     * Gets a compiled regex pattern from parameters.
+     *
+     * <p>Shared by every DataStore that accepts {@link #INCLUDE_PATTERN}/{@link
+     * #EXCLUDE_PATTERN}; what the returned pattern is matched against, and whether that match is
+     * full or partial, is decided by the caller.</p>
+     *
+     * @param paramMap the data store parameters
+     * @param key the parameter key for the pattern
+     * @return compiled Pattern, or null if the pattern is blank or invalid (i.e. no filtering)
+     */
+    protected Pattern getPattern(final DataStoreParams paramMap, final String key) {
+        final String pattern = paramMap.getAsString(key);
+        if (StringUtil.isNotBlank(pattern)) {
+            try {
+                return Pattern.compile(pattern);
+            } catch (final Exception e) {
+                logger.warn("Invalid regex pattern for {}: {}", key, pattern, e);
+            }
+        }
+        return null;
     }
 
     /**

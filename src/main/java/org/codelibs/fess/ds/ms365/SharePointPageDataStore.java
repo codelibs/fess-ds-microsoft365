@@ -797,23 +797,4 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     protected boolean isIgnoreSystemPages(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_PAGES, Constants.TRUE));
     }
-
-    /**
-     * Gets a compiled regex pattern from parameters.
-     *
-     * @param paramMap data store parameters
-     * @param key the parameter key for the pattern
-     * @return compiled Pattern or null if pattern is blank or invalid
-     */
-    protected Pattern getPattern(final DataStoreParams paramMap, final String key) {
-        final String pattern = paramMap.getAsString(key);
-        if (StringUtil.isNotBlank(pattern)) {
-            try {
-                return Pattern.compile(pattern);
-            } catch (final Exception e) {
-                logger.warn("Invalid regex pattern for {}: {}", key, pattern, e);
-            }
-        }
-        return null;
-    }
 }

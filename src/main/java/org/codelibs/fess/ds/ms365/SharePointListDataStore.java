@@ -702,20 +702,14 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                 if (logger.isDebugEnabled()) {
                     logger.debug("List item title for filtering: {}", title);
                 }
-                final String includePattern = paramMap.getAsString(INCLUDE_PATTERN, null);
-                if (StringUtil.isNotBlank(includePattern)) {
-                    final Pattern pattern = Pattern.compile(includePattern);
-                    if (!pattern.matcher(title).matches()) {
-                        return false;
-                    }
+                final Pattern includePattern = getPattern(paramMap, INCLUDE_PATTERN);
+                if (includePattern != null && !includePattern.matcher(title).matches()) {
+                    return false;
                 }
 
-                final String excludePattern = paramMap.getAsString(EXCLUDE_PATTERN, null);
-                if (StringUtil.isNotBlank(excludePattern)) {
-                    final Pattern pattern = Pattern.compile(excludePattern);
-                    if (pattern.matcher(title).matches()) {
-                        return false;
-                    }
+                final Pattern excludePattern = getPattern(paramMap, EXCLUDE_PATTERN);
+                if (excludePattern != null && excludePattern.matcher(title).matches()) {
+                    return false;
                 }
             }
         }
