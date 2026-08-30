@@ -769,9 +769,45 @@ no effect at all. The cap is logged at `DEBUG` when it applies.
 | `ignore_system_events` | Skip system event messages | `true` | Filter out system notifications |
 | `title_dateformat` | Date format for message titles | `yyyy/MM/dd'T'HH:mm:ss` | Java date pattern |
 | `title_timezone_offset` | Timezone offset for message titles | `Z` | e.g., `Z`, `+09:00`, `-05:00` |
+| `start_date` | Inclusive earliest message timestamp to index | - | `yyyy-MM-dd` (UTC start of day) or a full ISO-8601 offset date-time, e.g. `2026-01-01` or `2026-01-01T09:00:00+09:00`. An unparseable value is logged and ignored |
+| `end_date` | Inclusive latest message timestamp to index | - | `yyyy-MM-dd` (UTC end of day, `23:59:59.999999999Z`) or a full ISO-8601 offset date-time. An unparseable value is logged and ignored |
 | `number_of_threads` | Number of processing threads | `1` | Concurrent message processing |
 | `default_permissions` | Default role assignments | - | Additional permissions for all messages |
 | `ignore_error` | Continue crawling when a team or channel cannot be processed | `false` | When `true`, an unresolvable `team_id` or `channel_id`, a team whose channels cannot be listed, and a channel whose messages cannot be fetched are logged and skipped instead of aborting the crawl. Failures while enumerating **all** teams were already skipped and are unaffected; a `team_id` listed in `exclude_team_ids` that cannot be resolved still aborts, so that a team you asked to exclude is never silently crawled |
+
+**How the Teams date range is applied**
+
+`start_date` and `end_date` are applied **after** the messages are fetched. Microsoft's
+`channel: list messages` API supports only `$top` and `$expand` - "The other OData query
+parameters aren't currently supported" - so there is no server-side date filter to use. Every
+message in every crawled channel is still retrieved from Microsoft Graph; the range reduces what
+is **indexed**, not what is **downloaded**, so it will not shorten the crawl or reduce Graph
+request volume.
+
+The bound is compared against the message's `createdDateTime`, falling back to
+`lastModifiedDateTime` when that is absent. A message with neither timestamp is indexed rather
+than dropped: a missing timestamp must never be a reason to silently shrink the index. A timestamp
+Microsoft Graph returns in a form the SDK cannot parse never reaches the range check at all - it
+fails while the message list is being deserialized, which is a channel-level failure governed by
+`ignore_error`, not by these two parameters.
+
+Both root messages and replies are tested against the range. Because replies are only fetched for
+a root message that was itself indexed, a root outside the range also excludes its replies - even
+a reply that would have fallen inside it. This keeps a reply from ever being indexed with a
+`parent` that was never processed, and it is the one place the range does save Graph traffic. A
+reply is always at or after its root, so an `end_date` that excludes a root correctly excludes its
+replies; only `start_date` can drop an in-range reply, and only from a conversation whose opening
+message you asked not to index.
+
+When `chat_id` is set, the chat's messages are consolidated into a single document whose timestamp
+is that of the chat's first message, so the range is evaluated once for the whole chat: it either
+indexes the entire conversation or none of it, and never a subset of a chat's messages.
+
+A malformed `start_date` or `end_date` is logged once at `WARN` when the crawl starts and then
+treated as unset, so that bound simply does not filter. A typo therefore gives you the unfiltered
+crawl you had before the parameter existed - it never aborts the crawl and never silently empties
+the index. With both parameters unset - the default - nothing is filtered and behaviour is
+unchanged.
 
 #### Teams Implementation Details
 
@@ -831,6 +867,8 @@ The implementation extracts comprehensive message metadata including:
 
 **Content Filtering:**
 - **Reply Message Filtering**: Option to skip reply messages and process only root messages
+- **Date Range Filtering**: `start_date`/`end_date` bound which messages are indexed, applied
+  client-side after fetching - see "How the Teams date range is applied" above
 - **System Event Filtering**: Automatic detection and filtering of system-generated events
 - **URL Pattern Matching**: Support for include/exclude patterns on message content
 

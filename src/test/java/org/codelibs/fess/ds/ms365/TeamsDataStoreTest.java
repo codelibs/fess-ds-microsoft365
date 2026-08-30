@@ -25,6 +25,7 @@ import static org.mockito.Mockito.when;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -1130,6 +1131,316 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
             fail("an unresolvable exclude_team_ids entry must abort the crawl even when ignore_error is enabled");
         } catch (final DataStoreException e) {
             assertTrue("expected the team id in the message, got: " + e.getMessage(), e.getMessage().contains("team-missing"));
+        }
+    }
+
+    // Test start_date / end_date
+
+    @Test
+    public void test_getStartDate_dateOnlyIsUtcStartOfDay() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("start_date", "2026-01-15");
+
+        final OffsetDateTime startDate = dataStore.getStartDate(paramMap);
+        assertEquals(OffsetDateTime.parse("2026-01-15T00:00:00Z"), startDate);
+    }
+
+    @Test
+    public void test_getEndDate_dateOnlyIsUtcEndOfDay() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("end_date", "2026-01-15");
+
+        final OffsetDateTime endDate = dataStore.getEndDate(paramMap);
+        assertEquals(OffsetDateTime.parse("2026-01-15T23:59:59.999999999Z"), endDate);
+    }
+
+    @Test
+    public void test_getStartDate_offsetDateTimeIsUsedVerbatim() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("start_date", "2026-01-15T09:00:00+09:00");
+
+        assertEquals(OffsetDateTime.parse("2026-01-15T09:00:00+09:00"), dataStore.getStartDate(paramMap));
+    }
+
+    /**
+     * A malformed bound follows the pattern this plugin already uses for a malformed
+     * {@code include_pattern} and a malformed {@code max_content_length}: warn once and fall back
+     * to the unset behaviour. It must never abort a crawl, and it must never narrow one either --
+     * an operator who typoed a date gets today's unfiltered crawl, not an empty index.
+     */
+    @Test
+    public void test_getStartDate_unsetAndUnparseableMeanNoBound() {
+        assertNull("an unset bound must not filter anything", dataStore.getStartDate(new DataStoreParams()));
+
+        final DataStoreParams blank = new DataStoreParams();
+        blank.put("start_date", "   ");
+        assertNull("a blank bound must not filter anything", dataStore.getStartDate(blank));
+
+        final DataStoreParams garbage = new DataStoreParams();
+        garbage.put("start_date", "15/01/2026");
+        assertNull("an unparseable bound must be ignored, not thrown", dataStore.getStartDate(garbage));
+    }
+
+    @Test
+    public void test_getEndDate_unparseableMeansNoBound() {
+        final DataStoreParams garbage = new DataStoreParams();
+        garbage.put("end_date", "yesterday");
+        assertNull("an unparseable bound must be ignored, not thrown", dataStore.getEndDate(garbage));
+    }
+
+    @Test
+    public void test_isTargetMessageDate_noBoundsAcceptsEverything() {
+        final Map<String, Object> configMap = new HashMap<>();
+        assertTrue(dataStore.isTargetMessageDate(configMap, messageCreatedAt("2020-01-01T00:00:00Z")));
+    }
+
+    @Test
+    public void test_isTargetMessageDate_outsideRangeIsRejected() {
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("start_date", OffsetDateTime.parse("2026-01-01T00:00:00Z"));
+        configMap.put("end_date", OffsetDateTime.parse("2026-01-31T23:59:59.999999999Z"));
+
+        assertFalse("before start_date", dataStore.isTargetMessageDate(configMap, messageCreatedAt("2025-12-31T23:59:59Z")));
+        assertFalse("after end_date", dataStore.isTargetMessageDate(configMap, messageCreatedAt("2026-02-01T00:00:00Z")));
+        assertTrue("inside the range", dataStore.isTargetMessageDate(configMap, messageCreatedAt("2026-01-15T12:00:00Z")));
+        assertTrue("start_date is inclusive", dataStore.isTargetMessageDate(configMap, messageCreatedAt("2026-01-01T00:00:00Z")));
+        assertTrue("end_date is inclusive", dataStore.isTargetMessageDate(configMap, messageCreatedAt("2026-01-31T23:59:59Z")));
+        assertTrue("end_date is inclusive at the exact bound instant",
+                dataStore.isTargetMessageDate(configMap, messageCreatedAt("2026-01-31T23:59:59.999999999Z")));
+    }
+
+    /**
+     * The Graph SDK types {@code createdDateTime} as an {@link OffsetDateTime}: a value it cannot
+     * parse throws inside the client's deserializer and never reaches this predicate (that failure
+     * lands in the channel-level catch, which {@code ignore_error} gates). What does reach the
+     * predicate is an absent timestamp, and a missing timestamp must never be a reason to drop a
+     * document -- silently shrinking the index is worse than indexing one extra message.
+     */
+    @Test
+    public void test_isTargetMessageDate_fallsBackToLastModifiedAndFailsOpen() {
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("start_date", OffsetDateTime.parse("2026-01-01T00:00:00Z"));
+
+        final ChatMessage lastModifiedOnly = new ChatMessage();
+        lastModifiedOnly.setLastModifiedDateTime(OffsetDateTime.parse("2026-06-01T00:00:00Z"));
+        assertTrue("createdDateTime null must fall back to lastModifiedDateTime",
+                dataStore.isTargetMessageDate(configMap, lastModifiedOnly));
+
+        final ChatMessage noTimestamp = new ChatMessage();
+        assertTrue("a message with no timestamp at all must be kept, not dropped", dataStore.isTargetMessageDate(configMap, noTimestamp));
+    }
+
+    /**
+     * The predicate being correct proves nothing if {@code processChatMessage} never calls it. Pins
+     * that an out-of-range message is skipped before any indexing work happens.
+     */
+    @Test
+    public void test_processChatMessage_skipsMessageOutsideDateRange() {
+        registerPermissionHelper();
+        registerCrawlerStatsHelper();
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("ignore_system_events", dataStore.isIgnoreSystemEvents(paramMap));
+        configMap.put("append_attachment", Boolean.FALSE);
+        configMap.put("title_dateformat", dataStore.getTitleDateformat(paramMap));
+        configMap.put("title_timezone_offset", dataStore.getTitleTimezone(paramMap));
+        configMap.put("start_date", OffsetDateTime.parse("2026-01-01T00:00:00Z"));
+
+        final ChatMessage message = messageCreatedAt("2025-06-01T00:00:00Z");
+        message.setId("message-old");
+        message.setWebUrl("https://teams.microsoft.com/l/message/old");
+
+        final CountingIndexUpdateCallback callback = new CountingIndexUpdateCallback();
+        final Map<String, Object> result = dataStore.processChatMessage(new DataConfig(), callback, configMap, paramMap, new HashMap<>(),
+                new HashMap<>(), new ArrayList<>(), message, map -> {}, null);
+
+        assertNull("an out-of-range message must not be indexed", result);
+        assertEquals("an out-of-range message must not reach the index callback", 0, callback.getStoreCount());
+    }
+
+    /**
+     * Messages versus replies. The filter lives in {@code processChatMessage}, so every message is
+     * tested against the window -- root messages and replies alike. Replies are only fetched for a
+     * root that was itself indexed, so a root outside the window also excludes its replies, even a
+     * reply that would have fallen inside it.
+     *
+     * <p>That is the deliberate choice, not an accident: it keeps the existing "no parent, no reply
+     * fetch" invariant (a reply is never indexed with a {@code parent} that was never processed),
+     * and it is the one place where the range actually saves Graph traffic -- the reply listing for
+     * an out-of-range root is never issued. The lossy direction is bounded: a reply is always at or
+     * after its root, so an {@code end_date} that excludes a root correctly excludes its replies;
+     * only {@code start_date} can drop an in-window reply, and only of a conversation whose opening
+     * message the operator asked not to index.
+     */
+    @Test
+    public void test_processChannelMessages_outOfRangeRootAlsoExcludesItsReplies() throws Exception {
+        registerPermissionHelper();
+        registerCrawlerStatsHelper();
+
+        final ChatMessage oldRoot = messageCreatedAt("2025-06-01T00:00:00Z");
+        oldRoot.setId("root-old");
+        oldRoot.setWebUrl("https://example.com/root-old");
+
+        final ChatMessage recentReply = messageCreatedAt("2026-02-01T00:00:00Z");
+        recentReply.setId("reply-recent");
+        recentReply.setWebUrl("https://example.com/reply-recent");
+
+        try (ReplyingMicrosoft365Client client = new ReplyingMicrosoft365Client(dummyParams(), List.of(oldRoot), List.of(recentReply))) {
+            final Group group = new Group();
+            group.setId("team-1");
+            group.setDisplayName("Team One");
+
+            final Channel channel = new Channel();
+            channel.setId("channel-1");
+            channel.setDisplayName("General");
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            final Map<String, Object> configMap = new HashMap<>();
+            configMap.put("ignore_replies", dataStore.isIgnoreReplies(paramMap));
+            configMap.put("append_attachment", dataStore.isAppendAttachment(paramMap));
+            configMap.put("title_dateformat", dataStore.getTitleDateformat(paramMap));
+            configMap.put("title_timezone_offset", dataStore.getTitleTimezone(paramMap));
+            configMap.put("ignore_system_events", dataStore.isIgnoreSystemEvents(paramMap));
+            configMap.put("start_date", OffsetDateTime.parse("2026-01-01T00:00:00Z"));
+
+            final CountingIndexUpdateCallback callback = new CountingIndexUpdateCallback();
+            dataStore.processChannelMessages(new DataConfig(), callback, paramMap, new HashMap<>(), new HashMap<>(), configMap, client,
+                    group, channel);
+
+            assertEquals("nothing may be indexed for an out-of-range root", 0, callback.getStoreCount());
+            assertEquals("the reply listing must not even be issued for an out-of-range root", 0, client.getReplyListingCount());
+        }
+    }
+
+    /**
+     * The predicate and its wiring into {@code processChatMessage} are both pinned above, but every
+     * one of those tests builds its own {@code configMap}. Without this test the two
+     * {@code configMap.put} calls in {@code storeData} could be deleted and the whole suite would
+     * stay green while the parameters did nothing. Also pins that an absent parameter puts a
+     * {@code null} bound -- the value {@code isTargetMessageDate} reads as "no filtering".
+     */
+    @Test
+    public void test_storeData_parsesBothBoundsIntoTheConfigMap() throws Exception {
+        final Map<String, Object> captured = new HashMap<>();
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        final TeamsDataStore testDataStore = new TeamsDataStore() {
+            @Override
+            protected Microsoft365Client createClient(final DataStoreParams paramMap) {
+                return client;
+            }
+
+            @Override
+            protected void processTeamMessages(final DataConfig dataConfig, final IndexUpdateCallback callback,
+                    final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
+                    final Map<String, Object> configMap, final java.util.concurrent.ExecutorService executorService,
+                    final Microsoft365Client c) {
+                captured.putAll(configMap);
+                captured.put("start_date_present", configMap.containsKey("start_date"));
+                captured.put("end_date_present", configMap.containsKey("end_date"));
+            }
+
+            @Override
+            protected void processChatMessages(final DataConfig dataConfig, final IndexUpdateCallback callback,
+                    final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
+                    final Map<String, Object> configMap, final java.util.concurrent.ExecutorService executorService,
+                    final Microsoft365Client c) {
+                // no-op: this test asserts only on what storeData put into the configMap
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("start_date", "2026-01-01");
+        paramMap.put("end_date", "2026-01-31T18:00:00+09:00");
+        testDataStore.storeData(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>());
+
+        assertEquals("storeData must parse start_date into the configMap", OffsetDateTime.parse("2026-01-01T00:00:00Z"),
+                captured.get("start_date"));
+        assertEquals("storeData must parse end_date into the configMap", OffsetDateTime.parse("2026-01-31T18:00:00+09:00"),
+                captured.get("end_date"));
+
+        captured.clear();
+        testDataStore.storeData(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>());
+        assertEquals("an unset start_date must still be put, as null", Boolean.TRUE, captured.get("start_date_present"));
+        assertEquals("an unset end_date must still be put, as null", Boolean.TRUE, captured.get("end_date_present"));
+        assertNull("an unset start_date must mean no lower bound", captured.get("start_date"));
+        assertNull("an unset end_date must mean no upper bound", captured.get("end_date"));
+    }
+
+    private static ChatMessage messageCreatedAt(final String isoInstant) {
+        final ChatMessage message = new ChatMessage();
+        message.setCreatedDateTime(OffsetDateTime.parse(isoInstant));
+        return message;
+    }
+
+    /**
+     * An {@link IndexUpdateCallback} that counts {@code store} calls, so a test can assert a
+     * message was <em>not</em> indexed without relying on an exception from a null callback.
+     */
+    private static final class CountingIndexUpdateCallback implements IndexUpdateCallback {
+        private int storeCount;
+
+        int getStoreCount() {
+            return storeCount;
+        }
+
+        @Override
+        public void store(final DataStoreParams storeParamMap, final Map<String, Object> dataMap) {
+            storeCount++;
+        }
+
+        @Override
+        public long getDocumentSize() {
+            return storeCount;
+        }
+
+        @Override
+        public long getExecuteTime() {
+            return 0;
+        }
+
+        @Override
+        public void commit() {
+            // do nothing
+        }
+    }
+
+    /**
+     * Feeds a fixed list of root messages and, for any root whose replies are requested, a fixed
+     * list of replies, counting how many times the reply listing was issued.
+     */
+    private static final class ReplyingMicrosoft365Client extends Microsoft365Client {
+        private final List<ChatMessage> messages;
+        private final List<ChatMessage> replies;
+        private int replyListingCount;
+
+        ReplyingMicrosoft365Client(final DataStoreParams params, final List<ChatMessage> messages, final List<ChatMessage> replies) {
+            super(params);
+            this.messages = messages;
+            this.replies = replies;
+        }
+
+        int getReplyListingCount() {
+            return replyListingCount;
+        }
+
+        @Override
+        public void getChannelMembers(final List<Object> options, final Consumer<ConversationMember> consumer, final String teamId,
+                final String channelId) {
+            // No members are needed: this fixture asserts only on what is indexed.
+        }
+
+        @Override
+        public void getTeamMessages(final List<Object> options, final Consumer<ChatMessage> consumer, final String teamId,
+                final String channelId) {
+            messages.forEach(consumer::accept);
+        }
+
+        @Override
+        public void getTeamReplyMessages(final List<Object> options, final Consumer<ChatMessage> consumer, final String teamId,
+                final String channelId, final String messageId) {
+            replyListingCount++;
+            replies.forEach(consumer::accept);
         }
     }
 

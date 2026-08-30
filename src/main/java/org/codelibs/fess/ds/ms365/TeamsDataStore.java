@@ -17,8 +17,12 @@ package org.codelibs.fess.ds.ms365;
 
 import java.io.IOException;
 import java.io.StringReader;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -103,6 +107,10 @@ public class TeamsDataStore extends Microsoft365DataStore {
     private static final String TITLE_DATEFORMAT = "title_dateformat";
     /** Parameter name for the title timezone offset. */
     private static final String TITLE_TIMEZONE = "title_timezone_offset";
+    /** Parameter name for the inclusive lower bound on a message's timestamp. */
+    private static final String START_DATE = "start_date";
+    /** Parameter name for the inclusive upper bound on a message's timestamp. */
+    private static final String END_DATE = "end_date";
 
     // scripts
     /** Key for the message object in the script map. */
@@ -176,12 +184,17 @@ public class TeamsDataStore extends Microsoft365DataStore {
         configMap.put(TITLE_TIMEZONE, getTitleTimezone(paramMap));
         configMap.put(IGNORE_SYSTEM_EVENTS, isIgnoreSystemEvents(paramMap));
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
+        // Parsed exactly here, once per crawl, so a malformed bound produces exactly one warning
+        // rather than one per message.
+        configMap.put(START_DATE, getStartDate(paramMap));
+        configMap.put(END_DATE, getEndDate(paramMap));
 
         if (logger.isDebugEnabled()) {
             logger.debug(
-                    "Teams crawling started - Configuration: TeamID={}, ChannelID={}, ChatID={}, IgnoreReplies={}, AppendAttachment={}, IgnoreError={}, Threads={}",
+                    "Teams crawling started - Configuration: TeamID={}, ChannelID={}, ChatID={}, IgnoreReplies={}, AppendAttachment={}, IgnoreError={}, StartDate={}, EndDate={}, Threads={}",
                     configMap.get(TEAM_ID), configMap.get(CHANNEL_ID), configMap.get(CHAT_ID), configMap.get(IGNORE_REPLIES),
-                    configMap.get(APPEND_ATTACHMENT), configMap.get(IGNORE_ERROR), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
+                    configMap.get(APPEND_ATTACHMENT), configMap.get(IGNORE_ERROR), configMap.get(START_DATE), configMap.get(END_DATE),
+                    paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
         final ReportingExecutor executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
@@ -470,6 +483,15 @@ public class TeamsDataStore extends Microsoft365DataStore {
     /**
      * Processes all messages for a given channel including replies when enabled.
      *
+     * <p>Replies are fetched only for a root message that {@code processChatMessage} actually
+     * indexed. With {@code start_date}/{@code end_date} set, a root outside the window therefore
+     * also excludes its replies. That is deliberate: it keeps a reply from ever being indexed with
+     * a {@code parent} that was never processed, and it is the one place the range saves Graph
+     * traffic -- the reply listing for an out-of-range root is never issued. A reply is always at
+     * or after its root, so an {@code end_date} that excludes a root correctly excludes its
+     * replies; only {@code start_date} can drop an in-window reply, and only of a conversation
+     * whose opening message the operator asked not to index.</p>
+     *
      * @param dataConfig The data configuration.
      * @param callback The index update callback.
      * @param paramMap The data store parameters.
@@ -624,6 +646,94 @@ public class TeamsDataStore extends Microsoft365DataStore {
      */
     protected Object isIgnoreSystemEvents(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_EVENTS, Constants.TRUE));
+    }
+
+    /**
+     * Gets the inclusive lower bound on a message's timestamp.
+     *
+     * @param paramMap The data store parameters.
+     * @return the lower bound, or null when unset or unparseable (i.e. no lower bound).
+     */
+    protected OffsetDateTime getStartDate(final DataStoreParams paramMap) {
+        return parseDateBound(paramMap.getAsString(START_DATE), START_DATE, false);
+    }
+
+    /**
+     * Gets the inclusive upper bound on a message's timestamp.
+     *
+     * @param paramMap The data store parameters.
+     * @return the upper bound, or null when unset or unparseable (i.e. no upper bound).
+     */
+    protected OffsetDateTime getEndDate(final DataStoreParams paramMap) {
+        return parseDateBound(paramMap.getAsString(END_DATE), END_DATE, true);
+    }
+
+    /**
+     * Parses a date-range bound.
+     *
+     * <p>Accepts a full ISO-8601 offset date-time (used verbatim) or a date-only ISO-8601 value,
+     * which is interpreted in UTC: the start of that day for a lower bound, the last instant of
+     * that day for an upper bound. An unparseable value is logged once and treated as absent, so
+     * a typo never aborts a crawl -- and, just as importantly, never narrows one: the operator
+     * gets the unfiltered crawl they had before the parameter existed, not an empty index. This is
+     * the same warn-and-fall-back treatment a malformed {@code include_pattern} and a malformed
+     * {@code max_content_length} already get in this plugin.</p>
+     *
+     * @param value The raw parameter value, may be null or blank.
+     * @param key The parameter name, for the warning message.
+     * @param endOfDay Whether a date-only value means the end of that day rather than its start.
+     * @return the parsed bound, or null.
+     */
+    protected OffsetDateTime parseDateBound(final String value, final String key, final boolean endOfDay) {
+        if (StringUtil.isBlank(value)) {
+            return null;
+        }
+        final String trimmed = value.trim();
+        try {
+            return OffsetDateTime.parse(trimmed, DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+        } catch (final DateTimeParseException e) {
+            // Not an offset date-time; try the date-only form below.
+        }
+        try {
+            final LocalDate date = LocalDate.parse(trimmed, DateTimeFormatter.ISO_LOCAL_DATE);
+            return (endOfDay ? date.atTime(LocalTime.MAX) : date.atStartOfDay()).atOffset(ZoneOffset.UTC);
+        } catch (final DateTimeParseException e) {
+            logger.warn("Ignoring {}={}: expected an ISO-8601 date (yyyy-MM-dd) or offset date-time (yyyy-MM-dd'T'HH:mm:ssXXX).", key,
+                    trimmed);
+            return null;
+        }
+    }
+
+    /**
+     * Checks whether a message's timestamp falls inside the configured date range.
+     *
+     * <p>Both bounds are inclusive. {@code createdDateTime} is compared, falling back to
+     * {@code lastModifiedDateTime} when it is null; a message with neither is kept, so a missing
+     * timestamp never silently removes content from the index. A timestamp the Graph SDK cannot
+     * parse never reaches this method at all -- it throws inside the client's deserializer, where
+     * {@code ignore_error} decides whether the channel is skipped or the crawl aborts.</p>
+     *
+     * @param configMap The configuration map holding the parsed bounds.
+     * @param message The chat message.
+     * @return true if the message should be indexed, false otherwise.
+     */
+    protected boolean isTargetMessageDate(final Map<String, Object> configMap, final ChatMessage message) {
+        final OffsetDateTime startDate = (OffsetDateTime) configMap.get(START_DATE);
+        final OffsetDateTime endDate = (OffsetDateTime) configMap.get(END_DATE);
+        if (startDate == null && endDate == null) {
+            return true;
+        }
+        OffsetDateTime timestamp = message.getCreatedDateTime();
+        if (timestamp == null) {
+            timestamp = message.getLastModifiedDateTime();
+        }
+        if (timestamp == null) {
+            return true;
+        }
+        if (startDate != null && timestamp.isBefore(startDate)) {
+            return false;
+        }
+        return endDate == null || !timestamp.isAfter(endDate);
     }
 
     /**
@@ -845,6 +955,14 @@ public class TeamsDataStore extends Microsoft365DataStore {
         if (isSystemEvent(configMap, message)) {
             if (logger.isDebugEnabled()) {
                 logger.debug("Skipping system event message: {} (ID: {})", message.getWebUrl(), message.getId());
+            }
+            return null;
+        }
+
+        if (!isTargetMessageDate(configMap, message)) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping message outside the configured date range: {} (ID: {}, Created: {})", message.getWebUrl(),
+                        message.getId(), message.getCreatedDateTime());
             }
             return null;
         }
