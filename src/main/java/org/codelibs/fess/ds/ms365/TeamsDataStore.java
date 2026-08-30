@@ -189,7 +189,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     configMap.get(APPEND_ATTACHMENT), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
-        final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
+        final ReportingExecutor executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
         try (final Microsoft365Client client = createClient(paramMap)) {
             if (logger.isDebugEnabled()) {
                 logger.debug("Starting Teams messages processing");

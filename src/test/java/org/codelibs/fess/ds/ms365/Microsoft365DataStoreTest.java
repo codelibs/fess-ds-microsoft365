@@ -218,6 +218,58 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
     }
 
     @Test
+    public void test_reportingExecutor_countsAFailureOnAPoolThread() throws Exception {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            executor.execute(() -> {
+                throw new IllegalStateException("boom");
+            });
+            executor.shutdown();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(1, executor.getFailureCount());
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_reportingExecutor_countsAFailureRunOnTheCallerThread() {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            final java.util.concurrent.CountDownLatch block = new java.util.concurrent.CountDownLatch(1);
+            executor.execute(() -> {
+                try {
+                    block.await();
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            // one thread is busy and the queue holds one task; the third submission saturates
+            executor.execute(() -> {});
+            executor.execute(() -> {
+                throw new IllegalStateException("boom on the caller");
+            });
+            assertEquals(1, executor.getFailureCount());
+            block.countDown();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_reportingExecutor_countsNothingWhenTasksSucceed() throws Exception {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            executor.execute(() -> {});
+            executor.shutdown();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(0, executor.getFailureCount());
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     public void test_getUserRoles_structure() {
         // Test that getUserRoles method exists and has correct signature
         // Note: Actual testing of getUserRoles requires SystemHelper to be configured
@@ -361,7 +413,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
 
         // Expose protected methods for testing
         @Override
-        public ExecutorService newFixedThreadPool(int nThreads) {
+        public ReportingExecutor newFixedThreadPool(int nThreads) {
             return super.newFixedThreadPool(nThreads);
         }
 

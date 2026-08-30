@@ -21,10 +21,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import org.apache.logging.log4j.LogManager;
@@ -133,9 +133,9 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      * Thread pool size is capped to prevent excessive resource usage.
      *
      * @param nThreads The number of threads in the pool.
-     * @return A new ExecutorService with a fixed thread pool.
+     * @return A new ReportingExecutor with a fixed thread pool.
      */
-    protected ExecutorService newFixedThreadPool(final int nThreads) {
+    protected ReportingExecutor newFixedThreadPool(final int nThreads) {
         // Cap thread pool size to prevent system resource exhaustion
         final int maxThreads = Runtime.getRuntime().availableProcessors() * 2;
         final int actualThreads = Math.min(nThreads, maxThreads);
@@ -148,8 +148,72 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
             }
         }
 
-        return new ThreadPoolExecutor(actualThreads, actualThreads, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(actualThreads),
-                new ThreadPoolExecutor.CallerRunsPolicy());
+        return new ReportingExecutor(actualThreads);
+    }
+
+    /**
+     * A thread pool that never lets a task's failure disappear.
+     *
+     * <p>Tasks are submitted with {@link #execute(Runnable)}, which discards whatever escapes them,
+     * while the saturation policy runs a rejected task on the submitting thread, where the same
+     * throwable would instead abort the crawl. One failure therefore had two outcomes depending on
+     * whether the queue happened to be full. Both paths now log at {@code ERROR} and increment
+     * {@link #getFailureCount()}, and the crawl continues; the count is reported at shutdown.
+     *
+     * <p>{@link Error} is not caught on the submitting thread: an {@code OutOfMemoryError} must not
+     * be swallowed to keep crawling. On a pool thread it is still reported before the thread dies.
+     */
+    protected static class ReportingExecutor extends ThreadPoolExecutor {
+
+        private final AtomicInteger failureCount = new AtomicInteger();
+
+        /**
+         * @param nThreads the pool size, which is also the queue capacity.
+         */
+        protected ReportingExecutor(final int nThreads) {
+            super(nThreads, nThreads, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(nThreads), (task, executor) -> {
+                if (!executor.isShutdown()) {
+                    ((ReportingExecutor) executor).runOnCallerThread(task);
+                }
+            });
+        }
+
+        @Override
+        protected void afterExecute(final Runnable task, final Throwable throwable) {
+            super.afterExecute(task, throwable);
+            if (throwable != null) {
+                report(throwable);
+            }
+        }
+
+        /**
+         * Runs a rejected task on the submitting thread, reporting a failure the same way a pool
+         * thread would.
+         *
+         * @param task the rejected task.
+         */
+        protected void runOnCallerThread(final Runnable task) {
+            try {
+                task.run();
+            } catch (final Exception e) {
+                report(e);
+            }
+        }
+
+        /**
+         * @param throwable the failure to report.
+         */
+        protected void report(final Throwable throwable) {
+            failureCount.incrementAndGet();
+            logger.error("A crawling task failed.", throwable);
+        }
+
+        /**
+         * @return the number of tasks that ended by throwing.
+         */
+        public int getFailureCount() {
+            return failureCount.get();
+        }
     }
 
     /**

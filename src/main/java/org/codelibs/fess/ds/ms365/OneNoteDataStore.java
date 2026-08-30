@@ -104,7 +104,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
                     isGroupNoteCrawler(paramMap));
         }
 
-        final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
+        final ReportingExecutor executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
         try (final Microsoft365Client client = createClient(paramMap)) {
             if (isSiteNoteCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {

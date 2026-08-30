@@ -221,7 +221,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                     isIgnoreSystemLists(paramMap), isIgnoreSystemLibraries(paramMap));
         }
 
-        final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
+        final ReportingExecutor executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
         try (final Microsoft365Client client = createClient(paramMap)) {
             if (isSharedDocumentsDriveCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {

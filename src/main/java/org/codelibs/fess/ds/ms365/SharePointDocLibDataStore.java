@@ -131,7 +131,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                     configMap.get(IGNORE_ERROR), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
-        final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
+        final ReportingExecutor executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
         try (final Microsoft365Client client = createClient(paramMap)) {
             final String siteId = getSiteId(paramMap);
             if (StringUtil.isNotBlank(siteId)) {
