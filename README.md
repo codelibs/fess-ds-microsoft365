@@ -164,6 +164,14 @@ permissions it took to crawl it:
 | OneNoteDataStore | User/group notebooks: a role synthesized from the owner's id, plus `default_permissions`. Site notebooks: `default_permissions` only |
 | TeamsDataStore | Channel or chat membership plus `default_permissions` |
 
+**Every row above also carries the data config's own Permissions field**, on top of what the row
+names. That is the field on the Fess data config itself, which is a separate setting from the
+`default_permissions` crawl parameter; both end up in the same role list, de-duplicated. This is
+worth stating for all six rows because it was not true of all six until this release:
+TeamsDataStore silently discarded it, and now applies it - see
+[Re-crawling after upgrading to the Teams fixes](#re-crawling-after-upgrading-to-the-teams-fixes)
+below before re-crawling a Teams config.
+
 Microsoft Graph exposes no app-only way to read SharePoint's own user and group role assignments
 for a site, list, list item or page. Microsoft's own Azure AI Search SharePoint ACL indexer
 requires `Sites.FullControl.All` or a full-control-class `Sites.Selected` grant to do the
@@ -855,20 +863,21 @@ no effect at all. The cap is logged at `DEBUG` when it applies.
 | `ignore_system_events` | Skip system event messages | `true` | Filter out system notifications |
 | `title_dateformat` | Date format for message titles | `yyyy/MM/dd'T'HH:mm:ss` | Java date pattern |
 | `title_timezone_offset` | Timezone offset for message titles | `Z` | e.g., `Z`, `+09:00`, `-05:00` |
-| `start_date` | Inclusive earliest message timestamp to index | - | `yyyy-MM-dd` (UTC start of day) or a full ISO-8601 offset date-time, e.g. `2026-01-01` or `2026-01-01T09:00:00+09:00`. An unparseable value is logged and ignored |
-| `end_date` | Inclusive latest message timestamp to index | - | `yyyy-MM-dd` (UTC end of day, `23:59:59.999999999Z`) or a full ISO-8601 offset date-time. An unparseable value is logged and ignored |
+| `start_date` | Inclusive earliest message timestamp to index | - | `yyyy-MM-dd` (UTC start of day) or an ISO-8601 date-time **carrying an explicit offset or `Z`**, e.g. `2026-01-01` or `2026-01-01T09:00:00+09:00`. A zone-less `2026-01-01T09:00:00` is rejected. An unparseable value is logged and ignored |
+| `end_date` | Inclusive latest message timestamp to index | - | `yyyy-MM-dd` (UTC end of day, `23:59:59.999999999Z`) or an ISO-8601 date-time carrying an explicit offset or `Z`. An unparseable value is logged and ignored |
 | `number_of_threads` | Number of processing threads | `1` | Concurrent message processing |
 | `default_permissions` | Default role assignments | - | Additional permissions for all messages |
 | `ignore_error` | Continue crawling when a team or channel cannot be processed | `false` | When `true`, an unresolvable `team_id` or `channel_id`, a team whose channels cannot be listed, and a channel whose messages cannot be fetched are logged and skipped instead of aborting the crawl. Failures while enumerating **all** teams were already skipped and are unaffected; a `team_id` listed in `exclude_team_ids` that cannot be resolved still aborts, so that a team you asked to exclude is never silently crawled |
 
 **How the Teams date range is applied**
 
-`start_date` and `end_date` are applied **after** the messages are fetched. Microsoft's
-`channel: list messages` API supports only `$top` and `$expand` - "The other OData query
-parameters aren't currently supported" - so there is no server-side date filter to use. Every
-message in every crawled channel is still retrieved from Microsoft Graph; the range reduces what
-is **indexed**, not what is **downloaded**, so it will not shorten the crawl or reduce Graph
-request volume.
+**The filtering is client-side.** `start_date` and `end_date` are applied **after** the messages
+are fetched. Microsoft's `channel: list messages` API supports only `$top` and `$expand` - "The
+other OData query parameters aren't currently supported" - so there is no server-side date filter
+to use. Every message in every crawled channel is still retrieved from Microsoft Graph and every
+page is still walked; the range reduces what is **indexed**, not what is **transferred**. Setting
+`start_date` to shorten a crawl does not work: it saves no Graph requests, no bandwidth and
+(except for the reply listings noted below) no time.
 
 The bound is compared against the message's `createdDateTime`, falling back to
 `lastModifiedDateTime` when that is absent. A message with neither timestamp is indexed rather
@@ -885,15 +894,71 @@ reply is always at or after its root, so an `end_date` that excludes a root corr
 replies; only `start_date` can drop an in-range reply, and only from a conversation whose opening
 message you asked not to index.
 
-When `chat_id` is set, the chat's messages are consolidated into a single document whose timestamp
-is that of the chat's first message, so the range is evaluated once for the whole chat: it either
-indexes the entire conversation or none of it, and never a subset of a chat's messages.
+**`chat_id` is judged across the whole conversation.** A chat is consolidated into a single
+document, so the range is evaluated once for the chat rather than per message, and the decision is
+all-or-nothing: the entire conversation is indexed or none of it is, never a subset. The test is
+whether **any** of the chat's messages falls inside the range - not the consolidated document's own
+timestamp. That timestamp is inherited from whichever message Graph happened to return first (the
+listing sets no `$orderby` and is not sorted afterwards), so judging by it would drop a chat
+spanning years on the strength of one arbitrary message.
+
+Two consequences follow from that shape:
+
+- The indexed body is the **whole, unfiltered** conversation. Consolidating a chat into one
+  document leaves no way to index part of it, so a range does not trim a chat's contents - it only
+  decides whether the chat is indexed.
+- `message.created_date_time` on that document is unchanged by the range. It is still the inherited
+  timestamp described above, and it does **not** tell you which message put the chat in range.
 
 A malformed `start_date` or `end_date` is logged once at `WARN` when the crawl starts and then
-treated as unset, so that bound simply does not filter. A typo therefore gives you the unfiltered
-crawl you had before the parameter existed - it never aborts the crawl and never silently empties
-the index. With both parameters unset - the default - nothing is filtered and behaviour is
-unchanged.
+treated as unset, so that bound simply does not filter. The same treatment is applied to an
+**inverted** range - a `start_date` later than the `end_date`, which would match no message at all:
+one `WARN` at crawl start, and then **both** bounds are dropped, so the crawl runs completely
+unfiltered rather than reporting success over an empty index. Equal bounds are a legitimate
+one-instant range and do not warn, and a lone bound cannot be inverted, so it does not either.
+
+A typo therefore gives you the unfiltered crawl you had before the parameter existed - it never
+aborts the crawl and never silently empties the index. With both parameters unset - the default -
+nothing is filtered and behaviour is unchanged.
+
+#### Re-crawling after upgrading to the Teams fixes
+
+Two changes in this release alter what a Teams crawl produces. Both need a re-crawl, and the
+second needs a review before that re-crawl.
+
+- **Teams crawling indexed zero documents before this release.** `getTeams` enumerated `/teams`,
+  fetched each team's backing `Group`, and then checked whether that group's
+  `resourceProvisioningOptions` contained `"Team"` - reading the value out of
+  `Group#getAdditionalData()`. In Microsoft Graph SDK v6 `resourceProvisioningOptions` is a
+  **typed** property on `Group`, so Kiota registers a field deserializer for it and routes it to
+  the setter; it never reaches the additional-data map, and the two are disjoint. The check
+  therefore rejected **every** team, the consumer was never called, and the crawl reported success
+  while indexing nothing. The only trace was one `DEBUG` line per skipped team. The typed accessor
+  is read now, and the check rejects a group only when the list is present and lacks `"Team"`.
+  **Expect the indexed document count to jump from zero on the first crawl after upgrading** - that
+  is the fix working, not a runaway crawl, so do not kill the job for it. Budget for the full
+  volume of every team's channel messages.
+
+  Note also that **archived teams are crawled**. The old check was named `isActiveTeam`, which
+  implied it excluded them; it never looked at `Team#getIsArchived`, and neither does the current
+  code. Use `exclude_team_ids` to skip archived teams you do not want indexed.
+
+- **The data config's Permissions field now reaches Teams message ACLs.** TeamsDataStore was the
+  only one of the six data stores that never folded `defaultDataMap`'s role entry into a document's
+  role list, so a Teams data config's Permissions field was silently discarded for every message it
+  indexed. It is applied now, in the same order the other five use: channel or chat membership,
+  then `default_permissions`, then the data config's Permissions field.
+
+  This **widens** who can retrieve Teams messages - back to what the config asked for, but wider
+  than what has actually been in the index. **Audit the Permissions field on every Teams data
+  config before re-crawling.** A config whose Permissions field was cloned from another data
+  store's config has been carrying that other store's audience harmlessly; after this release it
+  grants it. The change is purely additive - no document loses a role - and already-indexed Teams
+  documents keep their old, narrower ACL until they are re-crawled.
+
+  It is inert for one configuration: if you removed the `role=message.roles` line from the script,
+  the roles Teams computes never reach the document, and the data config's Permissions field
+  already reached it directly through the default data map. Nothing changes there.
 
 #### Teams Implementation Details
 
@@ -956,7 +1021,12 @@ The implementation extracts comprehensive message metadata including:
 - **Date Range Filtering**: `start_date`/`end_date` bound which messages are indexed, applied
   client-side after fetching - see "How the Teams date range is applied" above
 - **System Event Filtering**: Automatic detection and filtering of system-generated events
-- **URL Pattern Matching**: Support for include/exclude patterns on message content
+- **No pattern matching**: `include_pattern` and `exclude_pattern` are **not** supported by
+  TeamsDataStore. It reads neither one, so setting either has no effect at all - not on message
+  content, not on message URLs, and not on team or channel names. See the
+  [semantics table](#include_pattern--exclude_pattern-semantics-differ-by-datastore) above. Use
+  `team_id`, `exclude_team_ids`, `include_visibility`, `channel_id` and the date range to narrow a
+  Teams crawl
 
 **Use Cases:**
 - **Team Communication Search**: Find conversations across teams and channels
@@ -985,6 +1055,19 @@ If `include_pattern` or `exclude_pattern` is configured and, across all enabled 
 it admits zero of the notebooks the crawl actually saw, the crawl still finishes normally but logs
 one `WARN` summarizing that - a hint that the pattern may be misconfigured, since the same crawl
 otherwise reports success while indexing nothing.
+
+#### Failure URL rows for notebooks are keyed differently
+
+A notebook that fails to index is recorded in Fess's Failure URL admin screen. That row used to be
+keyed by the notebook's **display name**, which is not unique: two notebooks sharing a name
+collapsed into one row, and an operator saw one failure where there were two. The row is now keyed
+by the notebook's own web URL, falling back to its id when the failure happened before that URL was
+read, and to the display name only when the notebook has neither.
+
+Nothing needs re-crawling for this. The visible effects are that failure rows for notebooks are now
+followable links rather than bare names, and that a crawl with several same-named notebooks failing
+reports the true count instead of one. Any existing saved filter or report keyed on the old
+display-name rows will no longer match.
 
 #### OneNote Implementation Details
 
@@ -1066,6 +1149,18 @@ The implementation extracts and indexes the following notebook metadata:
 | `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
 | `ignore_system_libraries` | Skip system libraries (`_catalogs`, `Forms`, Style Library, `FormServerTemplates`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the drive's URL, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below - so a site whose path merely contains a `/Forms/` segment (e.g. a site collection named "Forms") is misdetected as a system library and has all of its files skipped by default, not just an actual Forms system library |
+
+#### The per-item failure log line changed
+
+`processDriveItem` has two catch arms, and both used to log `Crawling Access Exception at : {}`.
+OneDriveDataStore was the only one of the six data stores whose two failure paths could not be told
+apart in the crawler log. The second arm - everything that is not a `CrawlingAccessException` - now
+logs `Processing exception at : {}`, the phrasing the other five stores already use.
+
+Both stay at `WARN`, both still record a failure-URL row, and the failure-URL rows are unchanged
+(they are already keyed by error class). Only the log text differs. **An alert or log filter
+grepping for `Crawling Access Exception at` will stop matching non-access failures on OneDrive**;
+match `Processing exception at` as well, or drop to matching the shared `at : ` suffix.
 
 #### OneDrive Implementation Details
 
