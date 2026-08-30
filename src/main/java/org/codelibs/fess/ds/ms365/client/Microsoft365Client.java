@@ -25,7 +25,6 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -53,8 +52,6 @@ import com.azure.identity.ClientSecretCredentialBuilder;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.microsoft.graph.core.authentication.AzureIdentityAuthenticationProvider;
 import com.microsoft.graph.core.requests.GraphClientFactory;
 import com.microsoft.graph.models.BaseSitePage;
@@ -91,9 +88,6 @@ import com.microsoft.kiota.ApiException;
 import com.microsoft.kiota.RequestOption;
 import com.microsoft.kiota.ResponseHeaders;
 import com.microsoft.kiota.http.middleware.options.RetryHandlerOption;
-import com.microsoft.kiota.serialization.UntypedArray;
-import com.microsoft.kiota.serialization.UntypedNode;
-import com.microsoft.kiota.serialization.UntypedString;
 
 import okhttp3.Authenticator;
 import okhttp3.Credentials;
@@ -1461,15 +1455,15 @@ public class Microsoft365Client implements Closeable {
                                     "resourceProvisioningOptions", "visibility" };
                         });
                         if (group != null) {
-                            // Validate that this is an active Team by checking resourceProvisioningOptions
-                            // This prevents errors when trying to access channels for inactive/archived teams
-                            if (isActiveTeam(group)) {
+                            // /teams already established that this is a team; resourceProvisioningOptions
+                            // is only consulted so a group that explicitly lists other workloads and not
+                            // "Team" can be skipped. An absent or empty list is not a rejection.
+                            if (isTeamAllowedByProvisioningOptions(group)) {
                                 consumer.accept(group);
                             } else {
                                 if (logger.isDebugEnabled()) {
-                                    logger.debug(
-                                            "Skipping team {} ({}): not an active Team (missing 'Team' in resourceProvisioningOptions)",
-                                            team.getId(), group.getDisplayName());
+                                    logger.debug("Skipping team {} ({}): resourceProvisioningOptions {} does not contain 'Team'",
+                                            team.getId(), group.getDisplayName(), group.getResourceProvisioningOptions());
                                 }
                             }
                         }
@@ -1490,49 +1484,28 @@ public class Microsoft365Client implements Closeable {
     }
 
     /**
-     * Checks if a Group is an active Team by verifying the resourceProvisioningOptions property.
+     * Decides whether the Group backing an entry returned by the {@code /teams} endpoint should be
+     * crawled as a Team, based on its {@code resourceProvisioningOptions}.
+     *
+     * <p>The rule is: <strong>reject only when the list is present and does not contain
+     * "Team"</strong>. A null, absent or empty list is accepted.</p>
+     *
+     * <p>The gate is deliberately one-sided because the caller enumerates {@code /teams}, so every
+     * group reaching it is already a team; {@code resourceProvisioningOptions} can only contradict
+     * that, never establish it. Teams created before Graph began stamping the property have it
+     * absent, and rejecting those would defeat the reason {@code /teams} is enumerated rather than
+     * {@code /groups}.</p>
+     *
+     * <p>The value comes from the typed accessor rather than {@code getAdditionalData()}: {@code
+     * Group} declares this property, so Kiota registers a field deserializer for it and the value
+     * never reaches the additional-data map.</p>
      *
      * @param group The Group object to check
-     * @return true if the group has "Team" in its resourceProvisioningOptions, false otherwise
+     * @return false only when resourceProvisioningOptions is present and lacks "Team"; true otherwise
      */
-    private boolean isActiveTeam(final Group group) {
-        final Map<String, Object> additionalDataManager = group.getAdditionalData();
-        if (additionalDataManager != null) {
-            final Object jsonObj = additionalDataManager.get("resourceProvisioningOptions");
-            // Handle UntypedArray (Kiota SDK v6 style)
-            if (jsonObj instanceof final UntypedArray untypedArray) {
-                for (final UntypedNode node : untypedArray.getValue()) {
-                    if (node instanceof final UntypedString untypedString) {
-                        if ("Team".equals(untypedString.getValue())) {
-                            return true;
-                        }
-                    }
-                }
-            } else if (jsonObj instanceof final JsonElement jsonElement && jsonElement.isJsonArray()) {
-                // Handle JsonElement (SDK v5 style)
-                final JsonArray array = jsonElement.getAsJsonArray();
-                for (int i = 0; i < array.size(); i++) {
-                    if ("Team".equals(array.get(i).getAsString())) {
-                        return true;
-                    }
-                }
-            } else if (jsonObj instanceof final java.util.Collection<?> collection) {
-                // Handle native collection objects (may be used in some SDK versions)
-                for (final Object item : collection) {
-                    if ("Team".equals(String.valueOf(item))) {
-                        return true;
-                    }
-                }
-            } else if (jsonObj instanceof final Object[] array) {
-                // Handle object arrays (another possible format)
-                for (final Object item : array) {
-                    if ("Team".equals(String.valueOf(item))) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
+    private boolean isTeamAllowedByProvisioningOptions(final Group group) {
+        final List<String> provisioningOptions = group.getResourceProvisioningOptions();
+        return provisioningOptions == null || provisioningOptions.isEmpty() || provisioningOptions.contains("Team");
     }
 
     /**

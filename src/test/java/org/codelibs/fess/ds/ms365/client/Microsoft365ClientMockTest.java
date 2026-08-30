@@ -16,6 +16,7 @@
 package org.codelibs.fess.ds.ms365.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
@@ -25,6 +26,7 @@ import java.util.List;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.junit.jupiter.api.Test;
 
+import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
 
 /**
@@ -94,6 +96,109 @@ public class Microsoft365ClientMockTest {
 
             assertEquals(1, users.size());
             assertEquals(2, mock.requestCount(), "503 must be retried");
+        }
+    }
+
+    /**
+     * Pins where the SDK actually puts {@code resourceProvisioningOptions}, because a wrong answer
+     * here is what silently emptied Teams crawls: {@code Group} declares the property, so Kiota
+     * registers a field deserializer for it and routes the value through
+     * {@code setResourceProvisioningOptions}. {@code additionalData} only ever receives properties
+     * the model does <em>not</em> declare, so reading the option list from that map can never
+     * succeed. Should a future SDK drop the typed property, this test goes red and points at
+     * {@code isTeamAllowedByProvisioningOptions} before Teams indexing quietly returns to zero
+     * documents.
+     */
+    @Test
+    public void test_graphSdk_deserializesResourceProvisioningOptionsAsATypedProperty() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer()) {
+            mock.enqueueJson("{\"id\":\"g1\",\"displayName\":\"Group One\",\"resourceProvisioningOptions\":[\"Team\"]}");
+
+            final Group group = mock.newGraphClient().groups().byGroupId("g1").get();
+
+            assertEquals(List.of("Team"), group.getResourceProvisioningOptions(),
+                    "the typed accessor is where the deserialized value lands");
+            assertFalse(group.getAdditionalData().containsKey("resourceProvisioningOptions"),
+                    "a declared property never reaches additionalData");
+        }
+    }
+
+    /**
+     * The regression this whole fix exists for: a group whose {@code resourceProvisioningOptions}
+     * contains "Team" must be handed to the consumer. Reading the list from {@code additionalData}
+     * made {@code getTeams} accept nothing at all, so Teams crawling indexed zero documents while
+     * logging only one DEBUG line per team.
+     */
+    @Test
+    public void test_getTeams_acceptsGroupWhoseOptionsContainTeam() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            // strict FIFO: the /teams listing first, then one /groups/{id} lookup per team
+            mock.enqueueJson("{\"value\":[{\"id\":\"t1\",\"displayName\":\"Team One\"}]}");
+            mock.enqueueJson("{\"id\":\"t1\",\"displayName\":\"Team One\",\"resourceProvisioningOptions\":[\"Team\"]}");
+
+            client.client = mock.newGraphClient();
+
+            final List<Group> groups = new ArrayList<>();
+            client.getTeams(Collections.emptyList(), groups::add);
+
+            assertEquals(1, groups.size(), "a group carrying \"Team\" must reach the consumer");
+            assertEquals("Team One", groups.get(0).getDisplayName());
+        }
+    }
+
+    /**
+     * The only rejection the gate performs: the list is present and says this group backs some
+     * other workload (an Exchange-only group), so it is not a Team.
+     */
+    @Test
+    public void test_getTeams_skipsGroupWhoseOptionsArePresentWithoutTeam() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            mock.enqueueJson("{\"value\":[{\"id\":\"t1\",\"displayName\":\"Not A Team\"}]}");
+            mock.enqueueJson("{\"id\":\"t1\",\"displayName\":\"Not A Team\",\"resourceProvisioningOptions\":[\"Exchange\"]}");
+
+            client.client = mock.newGraphClient();
+
+            final List<Group> groups = new ArrayList<>();
+            client.getTeams(Collections.emptyList(), groups::add);
+
+            assertTrue(groups.isEmpty(), "a present list without \"Team\" must be rejected");
+        }
+    }
+
+    /**
+     * Absent is not a rejection. The /teams endpoint was chosen precisely so that old teams whose
+     * backing group never had {@code resourceProvisioningOptions} stamped are still crawled;
+     * rejecting them here would defeat that choice.
+     */
+    @Test
+    public void test_getTeams_acceptsGroupWithoutResourceProvisioningOptions() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            mock.enqueueJson("{\"value\":[{\"id\":\"t1\",\"displayName\":\"Legacy Team\"}]}");
+            mock.enqueueJson("{\"id\":\"t1\",\"displayName\":\"Legacy Team\"}");
+
+            client.client = mock.newGraphClient();
+
+            final List<Group> groups = new ArrayList<>();
+            client.getTeams(Collections.emptyList(), groups::add);
+
+            assertEquals(1, groups.size(), "an absent option list must not exclude a team");
+            assertEquals("Legacy Team", groups.get(0).getDisplayName());
+        }
+    }
+
+    /** An explicitly empty list carries no evidence against team-ness either. */
+    @Test
+    public void test_getTeams_acceptsGroupWithEmptyResourceProvisioningOptions() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            mock.enqueueJson("{\"value\":[{\"id\":\"t1\",\"displayName\":\"Empty Options Team\"}]}");
+            mock.enqueueJson("{\"id\":\"t1\",\"displayName\":\"Empty Options Team\",\"resourceProvisioningOptions\":[]}");
+
+            client.client = mock.newGraphClient();
+
+            final List<Group> groups = new ArrayList<>();
+            client.getTeams(Collections.emptyList(), groups::add);
+
+            assertEquals(1, groups.size(), "an empty option list must not exclude a team");
         }
     }
 }
