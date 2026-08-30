@@ -543,6 +543,40 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
                 dataStore.isTargetNotebook(null, Pattern.compile(".*"), notebookNamed(null)));
     }
 
+    /**
+     * The assertions above all use patterns that reject {@code ""} and {@code "   "} alike, so they
+     * cannot tell whether a whitespace-only name is normalised or matched verbatim. {@code .+} can:
+     * it matches {@code "   "} but not {@code ""}. Normalising only null left the three spellings of
+     * "this notebook has no usable name" behaving differently -- {@code include_pattern=.+} admitted
+     * a notebook named {@code "   "} while rejecting a null-named one -- contradicting both the
+     * javadoc and the README.
+     */
+    @Test
+    public void test_isTargetNotebook_whitespaceOnlyNameIsTreatedAsMissing() {
+        final Pattern anyNonEmpty = Pattern.compile(".+");
+
+        assertFalse("a null-named notebook must not satisfy include_pattern=.+",
+                dataStore.isTargetNotebook(anyNonEmpty, null, notebookNamed(null)));
+        assertFalse("an empty-named notebook must not satisfy include_pattern=.+",
+                dataStore.isTargetNotebook(anyNonEmpty, null, notebookNamed("")));
+        assertFalse("a whitespace-only name must be treated like a missing one, not admitted by .+",
+                dataStore.isTargetNotebook(anyNonEmpty, null, notebookNamed("   ")));
+        assertFalse("a tab-and-newline-only name is just as unusable",
+                dataStore.isTargetNotebook(anyNonEmpty, null, notebookNamed("\t\n")));
+
+        assertTrue("a null-named notebook must survive exclude_pattern=.+",
+                dataStore.isTargetNotebook(null, anyNonEmpty, notebookNamed(null)));
+        assertTrue("a whitespace-only name must survive exclude_pattern=.+ for the same reason",
+                dataStore.isTargetNotebook(null, anyNonEmpty, notebookNamed("   ")));
+
+        // Only a name that is entirely whitespace is normalised. A real name is matched verbatim,
+        // surrounding whitespace included, so no existing pattern changes meaning.
+        assertTrue("a padded real name must still be matched verbatim",
+                dataStore.isTargetNotebook(Pattern.compile("\\s*Project Apollo\\s*"), null, notebookNamed("  Project Apollo  ")));
+        assertFalse("a padded real name must not be normalised away",
+                dataStore.isTargetNotebook(Pattern.compile("Project Apollo"), null, notebookNamed("  Project Apollo  ")));
+    }
+
     @Test
     public void test_isTargetNotebook_excludeWinsOverInclude() {
         final Pattern includePattern = Pattern.compile(".*Notebook");

@@ -525,7 +525,10 @@ public class OneNoteDataStore extends Microsoft365DataStore {
      * name is matched as the empty string rather than bypassing the filters: an operator who set
      * {@code include_pattern} has said what they want indexed, and an unnamed notebook is not it,
      * so such a notebook is excluded by any {@code include_pattern} that does not match {@code ""}
-     * and kept under an {@code exclude_pattern} that does not match {@code ""}.</p>
+     * and kept under an {@code exclude_pattern} that does not match {@code ""}. A whitespace-only
+     * name is treated the same as a missing one: {@code null}, {@code ""} and {@code "   "} are
+     * three spellings of the same thing, and a pattern such as {@code .+} must not admit one and
+     * reject another. A name with any other character is matched verbatim.</p>
      *
      * @param includePattern the include pattern, or null for no include filtering
      * @param excludePattern the exclude pattern, or null for no exclude filtering
@@ -538,7 +541,11 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         }
         // A missing name is matched as "" rather than special-cased into an unconditional pass:
         // the configured patterns decide, with the same full-match semantics as every other name.
-        final String displayName = notebook.getDisplayName() != null ? notebook.getDisplayName() : StringUtil.EMPTY;
+        // Whitespace-only counts as missing, so that null, "" and "   " -- three spellings of "this
+        // notebook has no usable name" -- cannot be told apart by a pattern such as ".+". A name
+        // that has other characters is used verbatim, surrounding whitespace included, so no
+        // existing pattern changes meaning.
+        final String displayName = StringUtil.isBlank(notebook.getDisplayName()) ? StringUtil.EMPTY : notebook.getDisplayName();
         if (includePattern != null && !includePattern.matcher(displayName).matches()) {
             if (logger.isDebugEnabled()) {
                 logger.debug("Skipping notebook {}: does not match {}", displayName, INCLUDE_PATTERN);
