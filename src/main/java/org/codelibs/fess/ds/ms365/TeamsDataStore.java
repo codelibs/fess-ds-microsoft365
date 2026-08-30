@@ -184,10 +184,9 @@ public class TeamsDataStore extends Microsoft365DataStore {
         configMap.put(TITLE_TIMEZONE, getTitleTimezone(paramMap));
         configMap.put(IGNORE_SYSTEM_EVENTS, isIgnoreSystemEvents(paramMap));
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
-        // Parsed exactly here, once per crawl, so a malformed bound produces exactly one warning
-        // rather than one per message.
-        configMap.put(START_DATE, getStartDate(paramMap));
-        configMap.put(END_DATE, getEndDate(paramMap));
+        // Parsed exactly here, once per crawl, so a bad range produces exactly one warning rather
+        // than one per message.
+        putDateRange(configMap, paramMap);
 
         if (logger.isDebugEnabled()) {
             logger.debug(
@@ -669,6 +668,34 @@ public class TeamsDataStore extends Microsoft365DataStore {
      */
     protected Object isIgnoreSystemEvents(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_EVENTS, Constants.TRUE));
+    }
+
+    /**
+     * Parses both date bounds and puts them into the configuration, once per crawl.
+     *
+     * <p>An inverted range -- {@code start_date} later than {@code end_date}, which matches no
+     * message at all -- is reported with one {@code WARN} and then <em>ignored on both sides</em>
+     * rather than applied. Applying it would index nothing while reporting a successful crawl,
+     * leaving one {@code DEBUG} line per skipped message as the only trace: the silent empty index
+     * this feature is documented never to produce. Ignoring it instead falls back to the
+     * unfiltered crawl that existed before the parameters, which is the same warn-and-fall-back
+     * treatment a malformed bound already gets -- an inverted range is a swapped pair of values,
+     * never something an operator asks for on purpose.</p>
+     *
+     * @param configMap The configuration map to populate.
+     * @param paramMap The data store parameters.
+     */
+    protected void putDateRange(final Map<String, Object> configMap, final DataStoreParams paramMap) {
+        OffsetDateTime startDate = getStartDate(paramMap);
+        OffsetDateTime endDate = getEndDate(paramMap);
+        if (startDate != null && endDate != null && startDate.isAfter(endDate)) {
+            logger.warn("Ignoring {}={} and {}={}: the range is inverted and would match no message. Crawling without a date range.",
+                    START_DATE, startDate, END_DATE, endDate);
+            startDate = null;
+            endDate = null;
+        }
+        configMap.put(START_DATE, startDate);
+        configMap.put(END_DATE, endDate);
     }
 
     /**

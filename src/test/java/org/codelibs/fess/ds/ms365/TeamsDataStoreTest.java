@@ -29,6 +29,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,9 +37,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
@@ -1368,6 +1374,98 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("an unset end_date must still be put, as null", Boolean.TRUE, captured.get("end_date_present"));
         assertNull("an unset start_date must mean no lower bound", captured.get("start_date"));
         assertNull("an unset end_date must mean no upper bound", captured.get("end_date"));
+    }
+
+    // Test the inverted date range
+
+    /**
+     * {@code start_date} later than {@code end_date} matches no message at all. Applied, it would
+     * index nothing while reporting a green crawl, leaving one DEBUG line per skipped message as
+     * the only trace. It is reported once and both bounds are dropped instead, so the operator
+     * gets the unfiltered crawl that existed before the parameters rather than an empty index.
+     */
+    @Test
+    public void test_putDateRange_invertedRangeWarnsOnceAndIsIgnored() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("start_date", "2026-02-01");
+        paramMap.put("end_date", "2026-01-01");
+
+        final Map<String, Object> configMap = new HashMap<>();
+        final List<String> warnings = captureTeamsDataStoreWarnings(() -> dataStore.putDateRange(configMap, paramMap));
+
+        final List<String> inverted = warnings.stream().filter(message -> message.contains("inverted")).collect(Collectors.toList());
+        assertEquals("expected exactly one inverted-range WARN, got: " + warnings, 1, inverted.size());
+        assertNull("an inverted start_date must be dropped, not applied", configMap.get("start_date"));
+        assertNull("an inverted end_date must be dropped, not applied", configMap.get("end_date"));
+        assertTrue("an inverted range must leave the crawl unfiltered",
+                dataStore.isTargetMessageDate(configMap, messageCreatedAt("2020-01-01T00:00:00Z")));
+    }
+
+    /**
+     * The counterpart: a well-ordered range, and a range with only one bound, must be applied in
+     * silence. A warning on a valid configuration would be as bad as no warning on a broken one.
+     */
+    @Test
+    public void test_putDateRange_validRangeIsAppliedWithoutWarning() {
+        final DataStoreParams ordered = new DataStoreParams();
+        ordered.put("start_date", "2026-01-01");
+        ordered.put("end_date", "2026-02-01");
+
+        final Map<String, Object> configMap = new HashMap<>();
+        final List<String> warnings = captureTeamsDataStoreWarnings(() -> dataStore.putDateRange(configMap, ordered));
+
+        assertTrue("a well-ordered range must not warn, got: " + warnings,
+                warnings.stream().noneMatch(message -> message.contains("inverted")));
+        assertEquals(OffsetDateTime.parse("2026-01-01T00:00:00Z"), configMap.get("start_date"));
+        assertEquals(OffsetDateTime.parse("2026-02-01T23:59:59.999999999Z"), configMap.get("end_date"));
+
+        // Equal bounds are a one-nanosecond window, not an inverted range.
+        final DataStoreParams equal = new DataStoreParams();
+        equal.put("start_date", "2026-01-01T00:00:00Z");
+        equal.put("end_date", "2026-01-01T00:00:00Z");
+        final Map<String, Object> equalConfigMap = new HashMap<>();
+        final List<String> equalWarnings = captureTeamsDataStoreWarnings(() -> dataStore.putDateRange(equalConfigMap, equal));
+        assertTrue("equal bounds must not warn, got: " + equalWarnings,
+                equalWarnings.stream().noneMatch(message -> message.contains("inverted")));
+        assertNotNull("equal bounds must still be applied", equalConfigMap.get("start_date"));
+
+        // Only one bound set cannot be inverted.
+        final DataStoreParams startOnly = new DataStoreParams();
+        startOnly.put("start_date", "2026-01-01");
+        final List<String> startOnlyWarnings = captureTeamsDataStoreWarnings(() -> dataStore.putDateRange(new HashMap<>(), startOnly));
+        assertTrue("a lone start_date must not warn, got: " + startOnlyWarnings,
+                startOnlyWarnings.stream().noneMatch(message -> message.contains("inverted")));
+    }
+
+    /**
+     * Captures {@code WARN} and above emitted by {@link TeamsDataStore} while {@code action} runs,
+     * the same appender-attachment pattern {@code OneNoteDataStoreTest} uses.
+     *
+     * @param action the code to run.
+     * @return the formatted messages, so an assertion failure can be read.
+     */
+    private static List<String> captureTeamsDataStoreWarnings(final Runnable action) {
+        final List<LogEvent> events = Collections.synchronizedList(new ArrayList<>());
+        final org.apache.logging.log4j.core.Logger coreLogger =
+                (org.apache.logging.log4j.core.Logger) LogManager.getLogger(TeamsDataStore.class);
+        final AbstractAppender appender =
+                new AbstractAppender("test-teams-datastore-warn-capture", null, null, false, Property.EMPTY_ARRAY) {
+                    @Override
+                    public void append(final LogEvent event) {
+                        if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                            events.add(event.toImmutable());
+                        }
+                    }
+                };
+        appender.start();
+        coreLogger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            coreLogger.removeAppender(appender);
+            appender.stop();
+        }
+        return events.stream().map(event -> event.getMessage().getFormattedMessage()).collect(Collectors.toList());
     }
 
     // Test the date range on the consolidated chat document
