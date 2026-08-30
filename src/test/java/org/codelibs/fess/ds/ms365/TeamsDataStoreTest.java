@@ -15,6 +15,13 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
@@ -31,6 +38,7 @@ import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.helper.SystemHelper;
@@ -864,6 +872,264 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
 
             assertEquals("a channel with no messages must issue no members request, but issued " + client.getChannelMembersCallCount(), 0,
                     client.getChannelMembersCallCount());
+        }
+    }
+
+    @Test
+    public void test_isIgnoreError_defaultIsFalse() {
+        assertFalse(dataStore.isIgnoreError(new DataStoreParams()));
+    }
+
+    @Test
+    public void test_isIgnoreError_true() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("ignore_error", "true");
+        assertTrue(dataStore.isIgnoreError(paramMap));
+
+        paramMap.put("ignore_error", "TRUE");
+        assertTrue("the canonical parser is case-insensitive", dataStore.isIgnoreError(paramMap));
+    }
+
+    @Test
+    public void test_processChannelMessages_rethrowsByDefault() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        doThrow(new RuntimeException("channel unavailable")).when(client).getTeamMessages(any(), any(), eq("team-1"), eq("channel-1"));
+
+        final Group group = new Group();
+        group.setId("team-1");
+        group.setDisplayName("Team One");
+        final Channel channel = new Channel();
+        channel.setId("channel-1");
+        channel.setDisplayName("General");
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("ignore_replies", Boolean.FALSE);
+        // "ignore_error" deliberately absent: an absent key must mean the default, false.
+
+        try {
+            dataStore.processChannelMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap,
+                    client, group, channel);
+            fail("a channel failure must abort the crawl when ignore_error is unset");
+        } catch (final DataStoreException e) {
+            assertTrue("expected the channel id in the message, got: " + e.getMessage(), e.getMessage().contains("channel-1"));
+        }
+    }
+
+    @Test
+    public void test_processChannelMessages_ignoreErrorSuppressesChannelFailure() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        doThrow(new RuntimeException("channel unavailable")).when(client).getTeamMessages(any(), any(), eq("team-1"), eq("channel-1"));
+
+        final Group group = new Group();
+        group.setId("team-1");
+        group.setDisplayName("Team One");
+        final Channel channel = new Channel();
+        channel.setId("channel-1");
+        channel.setDisplayName("General");
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("ignore_replies", Boolean.FALSE);
+        configMap.put("ignore_error", Boolean.TRUE);
+
+        // Must return normally: with ignore_error=true the failed channel is skipped, not fatal.
+        dataStore.processChannelMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, client,
+                group, channel);
+    }
+
+    @Test
+    public void test_processTeamMessages_unknownTeamRethrowsByDefault() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.getGroupById("team-missing")).thenReturn(null);
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("team_id", "team-missing");
+
+        try {
+            dataStore.processTeamMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
+                    client);
+            fail("an unresolvable team_id must abort the crawl when ignore_error is unset");
+        } catch (final DataStoreException e) {
+            assertTrue("expected the team id in the message, got: " + e.getMessage(), e.getMessage().contains("team-missing"));
+        }
+    }
+
+    @Test
+    public void test_processTeamMessages_unknownTeamIsSkippedWhenIgnoreError() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.getGroupById("team-missing")).thenReturn(null);
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("team_id", "team-missing");
+        configMap.put("ignore_error", Boolean.TRUE);
+
+        // Must return normally, without ever reaching the executor (which is null here).
+        dataStore.processTeamMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
+                client);
+    }
+
+    @Test
+    public void test_processTeamMessages_unknownChannelRethrowsByDefault() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        final Group group = new Group();
+        group.setId("team-1");
+        group.setDisplayName("Team One");
+        when(client.getGroupById("team-1")).thenReturn(group);
+        when(client.getChannelById("team-1", "channel-missing")).thenReturn(null);
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("team_id", "team-1");
+        configMap.put("channel_id", "channel-missing");
+        configMap.put("include_visibility", new String[0]);
+
+        try {
+            dataStore.processTeamMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
+                    client);
+            fail("an unresolvable channel_id must abort the crawl when ignore_error is unset");
+        } catch (final DataStoreException e) {
+            assertTrue("expected the channel id in the message, got: " + e.getMessage(), e.getMessage().contains("channel-missing"));
+        }
+    }
+
+    @Test
+    public void test_processTeamMessages_unknownChannelIsSkippedWhenIgnoreError() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        final Group group = new Group();
+        group.setId("team-1");
+        group.setDisplayName("Team One");
+        when(client.getGroupById("team-1")).thenReturn(group);
+        when(client.getChannelById("team-1", "channel-missing")).thenReturn(null);
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("team_id", "team-1");
+        configMap.put("channel_id", "channel-missing");
+        configMap.put("include_visibility", new String[0]);
+        configMap.put("ignore_error", Boolean.TRUE);
+
+        // Must return normally, without ever reaching the executor (which is null here).
+        dataStore.processTeamMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
+                client);
+    }
+
+    @Test
+    public void test_processTeamMessages_specificTeamChannelListingRethrowsByDefault() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        final Group group = new Group();
+        group.setId("team-1");
+        group.setDisplayName("Team One");
+        when(client.getGroupById("team-1")).thenReturn(group);
+        doThrow(new RuntimeException("channels unavailable")).when(client).getChannels(any(), any(), eq("team-1"));
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("team_id", "team-1");
+        configMap.put("channel_id", null);
+        configMap.put("include_visibility", new String[0]);
+
+        try {
+            dataStore.processTeamMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
+                    client);
+            fail("a channel-listing failure for an explicitly configured team must abort the crawl when ignore_error is unset");
+        } catch (final DataStoreException e) {
+            assertTrue("expected the team id in the message, got: " + e.getMessage(), e.getMessage().contains("team-1"));
+        }
+    }
+
+    @Test
+    public void test_processTeamMessages_specificTeamChannelListingIsSkippedWhenIgnoreError() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        final Group group = new Group();
+        group.setId("team-1");
+        group.setDisplayName("Team One");
+        when(client.getGroupById("team-1")).thenReturn(group);
+        doThrow(new RuntimeException("channels unavailable")).when(client).getChannels(any(), any(), eq("team-1"));
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("team_id", "team-1");
+        configMap.put("channel_id", null);
+        configMap.put("include_visibility", new String[0]);
+        configMap.put("ignore_error", Boolean.TRUE);
+
+        // Must return normally, without ever reaching the executor (which is null here).
+        dataStore.processTeamMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
+                client);
+    }
+
+    /**
+     * Hazard H5: the all-teams path swallows channel-enumeration failures and continues today.
+     * ignore_error defaults to false, so gating that site would turn a tolerated failure into a
+     * crawl abort for every existing config that sets nothing. Pins that it stays tolerant.
+     */
+    @Test
+    public void test_processTeamMessages_allTeamsPathStillToleratesChannelFailure() {
+        final Group group = new Group();
+        group.setId("team-1");
+        group.setDisplayName("Team One");
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        doAnswer(invocation -> {
+            final Consumer<Group> consumer = invocation.getArgument(1);
+            consumer.accept(group);
+            return null;
+        }).when(client).getTeams(any(), any());
+        doThrow(new RuntimeException("channels unavailable")).when(client).getChannels(any(), any(), eq("team-1"));
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("team_id", null);
+        configMap.put("exclude_team_ids", new String[0]);
+        configMap.put("include_visibility", new String[0]);
+        // ignore_error deliberately absent: the default must still complete without throwing.
+
+        dataStore.processTeamMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
+                client);
+    }
+
+    /**
+     * Hazard H5 again, from the other side: the all-teams path must stay tolerant even when the
+     * operator asked for ignore_error. That site never threw, so there is nothing for the flag to
+     * relax, and gating it either way would change behaviour nobody asked to change.
+     */
+    @Test
+    public void test_processTeamMessages_allTeamsPathToleratesChannelFailureWithIgnoreError() {
+        final Group group = new Group();
+        group.setId("team-1");
+        group.setDisplayName("Team One");
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        doAnswer(invocation -> {
+            final Consumer<Group> consumer = invocation.getArgument(1);
+            consumer.accept(group);
+            return null;
+        }).when(client).getTeams(any(), any());
+        doThrow(new RuntimeException("channels unavailable")).when(client).getChannels(any(), any(), eq("team-1"));
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("team_id", null);
+        configMap.put("exclude_team_ids", new String[0]);
+        configMap.put("include_visibility", new String[0]);
+        configMap.put("ignore_error", Boolean.TRUE);
+
+        dataStore.processTeamMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
+                client);
+    }
+
+    /**
+     * ignore_error must never widen the crawl. An exclude_team_ids entry that cannot be resolved
+     * still aborts even with ignore_error=true, because skipping the lookup would silently crawl a
+     * team the operator explicitly asked to exclude.
+     */
+    @Test
+    public void test_getExcludeGroupIdSet_stillThrowsWithIgnoreError() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.getGroupById("team-missing")).thenReturn(null);
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("exclude_team_ids", new String[] { "team-missing" });
+        configMap.put("ignore_error", Boolean.TRUE);
+
+        try {
+            dataStore.getExcludeGroupIdSet(configMap, client);
+            fail("an unresolvable exclude_team_ids entry must abort the crawl even when ignore_error is enabled");
+        } catch (final DataStoreException e) {
+            assertTrue("expected the team id in the message, got: " + e.getMessage(), e.getMessage().contains("team-missing"));
         }
     }
 

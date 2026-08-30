@@ -175,12 +175,13 @@ public class TeamsDataStore extends Microsoft365DataStore {
         configMap.put(TITLE_DATEFORMAT, getTitleDateformat(paramMap));
         configMap.put(TITLE_TIMEZONE, getTitleTimezone(paramMap));
         configMap.put(IGNORE_SYSTEM_EVENTS, isIgnoreSystemEvents(paramMap));
+        configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
 
         if (logger.isDebugEnabled()) {
             logger.debug(
-                    "Teams crawling started - Configuration: TeamID={}, ChannelID={}, ChatID={}, IgnoreReplies={}, AppendAttachment={}, Threads={}",
+                    "Teams crawling started - Configuration: TeamID={}, ChannelID={}, ChatID={}, IgnoreReplies={}, AppendAttachment={}, IgnoreError={}, Threads={}",
                     configMap.get(TEAM_ID), configMap.get(CHANNEL_ID), configMap.get(CHAT_ID), configMap.get(IGNORE_REPLIES),
-                    configMap.get(APPEND_ATTACHMENT), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
+                    configMap.get(APPEND_ATTACHMENT), configMap.get(IGNORE_ERROR), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
         final ReportingExecutor executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
@@ -310,6 +311,12 @@ public class TeamsDataStore extends Microsoft365DataStore {
     /**
      * Processes team messages.
      *
+     * <p>{@code ignore_error} is honoured only on the paths that abort the crawl today: an
+     * unresolvable {@code team_id}, an unresolvable {@code channel_id}, and a failure listing an
+     * explicitly configured team's channels. The all-teams branch below already logs and continues,
+     * so wiring the flag into it would have turned a tolerated failure into a crawl abort for every
+     * configuration that leaves {@code ignore_error} at its default of {@code false}.</p>
+     *
      * @param dataConfig The data configuration.
      * @param callback The index update callback.
      * @param paramMap The data store parameters.
@@ -331,7 +338,11 @@ public class TeamsDataStore extends Microsoft365DataStore {
 
             final Group g = client.getGroupById(teamId);
             if (g == null) {
-                throw new DataStoreException("Could not find a team: " + teamId);
+                if (!Boolean.TRUE.equals(configMap.get(IGNORE_ERROR))) {
+                    throw new DataStoreException("Could not find a team: " + teamId);
+                }
+                logger.warn("Could not find a team: {}. Skipping it because {} is enabled.", teamId, IGNORE_ERROR);
+                return;
             }
 
             if (logger.isDebugEnabled()) {
@@ -354,7 +365,12 @@ public class TeamsDataStore extends Microsoft365DataStore {
 
                 final Channel c = client.getChannelById(teamId, channelId);
                 if (c == null) {
-                    throw new DataStoreException("Could not find a channel: " + channelId);
+                    if (!Boolean.TRUE.equals(configMap.get(IGNORE_ERROR))) {
+                        throw new DataStoreException("Could not find a channel: " + channelId);
+                    }
+                    logger.warn("Could not find a channel: {} in team: {}. Skipping it because {} is enabled.", channelId, teamId,
+                            IGNORE_ERROR);
+                    return;
                 }
 
                 if (logger.isDebugEnabled()) {
@@ -371,8 +387,12 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     client.getChannels(Collections.emptyList(), c -> submitChannelMessages(dataConfig, callback, paramMap, scriptMap,
                             defaultDataMap, configMap, executorService, client, g, c), teamId);
                 } catch (final Exception e) {
-                    throw new DataStoreException("Failed to access channels for team: " + teamId + " (Display Name: " + g.getDisplayName()
-                            + "). Team may be archived or inaccessible.", e);
+                    if (!Boolean.TRUE.equals(configMap.get(IGNORE_ERROR))) {
+                        throw new DataStoreException("Failed to access channels for team: " + teamId + " (Display Name: "
+                                + g.getDisplayName() + "). Team may be archived or inaccessible.", e);
+                    }
+                    logger.warn("Failed to access channels for team: {} (Display Name: {}). Skipping it because {} is enabled.", teamId,
+                            g.getDisplayName(), IGNORE_ERROR, e);
                 }
             }
         } else if (teamId == null) {
@@ -498,7 +518,9 @@ public class TeamsDataStore extends Microsoft365DataStore {
         } catch (final Exception e) {
             logger.warn("Failed to process channel: {} (Display Name: {}) in team: {}", channel.getId(), channel.getDisplayName(),
                     group.getDisplayName(), e);
-            throw new DataStoreException("Failed to process channel: " + channel.getId(), e);
+            if (!Boolean.TRUE.equals(configMap.get(IGNORE_ERROR))) {
+                throw new DataStoreException("Failed to process channel: " + channel.getId(), e);
+            }
         }
     }
 
@@ -530,6 +552,11 @@ public class TeamsDataStore extends Microsoft365DataStore {
 
     /**
      * Gets the set of excluded group IDs based on configured exclude team IDs.
+     *
+     * <p>Deliberately not gated by {@code ignore_error}: this lookup resolves
+     * {@code exclude_team_ids}, so skipping a failure here would leave a team the operator asked to
+     * exclude out of the exclusion set and crawl it. {@code ignore_error} may make the crawl more
+     * forgiving, never wider.</p>
      *
      * @param configMap The configuration map containing exclude team ID settings.
      * @param client The Microsoft365Client for group lookups.

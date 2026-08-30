@@ -771,7 +771,7 @@ no effect at all. The cap is logged at `DEBUG` when it applies.
 | `title_timezone_offset` | Timezone offset for message titles | `Z` | e.g., `Z`, `+09:00`, `-05:00` |
 | `number_of_threads` | Number of processing threads | `1` | Concurrent message processing |
 | `default_permissions` | Default role assignments | - | Additional permissions for all messages |
-| `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed messages |
+| `ignore_error` | Continue crawling when a team or channel cannot be processed | `false` | When `true`, an unresolvable `team_id` or `channel_id`, a team whose channels cannot be listed, and a channel whose messages cannot be fetched are logged and skipped instead of aborting the crawl. Failures while enumerating **all** teams were already skipped and are unaffected; a `team_id` listed in `exclude_team_ids` that cannot be resolved still aborts, so that a team you asked to exclude is never silently crawled |
 
 #### Teams Implementation Details
 
@@ -814,7 +814,17 @@ The implementation extracts comprehensive message metadata including:
 - **Permission Caching**: Caches group membership data to optimize permission mapping
 
 **Error Handling & Resilience:**
-- **Configurable Error Handling**: `ignore_error` parameter controls continuation on failures
+- **Configurable Error Handling**: `ignore_error` relaxes the four failures that abort a Teams
+  crawl today - an unresolvable `team_id`, an unresolvable `channel_id`, a failure listing an
+  explicitly configured team's channels, and a failure fetching a channel's messages. It does not
+  change any other path: at the default `false` a Teams crawl behaves exactly as it did before the
+  parameter was honoured
+- **Always-tolerated failures**: when crawling **all** teams (no `team_id`), a team whose channels
+  cannot be listed is logged at `WARN` and skipped regardless of `ignore_error`
+- **Never-tolerated failures**: an `exclude_team_ids` entry that cannot be resolved always aborts,
+  even with `ignore_error=true`; ignoring it would crawl a team you asked to exclude
+- **Per-message failures**: a message that fails to index is recorded in the failure-URL list and
+  the crawl continues, independent of `ignore_error`
 - **Comprehensive Logging**: Debug and info level logging for monitoring progress
 - **Thread Pool Management**: Proper executor service shutdown and cleanup
 - **Interruption Handling**: Graceful handling of thread interruption
