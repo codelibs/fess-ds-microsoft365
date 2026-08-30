@@ -152,7 +152,7 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
             }
         }
 
-        return new ReportingExecutor(actualThreads);
+        return new ReportingExecutor(actualThreads, getName());
     }
 
     /**
@@ -188,46 +188,24 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         final long timeout = getShutdownTimeoutSeconds(paramMap);
         try {
             if (!executorService.awaitTermination(timeout, TimeUnit.SECONDS)) {
-                logger.error(describeUnfinished(executorService.getActiveCount(), executorService.getQueue().size(), timeout));
+                logger.error(
+                        "{}: {} crawling task(s) were still running and {} had not started after {} seconds. They are about to be "
+                                + "cancelled, and the documents they would have produced are missing from this crawl. Raise {} for a "
+                                + "large tenant.",
+                        getName(), executorService.getActiveCount(), executorService.getQueue().size(), timeout, EXECUTOR_SHUTDOWN_TIMEOUT);
             }
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new InterruptedRuntimeException(e);
         }
+        // A snapshot: on the timed-out path tasks are still running and may fail after this read,
+        // so the number reported can undercount. It is also never read when the wait is
+        // interrupted, because the throw above leaves the method first.
         final int failures = executorService.getFailureCount();
         if (failures > 0) {
-            logger.error(describeFailures(failures));
+            logger.error("{}: {} crawling task(s) failed; their documents are missing from this crawl. See the errors above.", getName(),
+                    failures);
         }
-    }
-
-    /**
-     * Describes a crawl that ran out of time before its tasks finished.
-     *
-     * <p>Extracted out of {@link #shutdownExecutor} so a test can assert on it: the log line is
-     * the entire production effect of noticing that {@code awaitTermination} returned false, so
-     * without this seam discarding that result again -- the defect being fixed -- would leave the
-     * suite green.
-     *
-     * @param active the tasks still running when the wait expired.
-     * @param queued the tasks that had not started when the wait expired.
-     * @param timeout the wait that expired, in seconds.
-     * @return the message to log.
-     */
-    protected String describeUnfinished(final int active, final int queued, final long timeout) {
-        return active + " crawling task(s) were still running and " + queued + " had not started after " + timeout
-                + " seconds. They are about to be cancelled, and the documents they would have produced are missing from this crawl. Raise "
-                + EXECUTOR_SHUTDOWN_TIMEOUT + " for a large tenant.";
-    }
-
-    /**
-     * Describes how many crawling tasks ended by throwing, giving a flood of per-task errors one
-     * countable number at the end. Extracted for the same reason as {@link #describeUnfinished}.
-     *
-     * @param failures the number of tasks that ended by throwing.
-     * @return the message to log.
-     */
-    protected String describeFailures(final int failures) {
-        return failures + " crawling task(s) failed; their documents are missing from this crawl. See the errors above.";
     }
 
     /**
@@ -241,20 +219,31 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      *
      * <p>{@link Error} is not caught on the submitting thread: an {@code OutOfMemoryError} must not
      * be swallowed to keep crawling. On a pool thread it is still reported before the thread dies.
+     *
+     * <p>The two paths report identically, but they cannot be made to behave identically beyond
+     * that: {@link ThreadPoolExecutor} rethrows what escaped a pool thread after
+     * {@link #afterExecute} has run, so the pool path additionally reaches the thread's default
+     * uncaught-exception handler and kills the worker (the pool immediately replaces it), while a
+     * task run on the submitting thread does neither.
      */
     protected static class ReportingExecutor extends ThreadPoolExecutor {
 
         private final AtomicInteger failureCount = new AtomicInteger();
 
+        /** The name of the data store that owns this pool, so a mixed-crawl log says which one failed. */
+        private final String storeName;
+
         /**
          * @param nThreads the pool size, which is also the queue capacity.
+         * @param storeName the name of the data store that owns this pool.
          */
-        protected ReportingExecutor(final int nThreads) {
+        protected ReportingExecutor(final int nThreads, final String storeName) {
             super(nThreads, nThreads, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(nThreads), (task, executor) -> {
                 if (!executor.isShutdown()) {
                     ((ReportingExecutor) executor).runOnCallerThread(task);
                 }
             });
+            this.storeName = storeName;
         }
 
         @Override
@@ -284,7 +273,7 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
          */
         protected void report(final Throwable throwable) {
             failureCount.incrementAndGet();
-            logger.error("A crawling task failed.", throwable);
+            logger.error("{}: a crawling task failed.", storeName, throwable);
         }
 
         /**
