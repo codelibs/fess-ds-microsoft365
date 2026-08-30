@@ -34,7 +34,7 @@ This plugin extends [Fess](https://fess.codelibs.org/) enterprise search capabil
 
 ### 🛠 **Developer-Friendly**
 - **Maven Integration**: Clean build process with dependency shading
-- **Extensive Testing**: UTFlute-based test framework with mock Graph API responses
+- **Tested against mock Graph responses**: UTFlute plus an OkHttp MockWebServer harness, so Graph paths, paging and retry behaviour are exercised without a live tenant
 - **Configurable Field Mapping**: Customizable data extraction scripts for each service
 
 ## 🚀 Quick Start
@@ -269,7 +269,7 @@ The plugin provides six specialized data store types, each optimized for differe
 | `teamsDataStore` | Teams | Channels, Messages, Chats | Conversation search, team communication |
 | `sharePointDocLibDataStore` | SharePoint | Document Libraries (metadata only) | Document library discovery and metadata search |
 | `sharePointListDataStore` | SharePoint | Lists, List Items, Custom Fields | Structured data search, business process content |
-| `sharePointPageDataStore` | SharePoint | Site Pages, News Articles, Wiki Pages | Web content search, intranet portal search |
+| `sharePointPageDataStore` | SharePoint | Modern Site Pages and News Posts (classic wiki pages are not indexed) | Web content search, intranet portal search |
 
 ### Configuration in Fess Admin UI
 
@@ -461,8 +461,8 @@ role=page.roles
 | page.author | The user who created the page. |
 | page.type | The type of page (news, article, page). |
 | page.description | The page description or summary. |
-| page.url | A link for opening the page in SharePoint. |
-| page.canonical_url | The canonical URL for accessing the page. |
+| page.url | A link for opening the page in SharePoint (the page's Graph `webUrl`). |
+| page.web_url | The same value as `page.url`; both keys are populated from the page's Graph `webUrl`. |
 | page.promotion_state | The promotion status of the page (for news pages). |
 | page.site_name | The display name of the SharePoint site containing this page. |
 | page.site_url | The web URL of the SharePoint site. |
@@ -471,15 +471,22 @@ role=page.roles
 **Content Extraction**: The SharePointPageDataStore extracts content from:
 - **Page Title**: The main page title
 - **Page Description**: Page description or summary text
-- **Canvas Layout**: Text content from web parts (TextWebPart, StandardWebPart)
-- **Web Parts**: HTML content converted to plain text with proper formatting
+- **Text web parts**: the web part's `innerHtml`, converted to plain text
+- **Standard web parts** (everything else - Quick Links, Hero, Events, News and so on): the web
+  part's `title` and `description`, plus SharePoint's own indexable projection of it -
+  `serverProcessedContent.searchablePlainTexts`, `.htmlStrings` and `.links`. The web part's
+  free-form `properties` object is **not** read; Microsoft Graph exposes it as an untyped node with
+  no published schema
 
 **Page Types**: The plugin automatically detects and categorizes pages:
 - `news`: News posts and announcements
 - `article`: Article pages and documentation
 - `page`: Standard site pages
 
-**Note**: Content extraction from canvas layout depends on the Microsoft Graph SDK's ability to retrieve web part data. The plugin handles both text web parts and attempts to extract meaningful content from standard web parts when possible.
+**Note**: Standard web parts contributed **nothing** to `page.content` before this release - the
+extractor received a typed `WebPartData` object it could not read and appended no characters. See
+[Re-crawling after upgrading to standard web-part extraction](#re-crawling-after-upgrading-to-standard-web-part-extraction)
+below: existing indexes do not contain the new text until the pages are re-crawled.
 
 ## ⚙️ Configuration Reference
 
@@ -853,7 +860,7 @@ no effect at all. The cap is logged at `DEBUG` when it applies.
 
 | Parameter | Description | Default | Notes |
 |-----------|-------------|---------|-------|
-| `team_id` | Specific team ID to crawl | All teams | Microsoft 365 group ID |
+| `team_id` | Specific team ID to crawl | All teams | Microsoft 365 group ID. **Omit the line entirely** to crawl all teams. Writing it with an empty value (`team_id=`) is not the same thing: the all-teams branch is only taken when the parameter is absent, so an empty value crawls **no** teams at all and reports success |
 | `exclude_team_ids` | Comma-separated team IDs to exclude | - | Multiple teams to skip |
 | `include_visibility` | Team visibility levels to include | All | Comma-separated: `public`, `private` |
 | `channel_id` | Specific channel ID to crawl | All channels | Within specified team |
@@ -1336,7 +1343,7 @@ The implementation creates rich, searchable content by combining:
 
 | Parameter | Description | Default | Notes |
 | --- | --- | --- | --- |
-| `site_id` | SharePoint site ID containing lists | Required | Full site ID format: `hostname,siteCollectionId,siteId` |
+| `site_id` | SharePoint site ID containing lists | All sites | Full site ID format: `hostname,siteCollectionId,siteId`. **Not required**: left unset, the DataStore enumerates every accessible site (`GET /sites`) and crawls the lists in each, which also means it then needs `Sites.Read.All` rather than `Sites.Selected` |
 | `list_id` | Specific list ID to crawl | All lists | If specified, only this list will be crawled |
 | `exclude_list_id` | Comma-separated list IDs to exclude | - | Multiple list IDs separated by commas |
 | `list_template_filter` | Filter which lists - and, since this fix, which of their items - are processed, by template type | - | Comma-separated numeric IDs and/or Graph template names, e.g. `100,101` or `genericList,documentLibrary`; see [List Template Types](#list-template-types) below |
@@ -1353,7 +1360,7 @@ The SharePointListDataStore provides comprehensive crawling and indexing of Shar
 
 **Core Functionality:**
 - **List Item Indexing**: Each SharePoint list item becomes a searchable entity with dynamic field extraction and content aggregation
-- **Site-Specific Crawling**: Requires a `site_id` parameter to target lists within a specific SharePoint site
+- **Site-Specific Crawling**: Set `site_id` to target lists within one SharePoint site. It is optional - unset, every accessible site is enumerated and crawled
 - **List Filtering**: Supports crawling all lists or specific lists using `list_id`, with exclusion capabilities via `exclude_list_id`
 - **Template-Based Filtering**: Filter which lists - and which of their items are processed - by SharePoint template type, using numeric IDs or Graph template names (e.g. `100`/`genericList` for Generic Lists, `101`/`documentLibrary` for Document Libraries). Without this filter, only generic-list items are processed (unchanged default behavior); setting it also opens up processing of items in the selected template(s), which previously never happened regardless of this filter
 - **System List Exclusion**: Automatically skips system lists unless explicitly configured otherwise
@@ -1498,7 +1505,7 @@ untyped node with no published schema.
 - **Framework**: Fess Data Store (LastaFlute/DBFlute)
 - **API Client**: Microsoft Graph SDK v6
 - **Authentication**: Azure Identity SDK
-- **Testing**: UTFlute with JUnit 4
+- **Testing**: UTFlute (`utflute-lastaflute`) with JUnit 5 (Jupiter), plus OkHttp MockWebServer for Graph responses. `junit:junit` 4.13.2 is still on the test classpath but no test uses it; `failIfNoTests` is on, because the JUnit 5 migration once collected zero tests for seven months without failing the build
 - **Dependency Management**: Maven Shade Plugin with relocation
 
 ### Project Structure
