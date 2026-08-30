@@ -95,20 +95,10 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected static final String MAX_CONTENT_LENGTH = "max_content_length";
     /** Parameter name for ignoring folders. */
     protected static final String IGNORE_FOLDER = "ignore_folder";
-    /** Parameter name for ignoring errors. */
-    protected static final String IGNORE_ERROR = "ignore_error";
     /** Parameter name for supported MIME types. */
     protected static final String SUPPORTED_MIMETYPES = "supported_mimetypes";
-    /** Parameter name for the include pattern for URLs. */
-    protected static final String INCLUDE_PATTERN = "include_pattern";
-    /** Parameter name for the exclude pattern for URLs. */
-    protected static final String EXCLUDE_PATTERN = "exclude_pattern";
-    /** Parameter name for the URL filter. */
-    protected static final String URL_FILTER = "url_filter";
     /** Parameter name for the drive ID. */
     protected static final String DRIVE_ID = "drive_id";
-    /** Parameter name for the number of threads. */
-    protected static final String NUMBER_OF_THREADS = "number_of_threads";
     /** Parameter name for enabling the shared documents drive crawler. */
     protected static final String SHARED_DOCUMENTS_DRIVE_CRAWLER = "shared_documents_drive_crawler";
     /** Parameter name for enabling the user drive crawler. */

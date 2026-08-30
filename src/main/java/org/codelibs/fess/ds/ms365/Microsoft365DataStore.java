@@ -68,6 +68,18 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     protected static final String PERMISSION_FAILURE_POLICY = "permission_failure_policy";
     /** Parameter name for the roles to add to every document's ACL, regardless of what the source system reports. */
     protected static final String DEFAULT_PERMISSIONS = "default_permissions";
+    /** Parameter name for the number of crawler threads. */
+    protected static final String NUMBER_OF_THREADS = "number_of_threads";
+    /** Parameter name for the SharePoint site ID to crawl. */
+    protected static final String SITE_ID = "site_id";
+    /** Parameter name for the comma-separated list of site IDs to exclude from crawling. */
+    protected static final String EXCLUDE_SITE_ID = "exclude_site_id";
+    /** Parameter name for the regular expression pattern of URLs to include. */
+    protected static final String INCLUDE_PATTERN = "include_pattern";
+    /** Parameter name for the regular expression pattern of URLs to exclude. */
+    protected static final String EXCLUDE_PATTERN = "exclude_pattern";
+    /** Key used to stash the {@link org.codelibs.fess.crawler.filter.UrlFilter} built from {@link #INCLUDE_PATTERN}/{@link #EXCLUDE_PATTERN} in the config map. */
+    protected static final String URL_FILTER = "url_filter";
 
     /** Skip the document and record it as a failed URL. The default. */
     protected static final String POLICY_SKIP = "skip";

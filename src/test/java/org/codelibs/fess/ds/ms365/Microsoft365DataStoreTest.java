@@ -645,6 +645,21 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
     }
 
     /**
+     * Pins the values of the six parameter constants promoted from the subclasses to the base.
+     * They are operator-visible data config parameter names, so a typo introduced while
+     * re-declaring them here would silently stop the parameter being read at all.
+     */
+    @Test
+    public void test_promotedParameterConstantValues() {
+        assertEquals("number_of_threads", TestDataStore.getNumberOfThreadsConstant());
+        assertEquals("site_id", TestDataStore.getSiteIdConstant());
+        assertEquals("exclude_site_id", TestDataStore.getExcludeSiteIdConstant());
+        assertEquals("include_pattern", TestDataStore.getIncludePatternConstant());
+        assertEquals("exclude_pattern", TestDataStore.getExcludePatternConstant());
+        assertEquals("url_filter", TestDataStore.getUrlFilterConstant());
+    }
+
+    /**
      * Test implementation of Microsoft365DataStore for testing purposes.
      * This allows us to test the abstract base class functionality.
      */
@@ -688,6 +703,30 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
 
         public static String getIgnoreSystemListsConstant() {
             return IGNORE_SYSTEM_LISTS;
+        }
+
+        public static String getNumberOfThreadsConstant() {
+            return NUMBER_OF_THREADS;
+        }
+
+        public static String getSiteIdConstant() {
+            return SITE_ID;
+        }
+
+        public static String getExcludeSiteIdConstant() {
+            return EXCLUDE_SITE_ID;
+        }
+
+        public static String getIncludePatternConstant() {
+            return INCLUDE_PATTERN;
+        }
+
+        public static String getExcludePatternConstant() {
+            return EXCLUDE_PATTERN;
+        }
+
+        public static String getUrlFilterConstant() {
+            return URL_FILTER;
         }
     }
 }

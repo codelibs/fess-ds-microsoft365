@@ -58,22 +58,6 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
 
     private static final Logger logger = LogManager.getLogger(SharePointDocLibDataStore.class);
 
-    // Configuration parameters
-    /** Site ID parameter name for specifying which SharePoint site to crawl */
-    protected static final String SITE_ID = "site_id";
-    /** Comma-separated list of site IDs to exclude from crawling */
-    protected static final String EXCLUDE_SITE_ID = "exclude_site_id";
-    /** Number of concurrent threads for processing */
-    protected static final String NUMBER_OF_THREADS = "number_of_threads";
-    /** Flag to continue crawling on errors */
-    protected static final String IGNORE_ERROR = "ignore_error";
-    /** Regular expression pattern for files to include */
-    protected static final String INCLUDE_PATTERN = "include_pattern";
-    /** Regular expression pattern for files to exclude */
-    protected static final String EXCLUDE_PATTERN = "exclude_pattern";
-    /** Key used to stash the {@link UrlFilter} built from {@link #INCLUDE_PATTERN}/{@link #EXCLUDE_PATTERN} in the config map */
-    protected static final String URL_FILTER = "url_filter";
-
     // Field mappings for document libraries
     /** Document library prefix for field mappings */
     protected static final String DOCLIB = "doclib";

@@ -66,20 +66,8 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     private static final Logger logger = LogManager.getLogger(SharePointPageDataStore.class);
 
     // Configuration parameters
-    /** Site ID parameter name for specifying which SharePoint site to crawl */
-    protected static final String SITE_ID = "site_id";
-    /** Comma-separated list of site IDs to exclude from crawling */
-    protected static final String EXCLUDE_SITE_ID = "exclude_site_id";
     /** Flag to ignore system pages */
     protected static final String IGNORE_SYSTEM_PAGES = "ignore_system_pages";
-    /** Number of concurrent threads for processing */
-    protected static final String NUMBER_OF_THREADS = "number_of_threads";
-    /** Flag to continue crawling on errors */
-    protected static final String IGNORE_ERROR = "ignore_error";
-    /** Regular expression pattern for pages to include */
-    protected static final String INCLUDE_PATTERN = "include_pattern";
-    /** Regular expression pattern for pages to exclude */
-    protected static final String EXCLUDE_PATTERN = "exclude_pattern";
     /** Page type filter (news, wiki, article) */
     protected static final String PAGE_TYPE_FILTER = "page_type_filter";
 
@@ -777,17 +765,6 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
      */
     protected boolean isIgnoreSystemPages(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_PAGES, Constants.TRUE));
-    }
-
-    /**
-     * Checks if errors should be ignored during crawling.
-     *
-     * @param paramMap data store parameters
-     * @return true if errors should be ignored, false otherwise
-     */
-    @Override
-    protected boolean isIgnoreError(final DataStoreParams paramMap) {
-        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.FALSE));
     }
 
     /**

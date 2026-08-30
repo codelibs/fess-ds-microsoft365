@@ -78,8 +78,6 @@ public class OneNoteDataStore extends Microsoft365DataStore {
     protected static final String NOTEBOOK_WEB_URL = "web_url";
     /** Key for the notebook roles in the script map. */
     protected static final String NOTEBOOK_ROLES = "roles";
-    /** Parameter name for the number of threads. */
-    protected static final String NUMBER_OF_THREADS = "number_of_threads";
     /** Parameter name for enabling the site note crawler. */
     protected static final String SITE_NOTE_CRAWLER = "site_note_crawler";
     /** Parameter name for enabling the user note crawler. */

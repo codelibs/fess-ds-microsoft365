@@ -57,22 +57,12 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     private static final Logger logger = LogManager.getLogger(SharePointListDataStore.class);
 
     // Configuration parameters
-    /** The parameter name for the site ID. */
-    protected static final String SITE_ID = "site_id";
     /** The parameter name for the list ID. */
     protected static final String LIST_ID = "list_id";
     /** The parameter name for excluded list IDs. */
     protected static final String EXCLUDE_LIST_ID = "exclude_list_id";
     /** The parameter name for the list template filter. */
     protected static final String LIST_TEMPLATE_FILTER = "list_template_filter";
-    /** The parameter name for the number of threads. */
-    protected static final String NUMBER_OF_THREADS = "number_of_threads";
-    /** The parameter name for ignoring errors. */
-    protected static final String IGNORE_ERROR = "ignore_error";
-    /** The parameter name for the include pattern. */
-    protected static final String INCLUDE_PATTERN = "include_pattern";
-    /** The parameter name for the exclude pattern. */
-    protected static final String EXCLUDE_PATTERN = "exclude_pattern";
 
     // Field mappings for list items
     /** The field name for list item. */
