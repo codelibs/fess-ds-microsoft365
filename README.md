@@ -489,7 +489,7 @@ role=page.roles
 | Parameter | Description | Default | Example |
 |-----------|-------------|---------|----------|
 | `number_of_threads` | Concurrent crawling threads | `1` | `3` |
-| `executor_shutdown_timeout` | How long to wait for submitted crawling tasks to finish, in whole seconds. Whatever has not finished by then is cancelled and its documents are missing from the crawl, which is reported at `ERROR`. Raise it for a large tenant. | `60` | `600` |
+| `executor_shutdown_timeout` | How long to wait for submitted crawling tasks to finish, in whole seconds. Whatever has not finished by then is cancelled and its documents are missing from the crawl, which is reported at `ERROR` - see below. Raise it for a large tenant. A value that is not a positive whole number keeps this default and logs a `WARN`. | `60` | `600` |
 | `ignore_error` | Continue on errors | `true` | `false` |
 | `include_pattern` | Regex pattern for inclusion - semantics differ by DataStore, see below | - | `.*\.pdf$` |
 | `exclude_pattern` | Regex pattern for exclusion - semantics differ by DataStore, see below | - | `.*temp.*` |
@@ -695,6 +695,38 @@ Graph national-cloud hosts. A deployment without a proxy was never affected - it
 that same six-host restriction. The proxied path now gets it too: a `@odata.nextLink` naming a
 host outside that list is still followed, but without the `Authorization` header, rather than
 leaking the tenant's app-only token to it.
+
+#### What the two crawl-completion `ERROR` messages mean
+
+Every DataStore in this plugin now shuts down its crawling thread pool through one shared helper,
+which can log two new kinds of `ERROR` on a code path that previously said nothing at all. In this
+project, `ERROR` from `org.codelibs` is wired to notifications, so upgrading can mean a crawl
+configuration that looked clean starts producing notifications - the failures documented below
+were already happening; only the reporting is new.
+
+- `<name>: N crawling task(s) were still running and M had not started after T seconds. They are
+  about to be cancelled, and the documents they would have produced are missing from this crawl.
+  Raise executor_shutdown_timeout for a large tenant.` - the wait configured by
+  `executor_shutdown_timeout` expired while tasks were still queued or in flight; those tasks are
+  cancelled and their documents never get produced. Before this release, the same expiry cancelled
+  those tasks just as silently, and the crawl reported success anyway. Raising
+  `executor_shutdown_timeout` is the direct fix; `number_of_threads` is the other lever, because
+  it also sets this pool's queue capacity - at most `2 x number_of_threads` tasks can be running or
+  queued when the wait begins, so a smaller `number_of_threads` shrinks how much can still be
+  outstanding at that point.
+- `<name>: N crawling task(s) failed; their documents are missing from this crawl. See the errors
+  above.` - a count of tasks that ended by throwing, logged once after the wait above; each
+  individual failure it counts is logged (also at `ERROR`, as `<name>: a crawling task failed.`)
+  immediately above it in the log, one line per task. Before this release, this same failure either
+  vanished with no log line at all, or - when the pool's queue (capacity `number_of_threads`) was
+  already full - ran on the submitting thread instead and propagated out of the crawl itself,
+  aborting it outright; which of the two happened depended on queue timing, not on anything the
+  operator controlled. When this message follows the one above, its count is a snapshot taken right
+  after the wait expires, while cancelled tasks can still go on to fail, so it can undercount.
+
+Both messages, and the per-task failure line, name the concrete DataStore by its Java class name
+(e.g. `OneDriveDataStore`), so an operator running several Microsoft 365 crawls in one Fess
+instance can tell which one produced it.
 
 ### Teams-Specific Parameters
 
