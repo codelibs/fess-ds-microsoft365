@@ -640,18 +640,22 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
             final String relative = sources.relativize(file).toString();
             final String source = java.nio.file.Files.readString(file, java.nio.charset.StandardCharsets.UTF_8);
 
-            final String[] lines = source.split("\n", -1);
+            // Scan code only. A textual scan over the raw source is defeated by a comment that
+            // merely names the helper: reverting a store to a bare shutdown() and writing
+            // "// intentionally not calling shutdownExecutor(...)" beside it kept this test green.
+            final String[] lines = stripComments(source);
+            final String code = String.join("\n", lines);
             for (int i = 0; i < lines.length; i++) {
                 if (lines[i].contains("awaitTermination")) {
                     waits.add(relative + ":" + (i + 1));
                 }
             }
 
-            if ("Microsoft365DataStore.java".equals(file.getFileName().toString()) || !source.contains("newFixedThreadPool(")) {
+            if ("Microsoft365DataStore.java".equals(file.getFileName().toString()) || !code.contains("newFixedThreadPool(")) {
                 continue;
             }
             storesWithAPool.add(relative);
-            if (!source.contains("shutdownExecutor(")) {
+            if (!code.contains("shutdownExecutor(")) {
                 storesBypassingTheHelper.add(relative);
             }
         }
@@ -666,6 +670,69 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         assertEquals("expected all six data stores to build a thread pool, found " + storesWithAPool, 6, storesWithAPool.size());
         assertEquals("every data store must shut its pool down through Microsoft365DataStore#shutdownExecutor, but these do not: "
                 + storesBypassingTheHelper, List.of(), storesBypassingTheHelper);
+    }
+
+    /**
+     * Blanks out every comment in a Java source, keeping one array entry per original line so a
+     * match still reports the line it was found on. String literals are preserved, because a
+     * {@code //} inside one is not a comment. Char literals need no special handling here: no
+     * source in this module contains a quote character literal.
+     *
+     * @param source the Java source to strip
+     * @return the source's lines with comment content removed
+     */
+    private static String[] stripComments(final String source) {
+        final String[] lines = source.split("\n", -1);
+        boolean inBlockComment = false;
+        for (int i = 0; i < lines.length; i++) {
+            final String line = lines[i];
+            final StringBuilder code = new StringBuilder(line.length());
+            boolean inString = false;
+            int at = 0;
+            while (at < line.length()) {
+                if (inBlockComment) {
+                    if (line.startsWith("*/", at)) {
+                        inBlockComment = false;
+                        at += 2;
+                    } else {
+                        at++;
+                    }
+                    continue;
+                }
+                final char c = line.charAt(at);
+                if (inString) {
+                    code.append(c);
+                    if (c == '\\' && at + 1 < line.length()) {
+                        code.append(line.charAt(at + 1));
+                        at += 2;
+                        continue;
+                    }
+                    if (c == '"') {
+                        inString = false;
+                    }
+                    at++;
+                    continue;
+                }
+                if (c == '"') {
+                    inString = true;
+                    code.append(c);
+                    at++;
+                    continue;
+                }
+                if (line.startsWith("//", at)) {
+                    break;
+                }
+                if (line.startsWith("/*", at)) {
+                    inBlockComment = true;
+                    at += 2;
+                    continue;
+                }
+                code.append(c);
+                at++;
+            }
+            lines[i] = code.toString();
+        }
+        return lines;
     }
 
     @Test
