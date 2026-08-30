@@ -27,7 +27,6 @@ import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.lang.StringUtil;
-import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.filter.UrlFilter;
@@ -38,8 +37,6 @@ import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
-import org.codelibs.fess.helper.PermissionHelper;
-import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -335,15 +332,9 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             }
 
             // Add default permissions
-            final FessConfig fessConfig = ComponentUtil.getFessConfig();
-            final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
-            StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
-            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
-                roleTypeList.stream().map(s -> (String) s).forEach(roles::add);
-            }
+            roles.addAll(getDefaultPermissions(paramMap));
 
-            final List<String> finalRoles = roles.stream().distinct().collect(Collectors.toList());
+            final List<String> finalRoles = mergeDefaultRoles(roles, defaultDataMap).stream().distinct().collect(Collectors.toList());
             docLibMap.put(DOCLIB_ROLES, finalRoles);
 
             if (logger.isDebugEnabled()) {

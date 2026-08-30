@@ -27,7 +27,6 @@ import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.lang.StringUtil;
-import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
@@ -37,8 +36,6 @@ import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
-import org.codelibs.fess.helper.PermissionHelper;
-import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -354,7 +351,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         }
 
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
-        final FessConfig fessConfig = ComponentUtil.getFessConfig();
         final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
 
         final StatsKeyObject statsKey = new StatsKeyObject(itemUrl);
@@ -468,14 +464,9 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             // below is their only role source.
             final List<String> roles = new ArrayList<>();
 
-            final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
-            StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
-            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
-                roleTypeList.stream().map(s -> (String) s).forEach(roles::add);
-            }
+            roles.addAll(getDefaultPermissions(paramMap));
 
-            final List<String> finalPermissions = roles.stream().distinct().collect(Collectors.toList());
+            final List<String> finalPermissions = mergeDefaultRoles(roles, defaultDataMap).stream().distinct().collect(Collectors.toList());
             if (logger.isDebugEnabled()) {
                 logger.debug("Final permissions for item {} - Count: {}, Permissions: {}", item.getId(), finalPermissions.size(),
                         finalPermissions);

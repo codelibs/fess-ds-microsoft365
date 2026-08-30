@@ -47,7 +47,6 @@ import org.codelibs.fess.exception.FessSystemException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
-import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
@@ -896,9 +895,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
      */
     protected List<String> buildMessageRoles(final DataStoreParams paramMap, final List<String> permissions) {
         final List<String> roles = new ArrayList<>(permissions);
-        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
-        StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
+        roles.addAll(getDefaultPermissions(paramMap));
         return roles.stream().distinct().collect(Collectors.toList());
     }
 

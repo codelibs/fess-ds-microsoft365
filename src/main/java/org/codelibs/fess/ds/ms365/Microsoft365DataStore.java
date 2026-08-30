@@ -20,6 +20,7 @@ import static org.codelibs.fess.ds.ms365.Microsoft365Constants.UNKNOWN_TEMPLATE;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -44,6 +45,7 @@ import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
 import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.helper.SystemHelper;
+import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -419,6 +421,30 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
                 .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
         return roles;
+    }
+
+    /**
+     * Folds the data config's own Permissions field -- seeded into {@code defaultDataMap} under
+     * the role index field -- into a document's role list.
+     *
+     * <p>Returns a new list; the argument is never mutated. {@code OneNoteDataStore} shares one
+     * roles list across the concurrent notebook threads of a single owner, so an in-place merge
+     * would corrupt other notebooks' ACLs.</p>
+     *
+     * <p>The result is not de-duplicated: every caller follows with
+     * {@code .stream().distinct().collect(...)}, and that step stays at the call site.</p>
+     *
+     * @param roles the roles collected so far, left unmodified
+     * @param defaultDataMap the data store's default data map
+     * @return a new list holding {@code roles} followed by the configured roles, if any
+     */
+    protected List<String> mergeDefaultRoles(final List<String> roles, final Map<String, Object> defaultDataMap) {
+        final List<String> merged = new ArrayList<>(roles);
+        final FessConfig fessConfig = ComponentUtil.getFessConfig();
+        if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
+            roleTypeList.stream().map(s -> (String) s).forEach(merged::add);
+        }
+        return merged;
     }
 
     /**

@@ -36,7 +36,6 @@ import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
-import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -354,12 +353,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             // place here. The data config's own Permissions field -- seeded into defaultDataMap
             // under the role index field -- is folded in the same way every sibling data store
             // folds it, so it is not silently discarded when the script maps role=notebook.roles.
-            final FessConfig fessConfig = ComponentUtil.getFessConfig();
-            final List<String> combinedRoles = new ArrayList<>(roles);
-            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
-                roleTypeList.stream().map(s -> (String) s).forEach(combinedRoles::add);
-            }
-            final List<String> finalRoles = combinedRoles.stream().distinct().collect(Collectors.toList());
+            final List<String> finalRoles = mergeDefaultRoles(roles, defaultDataMap).stream().distinct().collect(Collectors.toList());
             notebooksMap.put(NOTEBOOK_ROLES, finalRoles);
 
             resultMap.put(NOTEBOOK, notebooksMap);

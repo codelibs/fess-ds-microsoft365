@@ -37,8 +37,6 @@ import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
-import org.codelibs.fess.helper.PermissionHelper;
-import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -252,7 +250,6 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         }
 
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
-        final FessConfig fessConfig = ComponentUtil.getFessConfig();
         final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
 
         final StatsKeyObject statsKey = new StatsKeyObject(pageUrl);
@@ -322,14 +319,10 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
             // site-derived roles. default_permissions below is its only role source.
             final List<String> permissions = new ArrayList<>();
 
-            final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
-            StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(permissions::add));
-            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
-                roleTypeList.stream().map(s -> (String) s).forEach(permissions::add);
-            }
+            permissions.addAll(getDefaultPermissions(paramMap));
 
-            final List<String> finalPermissions = permissions.stream().distinct().collect(Collectors.toList());
+            final List<String> finalPermissions =
+                    mergeDefaultRoles(permissions, defaultDataMap).stream().distinct().collect(Collectors.toList());
             if (logger.isDebugEnabled()) {
                 logger.debug("Final permissions for page {} - Count: {}, Permissions: {}", fullPage.getId(), finalPermissions.size(),
                         finalPermissions);

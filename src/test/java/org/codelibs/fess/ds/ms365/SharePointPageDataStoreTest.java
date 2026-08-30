@@ -634,6 +634,81 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    /**
+     * The data config's own Permissions field arrives in {@code defaultDataMap} under the role
+     * index field, and {@code processPage} folds it into the page's ACL on top of
+     * {@code default_permissions}.
+     *
+     * <p>{@code test_processPage_doesNotRequestSitePermissions} above passes an empty
+     * {@code defaultDataMap}, so it pins the {@code default_permissions} half only; dropping the
+     * fold left the configured roles off every page with that test still green. Pins both halves
+     * and their order.</p>
+     */
+    @Test
+    public void test_processPage_foldsDefaultDataMapRoleIntoPageRoles() throws Exception {
+        final org.codelibs.fess.helper.SystemHelper systemHelper = new org.codelibs.fess.helper.SystemHelper();
+        ComponentUtil.register(systemHelper, "systemHelper");
+        final org.codelibs.fess.helper.CrawlerStatsHelper crawlerStatsHelper = new org.codelibs.fess.helper.CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(systemHelper);
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put(roleField, "page.roles");
+
+        // Same convertValue seam as test_processPage_doesNotRequestSitePermissions above: the real
+        // path goes through ComponentUtil.getScriptEngineFactory(), which this unit test has no
+        // business standing up. processPage itself runs unmodified.
+        final SharePointPageDataStore roleAwareDataStore = new SharePointPageDataStore() {
+            @Override
+            protected Object convertValue(final String scriptType, final String template, final Map<String, Object> resultMap) {
+                if ("page.roles".equals(template) && resultMap.get(PAGE) instanceof final Map<?, ?> pageDataMap) {
+                    return pageDataMap.get(PAGE_ROLES);
+                }
+                return super.convertValue(scriptType, template, resultMap);
+            }
+        };
+
+        final SitePage fullPage = new SitePage();
+        fullPage.setId("page-1");
+        fullPage.setTitle("Test Page");
+        fullPage.setWebUrl("https://example.sharepoint.com/sites/site-1/SitePages/test.aspx");
+
+        // getPageWithContent is the only Graph call processPage makes, and this stub answers it
+        // directly, so no transport is stood up.
+        try (PageContentStubbedMicrosoft365Client client = new PageContentStubbedMicrosoft365Client(dummyParams(), fullPage)) {
+            final Site site = new Site();
+            site.setId("site-1");
+            site.setDisplayName("Site");
+            site.setWebUrl("https://example.sharepoint.com/sites/site-1");
+
+            final SitePage page = new SitePage();
+            page.setId("page-1");
+            page.setWebUrl("https://example.sharepoint.com/sites/site-1/SitePages/test.aspx");
+            page.setTitle("Test Page");
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            paramMap.put(SharePointPageDataStore.DEFAULT_PERMISSIONS, "{role}admin");
+
+            final Map<String, Object> defaultDataMap = new HashMap<>();
+            defaultDataMap.put(roleField, List.of("1config-role"));
+
+            final TestCallback callback = new TestCallback();
+            roleAwareDataStore.processPage(new DataConfig(), callback, new LinkedHashMap<>(), paramMap, scriptMap, defaultDataMap, client,
+                    site, page);
+
+            assertEquals("processPage must have indexed the page exactly once", 1, callback.getCount());
+
+            @SuppressWarnings("unchecked")
+            final List<String> roles = (List<String>) callback.getLastDataMap().get(roleField);
+            assertEquals("the page's ACL must hold default_permissions first, then the data config's own roles",
+                    List.of(permissionHelper.encode("{role}admin"), "1config-role"), roles);
+        }
+    }
+
     @Test
     public void testStoreData() {
         // This test requires actual Microsoft 365 credentials and would be integration test

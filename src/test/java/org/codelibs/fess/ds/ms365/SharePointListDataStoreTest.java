@@ -900,6 +900,89 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
      * {@code ComponentUtil.register(...)} does not perform in this minimal test container; this
      * subclass sets it directly so {@code encode(...)} is safe to call.
      */
+    /**
+     * The data config's own Permissions field arrives in {@code defaultDataMap} under the role
+     * index field, and {@code processListItem} folds it into the item's ACL on top of
+     * {@code default_permissions}.
+     *
+     * <p>{@code test_processListItem_doesNotRequestSitePermissions} above passes an empty
+     * {@code defaultDataMap}, so it pins the {@code default_permissions} half only; dropping the
+     * fold left the configured roles off every list item with that test still green. Pins both
+     * halves and their order.</p>
+     */
+    @Test
+    public void test_processListItem_foldsDefaultDataMapRoleIntoItemRoles() {
+        final org.codelibs.fess.helper.SystemHelper systemHelper = new org.codelibs.fess.helper.SystemHelper();
+        ComponentUtil.register(systemHelper, "systemHelper");
+        final org.codelibs.fess.helper.CrawlerStatsHelper crawlerStatsHelper = new org.codelibs.fess.helper.CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(systemHelper);
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put(roleField, "item.roles");
+
+        // Same convertValue seam as test_processListItem_doesNotRequestSitePermissions above: the
+        // real path goes through ComponentUtil.getScriptEngineFactory(), which this unit test has
+        // no business standing up. processListItem itself runs unmodified.
+        final SharePointListDataStore roleAwareDataStore = new SharePointListDataStore() {
+            @Override
+            protected Object convertValue(final String scriptType, final String template, final Map<String, Object> resultMap) {
+                if ("item.roles".equals(template) && resultMap.get(LIST_ITEM) instanceof final Map<?, ?> itemMap) {
+                    return itemMap.get(LIST_ITEM_ROLES);
+                }
+                return super.convertValue(scriptType, template, resultMap);
+            }
+        };
+
+        final Site site = new Site();
+        site.setId("site-1");
+        site.setDisplayName("Site");
+        site.setWebUrl("https://example.sharepoint.com/sites/site-1");
+
+        final ListInfo info = new ListInfo();
+        info.setTemplate("genericList");
+        final List list = new List();
+        list.setId("list-1");
+        list.setDisplayName("List");
+        list.setWebUrl("https://example.sharepoint.com/sites/site-1/Lists/List");
+        list.setList(info);
+
+        final ListItem item = new ListItem();
+        item.setId("item-1");
+        item.setWebUrl("https://example.sharepoint.com/sites/site-1/Lists/List/DispForm.aspx?ID=1");
+        final FieldValueSet fields = new FieldValueSet();
+        final Map<String, Object> additionalData = new HashMap<>();
+        additionalData.put("Title", "Test Item");
+        fields.setAdditionalData(additionalData);
+        item.setFields(fields);
+
+        final Map<String, Object> configMap = new LinkedHashMap<>();
+        configMap.put(SharePointListDataStore.IGNORE_ERROR, Boolean.FALSE);
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(SharePointListDataStore.DEFAULT_PERMISSIONS, "{role}admin");
+
+        final Map<String, Object> defaultDataMap = new HashMap<>();
+        defaultDataMap.put(roleField, java.util.List.of("1config-role"));
+
+        final TestCallback callback = new TestCallback();
+        // The client is only reached to refresh empty fields; this item already carries them, so
+        // null is never dereferenced and no Graph transport is needed.
+        roleAwareDataStore.processListItem(new DataConfig(), callback, configMap, paramMap, scriptMap, defaultDataMap, null, site, list,
+                item);
+
+        assertEquals("processListItem must have indexed the item exactly once", 1, callback.getCount());
+
+        @SuppressWarnings("unchecked")
+        final java.util.List<String> roles = (java.util.List<String>) callback.getLastDataMap().get(roleField);
+        assertEquals("the item's ACL must hold default_permissions first, then the data config's own roles",
+                java.util.List.of(permissionHelper.encode("{role}admin"), "1config-role"), roles);
+    }
+
     private static final class TestablePermissionHelper extends org.codelibs.fess.helper.PermissionHelper {
         void useSystemHelper(final org.codelibs.fess.helper.SystemHelper systemHelper) {
             this.systemHelper = systemHelper;

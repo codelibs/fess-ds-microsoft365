@@ -20,6 +20,7 @@ import org.junit.jupiter.api.TestInfo;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -786,6 +787,55 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
     }
 
     /**
+     * The data config's own Permissions field arrives in defaultDataMap under the role index
+     * field. Every data store folds it into the document's ACL. Dropping it would silently
+     * narrow who can find the document.
+     */
+    @Test
+    public void test_mergeDefaultRoles_appendsDefaultDataMapRoles() {
+        final Map<String, Object> defaultDataMap = new HashMap<>();
+        defaultDataMap.put(ComponentUtil.getFessConfig().getIndexFieldRole(), List.of("1cfgA", "1cfgB"));
+
+        final List<String> merged = dataStore.mergeDefaultRoles(List.of("1src"), defaultDataMap);
+
+        assertEquals(List.of("1src", "1cfgA", "1cfgB"), merged);
+    }
+
+    /**
+     * OneNoteDataStore shares one roles list across the concurrent notebook threads of a single
+     * owner, so this helper must never mutate its argument. If it did, notebooks would
+     * accumulate each other's roles.
+     */
+    @Test
+    public void test_mergeDefaultRoles_doesNotMutateTheInputList() {
+        final Map<String, Object> defaultDataMap = new HashMap<>();
+        defaultDataMap.put(ComponentUtil.getFessConfig().getIndexFieldRole(), List.of("1cfg"));
+
+        final List<String> source = new ArrayList<>(List.of("1src"));
+        final List<String> merged = dataStore.mergeDefaultRoles(source, defaultDataMap);
+
+        assertEquals("the input list must be left untouched", List.of("1src"), source);
+        assertEquals(List.of("1src", "1cfg"), merged);
+    }
+
+    /**
+     * An absent or wrongly-typed role entry must yield a plain copy, not an exception and not
+     * the same list instance.
+     */
+    @Test
+    public void test_mergeDefaultRoles_withNoRoleEntryReturnsACopy() {
+        final List<String> source = new ArrayList<>(List.of("1src"));
+
+        final List<String> empty = dataStore.mergeDefaultRoles(source, new HashMap<>());
+        assertEquals(List.of("1src"), empty);
+        assertNotSame(source, empty);
+
+        final Map<String, Object> wrongType = new HashMap<>();
+        wrongType.put(ComponentUtil.getFessConfig().getIndexFieldRole(), "not-a-list");
+        assertEquals(List.of("1src"), dataStore.mergeDefaultRoles(source, wrongType));
+    }
+
+    /**
      * A {@link CrawlerStatsHelper} that records what it was asked to count instead of counting.
      */
     static class RecordingCrawlerStatsHelper extends CrawlerStatsHelper {
@@ -840,6 +890,11 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         @Override
         public Microsoft365Client createClient(DataStoreParams paramMap) {
             return super.createClient(paramMap);
+        }
+
+        @Override
+        public List<String> mergeDefaultRoles(List<String> roles, Map<String, Object> defaultDataMap) {
+            return super.mergeDefaultRoles(roles, defaultDataMap);
         }
 
         // Expose constants for testing
