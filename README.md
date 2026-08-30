@@ -702,7 +702,7 @@ Every DataStore in this plugin now shuts down its crawling thread pool through o
 which can log two new kinds of `ERROR` on a code path that previously said nothing at all. In this
 project, `ERROR` from `org.codelibs` is wired to notifications, so upgrading can mean a crawl
 configuration that looked clean starts producing notifications - the failures documented below
-were already happening; only the reporting is new.
+were already happening; only the reporting is new. Both are bounded at one line per crawl.
 
 - `<name>: N crawling task(s) were still running and M had not started after T seconds. They are
   about to be cancelled, and the documents they would have produced are missing from this crawl.
@@ -710,23 +710,33 @@ were already happening; only the reporting is new.
   `executor_shutdown_timeout` expired while tasks were still queued or in flight; those tasks are
   cancelled and their documents never get produced. Before this release, the same expiry cancelled
   those tasks just as silently, and the crawl reported success anyway. Raising
-  `executor_shutdown_timeout` is the direct fix; `number_of_threads` is the other lever, because
-  it also sets this pool's queue capacity - at most `2 x number_of_threads` tasks can be running or
-  queued when the wait begins, so a smaller `number_of_threads` shrinks how much can still be
-  outstanding at that point.
-- `<name>: N crawling task(s) failed; their documents are missing from this crawl. See the errors
-  above.` - a count of tasks that ended by throwing, logged once after the wait above; each
-  individual failure it counts is logged (also at `ERROR`, as `<name>: a crawling task failed.`)
-  immediately above it in the log, one line per task. Before this release, this same failure either
-  vanished with no log line at all, or - when the pool's queue (capacity `number_of_threads`) was
-  already full - ran on the submitting thread instead and propagated out of the crawl itself,
-  aborting it outright; which of the two happened depended on queue timing, not on anything the
-  operator controlled. When this message follows the one above, its count is a snapshot taken right
-  after the wait expires, while cancelled tasks can still go on to fail, so it can undercount.
+  `executor_shutdown_timeout` is the direct fix; `number_of_threads` is the other lever, but note
+  that it is capped (see below), and the effective value sets both the pool size and the queue
+  capacity - so at most `2 x` the *effective* thread count can be running or queued when the wait
+  begins.
+- `<name>: N crawling task(s) failed; their documents are missing from this crawl. See the warnings
+  above.` - a count of tasks that ended by throwing, logged once per crawl. Each individual failure
+  it counts is logged separately at `WARN`, as `<name>: a crawling task failed.`, one line per
+  failed task - `WARN` rather than `ERROR` because `SharePointListDataStore` and
+  `SharePointPageDataStore` submit one task per document, so a bad crawl would otherwise raise one
+  notification per document. This `ERROR` is the notification, and there is at most one of it per
+  crawl. Its count is a snapshot taken as the shutdown ends, and on a timed-out shutdown the tasks
+  being cancelled can still go on to fail after it is read, so it can undercount; the `WARN` lines
+  are the complete record. Before this release, an escaped failure either vanished with no log line
+  at all, or - when the pool's queue was already full - ran on the submitting thread instead and
+  propagated out of the crawl itself, aborting it outright; which of the two happened depended on
+  queue timing, not on anything the operator controlled.
 
 Both messages, and the per-task failure line, name the concrete DataStore by its Java class name
 (e.g. `OneDriveDataStore`), so an operator running several Microsoft 365 crawls in one Fess
 instance can tell which one produced it.
+
+#### `number_of_threads` is capped
+
+The requested value is capped to `min(number_of_threads, availableProcessors() x 2)`, and the
+capped value sets both the pool size and the queue capacity. On a 4-core host, `number_of_threads`
+of 32 gives 16 threads and a 16-deep queue, not 32 and 32; raising the parameter past the cap has
+no effect at all. The cap is logged at `DEBUG` when it applies.
 
 ### Teams-Specific Parameters
 
