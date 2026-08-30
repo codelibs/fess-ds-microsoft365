@@ -23,7 +23,7 @@ This plugin extends [Fess](https://fess.codelibs.org/) enterprise search capabil
 ### 🔐 **Enterprise-Grade Security**
 - **Role-based Access Control**: Seamless integration with Fess security model
 - **Azure AD Authentication**: Client credentials flow with automatic token refresh
-- **Permission Inheritance**: Preserves Microsoft 365 access permissions in search results
+- **Permission Mapping**: Where Microsoft Graph exposes an ACL - OneDrive and SharePoint document library items, and Teams channel/chat membership - it is mapped onto Fess roles. SharePoint lists, SharePoint pages and OneNote site notebooks get `default_permissions` and the data config's Permissions field only; see [What ACL Each DataStore Can Produce](#what-acl-each-datastore-can-produce)
 
 ### ⚡ **Performance & Reliability**
 - **Microsoft Graph SDK v6**: Latest API with efficient pagination and caching
@@ -168,9 +168,9 @@ permissions it took to crawl it:
 names. That is the field on the Fess data config itself, which is a separate setting from the
 `default_permissions` crawl parameter; both end up in the same role list, de-duplicated. This is
 worth stating for all six rows because it was not true of all six until this release:
-TeamsDataStore silently discarded it, and now applies it - see
+TeamsDataStore and OneNoteDataStore silently discarded it, and both apply it now - see
 [Re-crawling after upgrading to the Teams fixes](#re-crawling-after-upgrading-to-the-teams-fixes)
-below before re-crawling a Teams config.
+below before re-crawling a Teams **or OneNote** config.
 
 Microsoft Graph exposes no app-only way to read SharePoint's own user and group role assignments
 for a site, list, list item or page. Microsoft's own Azure AI Search SharePoint ACL indexer
@@ -375,11 +375,26 @@ role=message.roles
 | message.from | The sender information. |
 | message.subject | The subject of the message. |
 | message.body | The body content with type information. |
-| message.attachments | File attachments associated with the message. |
+| message.attachments | The raw Graph attachment objects. Populated for use by `message.content` (which appends the extracted attachment text when `append_attachment=true`); a script that maps it directly gets SDK objects, not text. |
 | message.mentions | Users mentioned in the message. |
+| message.channel_identity | The `channelIdentity` object (team ID and channel ID) for a channel message. |
+| message.chat_id | The ID of the chat a chat message belongs to. |
+| message.deleted_date_time | The time at which the message was deleted, if it was. |
+| message.etag | The message's version tag. |
+| message.hosted_contents | The raw Graph hosted-content objects (inline images and similar). |
+| message.importance | The message importance (`normal`, `high`, `urgent`). |
+| message.last_edited_date_time | The time at which the message was last edited by its sender. |
+| message.locale | The message locale. |
+| message.replies | The raw Graph reply objects. Replies are also indexed as documents of their own unless `ignore_replies=true`. |
+| message.reply_to_id | The ID of the root message this message replies to. |
+| message.summary | The message summary, when Graph supplies one. |
 | team | The team object containing team information (when applicable). |
 | channel | The channel object containing channel information (when applicable). |
 | parent | The parent message for replies (when applicable). |
+
+Every key populated by `TeamsDataStore` is listed above. There is no `message.reactions`: reactions
+are read only to build the consolidated document for a `chat_id` crawl, and are never published as
+a script key.
 
 #### SharePoint Document Libraries
 
@@ -427,9 +442,11 @@ role=item.roles
 | item.id | The unique identifier of the list item |
 | item.created | The time at which the list item was created. |
 | item.modified | The last time the list item was modified. |
-| item.url | A link for opening the list item in SharePoint. |
-| item.fields | All fields and values from the SharePoint list item as a map |
-| item.roles | Users/groups who can access the list item. |
+| item.url | A link for opening the list item in SharePoint - the list's `webUrl` plus `/DispForm.aspx?ID=<id>`, falling back to the item's own `webUrl` when the list has none. |
+| item.web_url | The item's raw Graph `webUrl`, unmodified. Usually differs from `item.url`. |
+| item.content_type | The name of the item's SharePoint content type, or an empty string when the item has none. |
+| item.fields | All fields and values from the SharePoint list item as a map, exactly as Graph returns them - SharePoint's own internal fields included. |
+| item.roles | The roles the list item is indexed with: `default_permissions` plus the data config's own Permissions field. No SharePoint user or group is resolved for a list item - see [What ACL Each DataStore Can Produce](#what-acl-each-datastore-can-produce). |
 | item.site | Site information containing `id`, `name`, and `url` |
 | item.list | List information containing `name`, `description`, `url`, and `template_type` |
 
@@ -464,9 +481,8 @@ role=page.roles
 | page.url | A link for opening the page in SharePoint (the page's Graph `webUrl`). |
 | page.web_url | The same value as `page.url`; both keys are populated from the page's Graph `webUrl`. |
 | page.promotion_state | The promotion status of the page (for news pages). |
-| page.site_name | The display name of the SharePoint site containing this page. |
-| page.site_url | The web URL of the SharePoint site. |
-| page.roles | Users/groups who can access the page. |
+| page.site | A map describing the SharePoint site the page belongs to. Its keys are `site_name` (the site's display name), `site_url` (the site's web URL) and `id` (the site's Graph ID), so a script reads them as `page.site.site_name`, `page.site.site_url` and `page.site.id`. There is no top-level `page.site_name` or `page.site_url`. |
+| page.roles | The roles the page is indexed with: `default_permissions` plus the data config's own Permissions field. No SharePoint user or group is resolved for a page - see [What ACL Each DataStore Can Produce](#what-acl-each-datastore-can-produce). |
 
 **Content Extraction**: The SharePointPageDataStore extracts content from:
 - **Page Title**: The main page title
@@ -515,7 +531,7 @@ below: existing indexes do not contain the new text until the pages are re-crawl
 | `max_retry_count` | Maximum automatic retries for a failed Graph request - see below | `3` | `5` |
 | `retry_interval` | Delay between automatic retries, in whole seconds - see below | `3` | `10` |
 | `cache_size` | Maximum number of entries in each of the client's four lookup caches (user type, group IDs by mail, user object ID to UPN, group object ID to name) - see below | `10000` | `50000` |
-| `max_content_length` | Content length cap in bytes, applied at two different points - see [`max_content_length` is applied twice](#max_content_length-is-applied-twice) below | `-1` (defer to Fess's own per-MIME-type limit, **not** unlimited) | `10485760` |
+| `max_content_length` | Content length cap in bytes, applied at two different points - see [`max_content_length` is applied twice](#max_content_length-is-applied-twice) below | `-1` (defer to Fess's own limit, **not** unlimited - see below for which limit) | `10485760` |
 | `proxy_host` | HTTP proxy host for both Azure AD token acquisition and Microsoft Graph calls - see below | - | `proxy.example.com` |
 | `proxy_port` | HTTP proxy port. Required alongside `proxy_host`; neither takes effect on its own - see below | - | `8080` |
 | `proxy_username` | Proxy user name. Only used when `proxy_password` is also set - see below | - | `crawler` |
@@ -532,9 +548,9 @@ that is visible from the table above:
 |-----------|------------------|------------------|
 | `oneDriveDataStore` | the generated drive-item URL (indexed as `file.url`) - **not** the raw Graph `webUrl` (`file.web_url`); the two usually agree, but diverge for `/_layouts/` paths, which `getUrl()` rewrites | Fess `UrlFilter` - full match (`Matcher.matches()`) |
 | `sharePointDocLibDataStore` | the document library's **canonical URL** (`doclib.url`, built by `generateDocumentLibraryUrl(site, drive)`) - **not** the raw Graph `webUrl` (`doclib.web_url`) or the library's display name | Fess `UrlFilter` - full match (`Matcher.matches()`) |
-| `sharePointListDataStore` | the list item's title (`Title`/`LinkTitle`/`FileLeafRef`, whichever resolves first) | `java.util.regex.Pattern.matches()` - full match |
-| `sharePointPageDataStore` | the page's `webUrl` | `java.util.regex.Pattern.find()` - **partial** match |
-| `oneNoteDataStore` | the notebook's display name | `java.util.regex.Pattern.matches()` - full match |
+| `sharePointListDataStore` | the list item's title (`Title`/`LinkTitle`/`FileLeafRef`, whichever resolves first) | `Matcher.matches()` - full match |
+| `sharePointPageDataStore` | the page's `webUrl` | `Matcher.find()` - **partial** match |
+| `oneNoteDataStore` | the notebook's display name | `Matcher.matches()` - full match |
 | `teamsDataStore` | not supported - both parameters are silently ignored | - |
 
 Practically: a OneDrive or SharePoint document library pattern must match the *entire* URL, a
@@ -558,8 +574,24 @@ excluded unless that pattern matches `""`, and with only `exclude_pattern` set i
 that pattern matches `""`. A name with any other character is matched verbatim, surrounding
 whitespace included.
 
+`sharePointListDataStore` answers the same question the other way: a list item whose `Title`,
+`LinkTitle` and `FileLeafRef` are all blank skips both patterns entirely and is crawled, even under
+an `include_pattern` that matches nothing about it. Neither behaviour changed in this release; they
+are noted here because a pattern moved between the two DataStores will treat unnamed content
+differently.
+
 Note that `oneNoteDataStore` ignored both parameters in earlier releases - a configuration that
 set them expecting them to be a no-op will start filtering notebooks after upgrading.
+
+**A pattern that is not a valid regular expression aborts the crawl at its start.** Both
+parameters are compiled once, before the first Microsoft Graph call, and a `PatternSyntaxException`
+is reported as a `DataStoreException` naming the parameter and the syntax error - for example
+`exclude_pattern is not a valid regular expression: .*temp.*[ (Unclosed character class near
+index 8)`. Nothing is indexed by that crawl. This is deliberate and is not affected by
+`ignore_error`: a filter that could not be compiled cannot be honoured, and an `exclude_pattern`
+that quietly stopped filtering would index exactly the documents it was written to keep out. It
+applies to all five DataStores that accept the two parameters, whether they compile the pattern
+themselves or hand it to Fess's `UrlFilter`.
 
 #### `ignore_error` scope differs by DataStore
 
@@ -571,10 +603,10 @@ at either setting.
 |-----------|------------------------------------|
 | `oneDriveDataStore` | a failure extracting one file's content (the document is still indexed, without contents) |
 | `sharePointDocLibDataStore` | a site whose drives cannot be listed, and a document library that fails to process |
-| `sharePointListDataStore` | a site that fails to process, a list that fails to process, and a list item that fails to process |
+| `sharePointListDataStore` | a site that fails to process, a list that fails to process, a list item that fails to process, and a failure re-reading a list item's fields (the item is still indexed, with the fields already in hand) |
 | `sharePointPageDataStore` | a site that fails to process and a page that fails to process |
 | `oneNoteDataStore` | nothing - it does not read this parameter; a user or group whose notebooks cannot be listed is logged at `WARN` and skipped either way |
-| `teamsDataStore` | an unresolvable `team_id`, an unresolvable `channel_id`, a failure listing an explicitly configured team's channels, and a failure fetching a channel's messages |
+| `teamsDataStore` | an unresolvable `team_id`, an unresolvable `channel_id`, a failure listing an explicitly configured team's channels, a failure fetching a channel's messages, and a failure processing a configured `chat_id` |
 
 `ignore_error` never widens a crawl. A `team_id` listed in `exclude_team_ids` that cannot be
 resolved still aborts the crawl even with `ignore_error=true`, so that a team you asked to exclude
@@ -602,7 +634,8 @@ over the cap is rejected, not shortened.
 - **A pre-download size check, in OneDriveDataStore only.** Before a file is fetched, the drive
   item's Graph-reported `size` is compared against the cap. Over it, the item is **not indexed at
   all**: a `MaxLengthExceededException` is raised and the item is recorded in the failed-URL list.
-  This is the only place `max_content_length` decides whether a document exists.
+  This is the only place `max_content_length` is checked *before* anything is downloaded; the
+  extractor cap below can also stop a document being stored, but only after the fetch.
 - **An extractor input cap, wherever text is extracted.** The value is handed to Fess's extractor
   as `maxContentLength(...)`, which measures the bytes it actually read and throws
   `MaxLengthExceededException` if they exceed it. Three call sites use it: OneDrive file contents,
@@ -613,8 +646,11 @@ over the cap is rejected, not shortened.
 
 `-1` (the default) does **not** mean unlimited at either point. It means "defer to Fess", and the
 effective cap becomes `ContentLengthHelper`'s limit for that MIME type, or its default limit when
-the MIME type is unknown - which it always is for OneNote page content, since that extraction
-passes neither a MIME type nor a filename.
+the MIME type is unknown. Of the three extractor call sites, only OneDrive file contents passes a
+MIME type, so only there can a per-MIME-type limit apply. **OneNote page content and Teams
+attachments always resolve to Fess's default limit**: the OneNote call passes neither a MIME type
+nor a filename, and the Teams call passes a filename but no MIME type - and a filename only steers
+which extractor is chosen, it never reaches the length lookup.
 
 Two further asymmetries are worth knowing. OneDriveDataStore parses the value as a `long`, while
 the Graph client parses it as an `int`: a value above `2147483647` is accepted by the first and
@@ -654,10 +690,11 @@ from the owner's ID rather than calling Graph for it - and its site notebooks re
 `default_permissions` too. TeamsDataStore does not call any of the permission-fetch methods this
 parameter governs either, so this parameter has no effect for it too - but not because
 TeamsDataStore has no permission-fetch failure path of its own. It makes a separate Graph call per
-message (listing the channel's members, to resolve that message's roles), and a failure there is
-not governed by `permission_failure_policy` at all: it propagates out of the per-channel handler as
-a `DataStoreException`, which aborts the rest of that channel's messages rather than skipping just
-the one message.
+**channel** (listing the channel's members, to resolve its messages' roles), issued lazily on the
+first message of that channel that needs it and reused for every later message and reply in it.
+A failure there is not governed by `permission_failure_policy` at all: it propagates out of the
+per-channel handler as a `DataStoreException`, which aborts the rest of that channel's messages
+rather than skipping just the one message.
 
 `permission_failure_policy` controls what happens when the permissions call fails for the
 DataStores and paths it covers - OneDriveDataStore and SharePointDocLibDataStore - and takes one of
@@ -692,18 +729,18 @@ are governed solely by `permission_failure_policy`.
 This fix changes which ACL gets indexed, not just how failures in retrieving it are handled, so
 documents indexed by an older version keep their old ACL until they are re-crawled:
 
-- For OneDrive, SharePoint document libraries, SharePoint lists, and SharePoint pages, a user or
+- For OneDrive and SharePoint document libraries, a user or
   group named in an ACL entry used to resolve only to an internal object ID, which matches no
   Fess role; the UPN (for users) and group name (for groups) roles that should have been added
   alongside it were silently dropped. They are added now, so re-crawled documents typically gain
   roles rather than lose them. The group name added is the group's `mail` attribute if it has
   one, otherwise `mailNickname`, otherwise `displayName` - so it is usually an email address, not
   the group's display name. If a Fess role mapping was built around the group's display name,
-  check it against whichever of these attributes the group actually has.
-- SharePoint page ACLs used to be indexed as raw display names (e.g. `John Doe`), which also
-  match no Fess role and made the ACL inert - it neither granted nor denied access on its own
-  strength. Page ACLs now carry the site's permissions in the same encoded role format as every
-  other DataStore, so this is the first release where they have any effect.
+  check it against whichever of these attributes the group actually has. This applies to these
+  two DataStores only: they are the only ones that read a Graph permissions endpoint. SharePoint
+  lists and SharePoint pages resolve no user or group at all - their ACL is `default_permissions`
+  plus the data config's Permissions field, and it does not change on upgrade (see
+  [What ACL Each DataStore Can Produce](#what-acl-each-datastore-can-produce) above).
 - OneNote site and group notebooks (`site_note_crawler` and `group_note_crawler`, both enabled
   by default) were not indexed by any earlier release at all. A client-side bug sent every
   notebook, section, page, and page-content request for them to the wrong Graph path; Graph
@@ -719,10 +756,10 @@ documents indexed by an older version keep their old ACL until they are re-crawl
   crawler is asking the wrong Graph path; a user's `404` stays at `debug` (see "404 Visibility"
   below).
 
-Re-crawl the OneDrive, SharePoint document library, SharePoint list, and SharePoint page
-crawlers after upgrading to pick up the corrected ACLs, and re-crawl OneNoteDataStore (with
-`site_note_crawler` and/or `group_note_crawler` enabled) to index the site and group notebooks
-for the first time.
+Re-crawl the OneDrive and SharePoint document library crawlers after upgrading to pick up the
+corrected ACLs, and re-crawl OneNoteDataStore (with `site_note_crawler` and/or
+`group_note_crawler` enabled) to index the site and group notebooks for the first time. There is
+no ACL correction to pick up for SharePoint lists or SharePoint pages.
 
 #### Re-crawling after upgrading to the crawl filter fixes
 
@@ -750,14 +787,18 @@ the first place, not just their ACLs, so a re-crawl is needed here too:
 - **`ignore_system_libraries`** was already enforced in SharePointDocLibDataStore before this
   release - nothing changes there, and no re-crawl is needed on its account. The bug was isolated
   to OneDriveDataStore: when it crawls all SharePoint sites' document libraries (Crawling Mode 1,
-  which runs whenever `shared_documents_drive_crawler=true`, the default), the same check existed
-  but was only ever passed as an argument to a `debug` log statement, so the default `true` changed
-  nothing there - `_catalogs`, `Forms`, Style Library, and `FormServerTemplates` were crawled like
-  any other library. It is actually enforced in OneDriveDataStore's Mode 1 now too, still the
-  default. Because Mode 1 indexes the files inside those libraries, not just library metadata the
-  way SharePointDocLibDataStore does, the drop in indexed items after a re-crawl can be far larger
-  here. Re-crawl OneDriveDataStore to remove them from the index, or set
+  which runs whenever `shared_documents_drive_crawler=true`, the default), no system-library check
+  was made at all, so the default `true` changed nothing there - `_catalogs`, `Forms`, Style
+  Library, and `FormServerTemplates` were crawled like any other library. Mode 1 enforces it now,
+  still by default. Because Mode 1 indexes the files inside those libraries, not just library
+  metadata the way SharePointDocLibDataStore does, the drop in indexed items after a re-crawl can
+  be far larger here. Re-crawl OneDriveDataStore to remove them from the index, or set
   `ignore_system_libraries=false` first if you want to keep indexing them.
+
+  **The parameter still does nothing in Modes 2 and 3.** A user's personal drive
+  (`user_drive_crawler`) and a group's drive (`group_drive_crawler`) are crawled whatever
+  `ignore_system_libraries` says; those two paths evaluate `isSystemLibrary` only to fill in a
+  `debug` log line, exactly as they did before this release. Nothing changes there on upgrade.
 - **`include_pattern` / `exclude_pattern`** (SharePointDocLibDataStore) were declared as constants
   but never read anywhere, so configuring either one had no effect at all. They now filter document
   libraries by their canonical URL (`doclib.url`) - see
@@ -771,8 +812,9 @@ the first place, not just their ACLs, so a re-crawl is needed here too:
 the whole request: DNS, connecting, writing, server processing, and reading the response, with
 any redirects or retries all counted against the one period) configure the OkHttp client the
 Microsoft Graph Java SDK builds internally. That client is built by the SDK's own
-`GraphClientFactory`, which hard-codes all three to **100 seconds** regardless of whether this
-plugin passes it any options - this is the Graph client library's own default, not OkHttp's raw
+`GraphClientFactory`, which delegates to Kiota's `KiotaClientFactory` - and it is the latter that
+hard-codes all three to **100 seconds**, regardless of whether this plugin passes it any options.
+This is the Graph client library's own default, not OkHttp's raw
 10-second connect/read default (OkHttp's call timeout has no default at all - `0`, meaning
 unlimited). `0`, or leaving one of these parameters unset, keeps that 100-second default.
 
@@ -867,7 +909,7 @@ no effect at all. The cap is logged at `DEBUG` when it applies.
 | `chat_id` | Specific chat ID to crawl | - | For 1:1 or group chats |
 | `ignore_replies` | Skip reply messages | `false` | Process only root messages |
 | `append_attachment` | Include attachments in content | `true` | Append attachment text to message body |
-| `max_content_length` | Byte cap on the text extracted from **each Teams attachment** | `-1` (defer to Fess's per-MIME-type limit) | Only reached when `append_attachment=true`. An attachment over the cap contributes no text; whether that also fails the message depends on Fess's `crawler.ignore.content.exception`. See [`max_content_length` is applied twice](#max_content_length-is-applied-twice) |
+| `max_content_length` | Byte cap on the text extracted from **each Teams attachment** | `-1` (defer to Fess's **default** content-length limit - the Teams extraction passes no MIME type, so a per-MIME-type limit can never apply here) | Only reached when `append_attachment=true`. An attachment over the cap contributes no text; whether that also fails the message depends on Fess's `crawler.ignore.content.exception`. See [`max_content_length` is applied twice](#max_content_length-is-applied-twice) |
 | `ignore_system_events` | Skip system event messages | `true` | Filter out system notifications |
 | `title_dateformat` | Date format for message titles | `yyyy/MM/dd'T'HH:mm:ss` | Java date pattern |
 | `title_timezone_offset` | Timezone offset for message titles | `Z` | e.g., `Z`, `+09:00`, `-05:00` |
@@ -875,7 +917,7 @@ no effect at all. The cap is logged at `DEBUG` when it applies.
 | `end_date` | Inclusive latest message timestamp to index | - | `yyyy-MM-dd` (UTC end of day, `23:59:59.999999999Z`) or an ISO-8601 date-time carrying an explicit offset or `Z`. An unparseable value is logged and ignored |
 | `number_of_threads` | Number of processing threads | `1` | Concurrent message processing |
 | `default_permissions` | Default role assignments | - | Additional permissions for all messages |
-| `ignore_error` | Continue crawling when a team or channel cannot be processed | `false` | When `true`, an unresolvable `team_id` or `channel_id`, a team whose channels cannot be listed, and a channel whose messages cannot be fetched are logged and skipped instead of aborting the crawl. Failures while enumerating **all** teams were already skipped and are unaffected; a `team_id` listed in `exclude_team_ids` that cannot be resolved still aborts, so that a team you asked to exclude is never silently crawled |
+| `ignore_error` | Continue crawling when a team, channel or chat cannot be processed | `false` | When `true`, an unresolvable `team_id` or `channel_id`, a team whose channels cannot be listed, a channel whose messages cannot be fetched, and a configured `chat_id` that fails to process are logged and skipped instead of aborting the crawl. Failures while enumerating **all** teams were already skipped and are unaffected; a `team_id` listed in `exclude_team_ids` that cannot be resolved still aborts, so that a team you asked to exclude is never silently crawled |
 
 **How the Teams date range is applied**
 
@@ -934,7 +976,11 @@ nothing is filtered and behaviour is unchanged.
 Two changes in this release alter what a Teams crawl produces. Both need a re-crawl, and the
 second needs a review before that re-crawl.
 
-- **Teams crawling indexed zero documents before this release.** `getTeams` enumerated `/teams`,
+- **Crawling all teams indexed zero documents before this release.** This affected configurations
+  that leave `team_id` unset (or empty) - the all-teams path, which is the default. A config that
+  names a `team_id`, or one that sets `chat_id`, went through `getGroupById` and `getChatMessages`
+  instead, never touched the broken code below, and indexed normally; nothing about those two
+  changes here. For the all-teams path: `getTeams` enumerated `/teams`,
   fetched each team's backing `Group`, and then checked whether that group's
   `resourceProvisioningOptions` contained `"Team"` - reading the value out of
   `Group#getAdditionalData()`. In Microsoft Graph SDK v6 `resourceProvisioningOptions` is a
@@ -943,26 +989,40 @@ second needs a review before that re-crawl.
   therefore rejected **every** team, the consumer was never called, and the crawl reported success
   while indexing nothing. The only trace was one `DEBUG` line per skipped team. The typed accessor
   is read now, and the check rejects a group only when the list is present and lacks `"Team"`.
-  **Expect the indexed document count to jump from zero on the first crawl after upgrading** - that
-  is the fix working, not a runaway crawl, so do not kill the job for it. Budget for the full
-  volume of every team's channel messages.
+  **On an all-teams config, expect the indexed document count to jump from zero on the first crawl
+  after upgrading** - that is the fix working, not a runaway crawl, so do not kill the job for it.
+  Budget for the full volume of every team's channel messages. A `team_id` or `chat_id` config
+  will see no change in volume from this fix.
+
+  A `team_id` set to the **empty string** (`team_id=`) counts as an all-teams config and gets the
+  same jump, from a different cause: 15.8.0 read `} else if (teamId == null) {`, so a present-but-
+  empty value matched neither the specific-team branch nor the all-teams one and crawled nothing
+  while reporting success. Both spellings now mean "all teams". If `team_id=` was being used as a
+  way to keep a data config in place without crawling, disable the config instead.
 
   Note also that **archived teams are crawled**. The old check was named `isActiveTeam`, which
   implied it excluded them; it never looked at `Team#getIsArchived`, and neither does the current
   code. Use `exclude_team_ids` to skip archived teams you do not want indexed.
 
-- **The data config's Permissions field now reaches Teams message ACLs.** TeamsDataStore was the
-  only one of the six data stores that never folded `defaultDataMap`'s role entry into a document's
-  role list, so a Teams data config's Permissions field was silently discarded for every message it
-  indexed. It is applied now, in the same order the other five use: channel or chat membership,
-  then `default_permissions`, then the data config's Permissions field.
+- **The data config's Permissions field now reaches Teams message ACLs.** At 15.8.0 **two** of the
+  six data stores never folded `defaultDataMap`'s role entry into a document's role list:
+  TeamsDataStore and OneNoteDataStore. A Teams or OneNote data config's Permissions field was
+  silently discarded for every message or notebook it indexed. Both apply it now, in the same order
+  the other four use: the store's own roles, then `default_permissions`, then the data config's
+  Permissions field.
 
-  This **widens** who can retrieve Teams messages - back to what the config asked for, but wider
-  than what has actually been in the index. **Audit the Permissions field on every Teams data
-  config before re-crawling.** A config whose Permissions field was cloned from another data
-  store's config has been carrying that other store's audience harmlessly; after this release it
-  grants it. The change is purely additive - no document loses a role - and already-indexed Teams
-  documents keep their old, narrower ACL until they are re-crawled.
+  This **widens** who can retrieve Teams messages and OneNote notebooks - back to what the config
+  asked for, but wider than what has actually been in the index. **Audit the Permissions field on
+  every Teams and OneNote data config before re-crawling.** A config whose Permissions field was
+  cloned from another data store's config has been carrying that other store's audience
+  harmlessly; after this release it grants it. The change is purely additive - no document loses a
+  role - and already-indexed Teams and OneNote documents keep their old, narrower ACL until they
+  are re-crawled.
+
+  For OneNote this lands on **every** notebook type, user notebooks included - and unlike site and
+  group notebooks, user notebooks were already being indexed under 15.8.0, so this is a change to
+  the audience of documents that are already in the index rather than an ACL on documents that are
+  new.
 
   It is inert for one configuration: if you removed the `role=message.roles` line from the script,
   the roles Teams computes never reach the document, and the data config's Permissions field
@@ -998,24 +1058,33 @@ The implementation extracts comprehensive message metadata including:
 - Basic properties: id, subject, body, created/modified timestamps
 - Sender information: from user/application details
 - Conversation context: team, channel, parent message references
-- Interaction data: mentions, reactions, importance level
+- Interaction data: mentions and importance level (reactions are **not** published as a script key)
 - Rich content: attachments, hosted contents, web URLs
 - Permission data: role-based access control from team/channel membership
 
+See the [Teams script key table](#teams) above for the full list of `message.*` keys.
+
 **Performance Optimizations:**
-- **Multi-threaded Processing**: Configurable thread pool for parallel message processing
-- **Efficient Pagination**: Uses Microsoft Graph PageIterator for handling large message sets
-- **Selective Field Expansion**: Expands only necessary fields to reduce API calls
-- **Permission Caching**: Caches group membership data to optimize permission mapping
+- **Multi-threaded Processing**: a configurable thread pool, whose unit of work is a **channel**.
+  Channels are processed in parallel; the messages and replies within one channel are processed
+  serially on that channel's thread
+- **Pagination**: message, channel and chat listings follow Graph's `@odata.nextLink` directly.
+  `$select` and `$orderby` are not supported by the channel-messages or chat-messages endpoints, so
+  every property is returned and any ordering is applied client-side
+- **Permission Caching**: a channel's member list is resolved once, on the first message that needs
+  it, and reused for every later message and reply in that channel
 
 **Error Handling & Resilience:**
-- **Configurable Error Handling**: `ignore_error` relaxes the four failures that abort a Teams
+- **Configurable Error Handling**: `ignore_error` relaxes the five failures that abort a Teams
   crawl today - an unresolvable `team_id`, an unresolvable `channel_id`, a failure listing an
-  explicitly configured team's channels, and a failure fetching a channel's messages. It does not
-  change any other path: at the default `false` a Teams crawl behaves exactly as it did before the
-  parameter was honoured
+  explicitly configured team's channels, a failure fetching a channel's messages, and a failure
+  processing a configured `chat_id`. It does not change any other path: at the default `false` a
+  Teams crawl behaves exactly as it did before the parameter was honoured
 - **Always-tolerated failures**: when crawling **all** teams (no `team_id`), a team whose channels
-  cannot be listed is logged at `WARN` and skipped regardless of `ignore_error`
+  cannot be listed is skipped regardless of `ignore_error`. At normal log levels this is one `WARN`
+  ("Skipping this team"). Note that enabling `DEBUG` for this class **replaces** that `WARN` with a
+  `DEBUG` line carrying the stack trace - it does not add to it - so a log filter watching for the
+  `WARN` stops matching once `DEBUG` is on
 - **Never-tolerated failures**: an `exclude_team_ids` entry that cannot be resolved always aborts,
   even with `ignore_error=true`; ignoring it would crawl a team you asked to exclude
 - **Per-message failures**: a message that fails to index is recorded in the failure-URL list and
@@ -1042,12 +1111,6 @@ The implementation extracts comprehensive message metadata including:
 - **Compliance Monitoring**: Index team communications for compliance requirements
 - **Chat History Search**: Search through direct and group chat conversations
 
-**Crawling Modes**:
-- **Shared Documents Drive**: Enable `shared_documents_drive_crawler` to crawl every SharePoint site's document libraries
-- **User Drives**: Enable `user_drive_crawler` to crawl all licensed users' OneDrive
-- **Group Drives**: Enable `group_drive_crawler` to crawl Microsoft 365 group drives
-- **Specific Drive**: Set `drive_id` to crawl that drive *in addition to* whichever of the three modes above are enabled
-
 ### OneNote-Specific Parameters
 
 | Parameter | Description | Default | Notes |
@@ -1055,15 +1118,17 @@ The implementation extracts comprehensive message metadata including:
 | `site_note_crawler` | Enable crawling of site notebooks | `true` | Crawls notebooks at the root SharePoint site |
 | `user_note_crawler` | Enable crawling of user notebooks | `true` | Crawls personal OneNote notebooks for licensed users |
 | `group_note_crawler` | Enable crawling of group notebooks | `true` | Crawls shared notebooks in Microsoft 365 groups |
-| `include_pattern` | Regex a notebook name must fully match to be crawled | - | Matched against the notebook's display name with `Pattern.matches()` (full match). An invalid regex is logged and ignored |
-| `exclude_pattern` | Regex a notebook name must not fully match to be crawled | - | Matched against the notebook's display name with `Pattern.matches()` (full match). An invalid regex is logged and ignored |
-| `max_content_length` | Byte cap on the text extracted from **each OneNote page** | `-1` (defer to Fess's per-MIME-type limit) | The extraction passes no MIME type or filename, so `-1` always resolves to Fess's *default* content-length limit. See [`max_content_length` is applied twice](#max_content_length-is-applied-twice) |
+| `include_pattern` | Regex a notebook name must fully match to be crawled | - | Matched against the notebook's display name with `Matcher.matches()` (full match). A regex that does not compile aborts the crawl at its start |
+| `exclude_pattern` | Regex a notebook name must not fully match to be crawled | - | Matched against the notebook's display name with `Matcher.matches()` (full match). A regex that does not compile aborts the crawl at its start |
+| `max_content_length` | Byte cap on the text extracted from **each OneNote page** | `-1` (defer to Fess's **default** content-length limit) | The extraction passes no MIME type or filename, so `-1` always resolves to Fess's *default* limit, never a per-MIME-type one. See [`max_content_length` is applied twice](#max_content_length-is-applied-twice) |
+| `default_permissions` | Roles added to every notebook's ACL | - | For site notebooks this is the only role source besides the data config's own Permissions field; for user and group notebooks it is added on top of the owner-derived role |
 | `number_of_threads` | Number of processing threads | `1` | Controls concurrent notebook processing |
 
 If `include_pattern` or `exclude_pattern` is configured and, across all enabled scopes combined,
 it admits zero of the notebooks the crawl actually saw, the crawl still finishes normally but logs
 one `WARN` summarizing that - a hint that the pattern may be misconfigured, since the same crawl
-otherwise reports success while indexing nothing.
+otherwise reports success while indexing nothing. The warning names only the parameter (or
+parameters) the configuration actually sets.
 
 #### Failure URL rows for notebooks are keyed differently
 
@@ -1089,8 +1154,9 @@ The OneNoteDataStore provides comprehensive OneNote notebook crawling with the f
   plus `default_permissions` when configured. Site notebooks carry no per-user or per-group role
   at all - Microsoft Graph exposes no app-only way to read a SharePoint site's user and group role
   assignments (see [What ACL Each DataStore Can Produce](#what-acl-each-datastore-can-produce) in
-  the permissions section) - so `default_permissions` is their only role source; leave it unset
-  and site notebooks are indexed but findable by nobody.
+  the permissions section) - so `default_permissions` is their only crawl-parameter role source.
+  The data config's own Permissions field is folded in as well, for every notebook type; leave
+  **both** unset and site notebooks are indexed but findable by nobody.
 
 **Crawling Modes (Processing Order):**
 1. **Site Notebooks**: Crawls notebooks at the root SharePoint site level (`/sites/root/onenote/notebooks`)
@@ -1112,8 +1178,10 @@ The OneNoteDataStore provides comprehensive OneNote notebook crawling with the f
 
 **Performance Optimizations:**
 - **Concurrent Processing**: Configurable thread pool for parallel notebook processing
-- **Efficient API Usage**: Batches API calls where possible to reduce Graph API quota consumption
 - **Content Size Tracking**: Monitors and reports content size for each notebook
+
+Notebooks, sections, pages and page content are each fetched with their own Graph request; the
+plugin issues no `$batch` request anywhere.
 
 **Error Handling & Resilience:**
 - **Graceful Degradation**: Handles invalid parameter values by defaulting to safe configurations
@@ -1126,9 +1194,10 @@ The OneNoteDataStore provides comprehensive OneNote notebook crawling with the f
   tenant with unlicensed-for-OneDrive or never-logged-in users, and the user path was never the
   one this fix repaired, so logging one `WARN` per such user would add volume without adding
   diagnostic value.
-- **Site Permission Failures**: A failure to resolve the site's ACL for site notebooks (governed
-  by `permission_failure_policy`) only skips the site notebooks; user and group notebook crawling
-  continues regardless
+- **Root Site Failures**: a failure resolving the root site - the one Graph call site notebooks
+  need before they can be listed - only skips the site notebooks; user and group notebook crawling
+  continues regardless. `permission_failure_policy` is not involved: OneNoteDataStore never calls
+  a Graph permission-fetch endpoint for any notebook type, so that parameter has no effect on it
 
 **Content Metadata Fields:**
 The implementation extracts and indexes the following notebook metadata:
@@ -1138,7 +1207,8 @@ The implementation extracts and indexes the following notebook metadata:
 - `notebook.created`: Notebook creation timestamp
 - `notebook.last_modified`: Last modification timestamp
 - `notebook.web_url`: Direct link to open the notebook in OneNote
-- `notebook.roles`: Users/groups with access permissions
+- `notebook.roles`: the notebook's roles - the owner-derived role for user and group notebooks,
+  plus `default_permissions` and the data config's Permissions field
 
 **Use Cases:**
 - **Knowledge Base Search**: Search across organizational OneNote documentation
@@ -1166,8 +1236,10 @@ OneDriveDataStore was the only one of the six data stores whose two failure path
 apart in the crawler log. The second arm - everything that is not a `CrawlingAccessException` - now
 logs `Processing exception at : {}`, the phrasing the other five stores already use.
 
-Both stay at `WARN`, both still record a failure-URL row, and the failure-URL rows are unchanged
-(they are already keyed by error class). Only the log text differs. **An alert or log filter
+Both stay at `WARN`, both still record a failure-URL row, and the failure-URL rows are unchanged -
+both arms pass the same `item.getWebUrl()`, and a failure-URL row is looked up by URL plus crawl
+config (the error name is written onto whatever row that finds), so the two arms have always
+shared one row per item and still do. Only the log text differs. **An alert or log filter
 grepping for `Crawling Access Exception at` will stop matching non-access failures on OneDrive**;
 match `Processing exception at` as well, or drop to matching the shared `at : ` suffix.
 
@@ -1182,7 +1254,7 @@ The OneDriveDataStore provides comprehensive Microsoft 365 file crawling capabil
 - **Permission Integration**: Extracts and maps Microsoft 365 access permissions to Fess role-based access control
 
 **Crawling Modes (Processing Order):**
-1. **Shared Documents Drive**: Enumerates every SharePoint site (`GET /sites`) and crawls the files in each site's document libraries (honoring `ignore_system_libraries`, see the parameters table above). Despite the mode's name it never touches the signed-in user's own OneDrive - the code has no `/me/drive` call path at all. Runs whenever `shared_documents_drive_crawler=true` (default), regardless of whether `drive_id` is also set for Mode 4 below - the two crawls run independently, not exclusively
+1. **Shared Documents Drive**: Enumerates every SharePoint site (`GET /sites`) and crawls the files in each site's document libraries (honoring `ignore_system_libraries`, see the parameters table above). Despite the mode's name it never touches the signed-in user's own OneDrive: the Graph client does have a `/me/drive` call path, but it is reachable only when a null drive ID is passed, and this DataStore's only caller is guarded to pass a non-blank one. Runs whenever `shared_documents_drive_crawler=true` (default), regardless of whether `drive_id` is also set for Mode 4 below - the two crawls run independently, not exclusively
 2. **User Drives**: Iterates through all licensed users and crawls their personal OneDrive (`/users/{userId}/drive`)
 3. **Group Drives**: Crawls Microsoft 365 group-associated drives (`/groups/{groupId}/drive`)
 4. **Specific Drive**: Targets a single drive by ID when `drive_id` parameter is specified (`/drives/{driveId}`)
@@ -1371,9 +1443,9 @@ The SharePointListDataStore provides comprehensive crawling and indexing of Shar
 The implementation intelligently extracts content from list items:
 - **Title Extraction**: Searches for title in common fields (Title, LinkTitle, FileLeafRef)
 - **Content Building**: Aggregates text from content fields (Body, Description, Comments, Notes)
-- **Dynamic Field Mapping**: Captures all custom SharePoint fields in the `item.fields` map
-- **Field Expansion**: Automatically expands field data if not initially available via `$expand=fields`
-- **System Field Filtering**: Excludes internal SharePoint system fields from content aggregation
+- **Dynamic Field Mapping**: Captures every field Graph returns for the item in the `item.fields` map, verbatim - SharePoint's own internal fields are **not** stripped
+- **Field Expansion**: Automatically re-reads the item with `$expand=fields` when the fields were not returned the first time
+- **Content aggregation is a positive selection**: only `Body`, `Description`, `Comments` and `Notes` feed `item.content`; nothing is excluded by name
 
 **Multi-Threading Support:**
 - Configurable concurrent processing using `number_of_threads` parameter
@@ -1388,10 +1460,14 @@ The implementation intelligently extracts content from list items:
 - **Comprehensive Logging**: Debug and info level logging for troubleshooting
 
 **Permission Management:**
-- Extracts SharePoint list and item permissions via Microsoft Graph API
-- Maps Microsoft 365 access control to Fess role-based security model
-- Supports default permission assignment through configuration
-- Inherits site and list-level permissions for items
+- No SharePoint permission is read. Microsoft Graph exposes no app-only way to read a site's,
+  list's or item's user and group role assignments that this plugin can call, so nothing is
+  inherited from the site or the list
+- `default_permissions`, plus the data config's own Permissions field, is the **only** source of a
+  list item's roles - see
+  [What ACL Each DataStore Can Produce](#what-acl-each-datastore-can-produce)
+- Leave both unset and list items are indexed with no role at all, which makes them findable by
+  nobody rather than by everybody
 
 **Attachments are not supported:**
 - Classic SharePoint list-item attachments are **not** indexed, and there is no script field for
@@ -1403,10 +1479,14 @@ The implementation intelligently extracts content from list items:
 - Files stored in a **document library** are indexed normally by `oneDriveDataStore` (individual
   files) and `sharePointDocLibDataStore` (library metadata).
 
-**URL Filtering:**
+**Title Filtering:**
 - **Include Pattern**: Regex-based filtering to include specific items by title
 - **Exclude Pattern**: Regex-based filtering to exclude items by title
-- Efficient pattern matching with pre-compiled regex patterns
+- Both are compiled once at crawl start to validate them; a pattern that does not compile aborts
+  the crawl there. The per-item check itself recompiles the pattern - there is no pattern cache
+- An item whose `Title`, `LinkTitle` and `FileLeafRef` are all blank bypasses both patterns and is
+  crawled. This differs from `oneNoteDataStore`, which matches a nameless notebook as the empty
+  string
 
 **Use Cases:**
 - **Structured Data Search**: Index and search custom business data stored in SharePoint lists
@@ -1447,10 +1527,10 @@ name instead") and matches nothing. To filter on one of these types, enable `DEB
 of the numeric ID.
 
 **Performance Optimizations:**
-- Efficient list enumeration with pagination support
-- Lazy loading of list items with Microsoft Graph PageIterator
-- Memory-efficient processing of large lists
-- Caching of compiled regex patterns for filtering
+- Site, list and list-item listings are paged by following Graph's `@odata.nextLink` directly;
+  the plugin uses no `PageIterator`
+- Items are handed to the thread pool as each page is read, so a large list is not held in memory
+  in one piece
 
 ### SharePoint Pages Parameters
 
@@ -1484,10 +1564,16 @@ part's `title`, `description` and SharePoint's own indexable projection
 It also walks the web part's `additionalData` map - a forward-compatibility read for any Graph
 field the SDK's typed `WebPartData` model does not (yet) declare, not a source of text today. On
 the pinned Graph SDK version, `WebPartData` already models every documented field except
-`audiences` (a list of GUIDs), and a GUID is filtered out the same as anywhere else in this
-extractor. So as of this SDK version `additionalData` contributes no text - and no noise - to
-`page.content`; the read is kept because it is free once the SDK adds a new field Graph starts
-populating there.
+`audiences`, so as of this SDK version `additionalData` contributes no text - and no noise - to
+`page.content`.
+
+Note what the walk can and cannot pick up. It descends into `java.util.Map` and `java.util.List`
+values and reads `String` values; anything else is skipped. An undeclared Graph field arrives as a
+Kiota untyped node, and only a **scalar string** one is read - an undeclared object or array field
+deserializes to `UntypedObject`/`UntypedArray`, which are none of those three types and are
+dropped before the GUID filter is ever consulted. `audiences` is an array, so that is the reason it
+contributes nothing, not the GUID filter. The read is kept because it costs nothing and covers the
+scalar case, not because it is a general forward-compatibility guarantee.
 
 No field is renamed or removed and `page.content` never shrinks, so existing scripts and index
 mappings keep working unchanged. But **existing indexes will not contain the new text until the
@@ -1692,7 +1778,7 @@ role=page.roles
 // Access additional page fields
 page_type=page.type
 author=page.author
-site_name=page.site_name
+site_name=page.site.site_name
 description=page.description
 ```
 

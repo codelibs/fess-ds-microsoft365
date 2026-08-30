@@ -523,7 +523,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
      *
      * <p>Both patterns are matched against the notebook's display name as a <em>full</em> match
      * ({@link java.util.regex.Matcher#matches()}), the same semantics
-     * {@code sharePointListDataStore} applies to a list item's title. A notebook with no display
+     * {@link SharePointListDataStore} applies to a list item's title. A notebook with no display
      * name is matched as the empty string rather than bypassing the filters: an operator who set
      * {@code include_pattern} has said what they want indexed, and an unnamed notebook is not it,
      * so such a notebook is excluded by any {@code include_pattern} that does not match {@code ""}
