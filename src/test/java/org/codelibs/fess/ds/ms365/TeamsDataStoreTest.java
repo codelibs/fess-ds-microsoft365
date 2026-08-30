@@ -32,6 +32,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import org.apache.logging.log4j.LogManager;
@@ -1365,6 +1368,138 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         assertEquals("an unset end_date must still be put, as null", Boolean.TRUE, captured.get("end_date_present"));
         assertNull("an unset start_date must mean no lower bound", captured.get("start_date"));
         assertNull("an unset end_date must mean no upper bound", captured.get("end_date"));
+    }
+
+    // Test the date range on the consolidated chat document
+
+    /**
+     * A chat is indexed as one document, so the range has to be decided for the conversation as a
+     * whole. It used to be decided by the consolidated document's timestamp, which
+     * {@link TeamsDataStore#createChatMessage} inherits from {@code msgList.get(0)} -- and
+     * {@code getChatMessages} sets no {@code $orderby} and does not sort, so that is whichever
+     * message Graph returned first, documented as the most recently modified one. A chat running
+     * from 2024 to 2026 crawled with {@code end_date=2024-12-31} was therefore judged by its 2026
+     * message and dropped whole, every in-range message with it.
+     */
+    @Test
+    public void test_processChatMessages_keepsChatWhenAnyMessageIsInRange() throws Exception {
+        registerPermissionHelper();
+        registerCrawlerStatsHelper();
+
+        // Graph's default ordering puts the newest message first, and it is far outside the range.
+        final ChatMessage newest = chatMessageCreatedAt("2026-08-01T00:00:00Z");
+        final ChatMessage inRange = chatMessageCreatedAt("2024-06-15T00:00:00Z");
+
+        final CountingIndexUpdateCallback callback = new CountingIndexUpdateCallback();
+        runChatCrawl(List.of(newest, inRange), OffsetDateTime.parse("2024-12-31T23:59:59.999999999Z"), callback);
+
+        assertEquals("a chat containing an in-range message must be indexed", 1, callback.getStoreCount());
+    }
+
+    /**
+     * The counterpart: the range must still exclude a chat, or it would not be a filter at all.
+     */
+    @Test
+    public void test_processChatMessages_dropsChatWithNoMessageInRange() throws Exception {
+        registerPermissionHelper();
+        registerCrawlerStatsHelper();
+
+        final ChatMessage newest = chatMessageCreatedAt("2026-08-01T00:00:00Z");
+        final ChatMessage alsoOutOfRange = chatMessageCreatedAt("2025-06-15T00:00:00Z");
+
+        final CountingIndexUpdateCallback callback = new CountingIndexUpdateCallback();
+        runChatCrawl(List.of(newest, alsoOutOfRange), OffsetDateTime.parse("2024-12-31T23:59:59.999999999Z"), callback);
+
+        assertEquals("a chat with no message in range must not be indexed", 0, callback.getStoreCount());
+    }
+
+    @Test
+    public void test_isTargetChatDate_noBoundsAcceptsEverything() {
+        final Map<String, Object> configMap = new HashMap<>();
+        assertTrue("with no bounds a chat must never be filtered",
+                dataStore.isTargetChatDate(configMap, List.of(messageCreatedAt("2020-01-01T00:00:00Z"))));
+    }
+
+    /**
+     * The bounds must be cleared for the consolidated document, or the per-message guard in
+     * {@code processChatMessage} would re-decide the range from the one synthetic timestamp the
+     * consolidated document carries and overturn the chat-level decision.
+     */
+    @Test
+    public void test_withoutDateRange_clearsBothBoundsAndKeepsEverythingElse() {
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("start_date", OffsetDateTime.parse("2026-01-01T00:00:00Z"));
+        configMap.put("end_date", OffsetDateTime.parse("2026-01-31T00:00:00Z"));
+        configMap.put("append_attachment", Boolean.TRUE);
+
+        final Map<String, Object> copy = dataStore.withoutDateRange(configMap);
+
+        assertNull("start_date must be cleared", copy.get("start_date"));
+        assertNull("end_date must be cleared", copy.get("end_date"));
+        assertEquals("every other setting must survive", Boolean.TRUE, copy.get("append_attachment"));
+        assertNotNull("the caller's map must not be modified", configMap.get("start_date"));
+    }
+
+    /**
+     * Runs one {@code chat_id} crawl against a stubbed client and waits for the submitted task.
+     *
+     * @param messages the chat's messages, in the order the client yields them.
+     * @param endDate the upper bound to crawl with.
+     * @param callback the callback counting what was indexed.
+     */
+    private void runChatCrawl(final List<ChatMessage> messages, final OffsetDateTime endDate, final CountingIndexUpdateCallback callback)
+            throws Exception {
+        try (ChattingMicrosoft365Client client = new ChattingMicrosoft365Client(dummyParams(), messages)) {
+            final DataStoreParams paramMap = new DataStoreParams();
+            final Map<String, Object> configMap = new HashMap<>();
+            configMap.put("chat_id", "chat-1");
+            configMap.put("append_attachment", Boolean.FALSE);
+            configMap.put("title_dateformat", dataStore.getTitleDateformat(paramMap));
+            configMap.put("title_timezone_offset", dataStore.getTitleTimezone(paramMap));
+            configMap.put("ignore_system_events", dataStore.isIgnoreSystemEvents(paramMap));
+            configMap.put("end_date", endDate);
+
+            final ExecutorService executorService = Executors.newSingleThreadExecutor();
+            try {
+                dataStore.processChatMessages(new DataConfig(), callback, paramMap, new HashMap<>(), new HashMap<>(), configMap,
+                        executorService, client);
+            } finally {
+                executorService.shutdown();
+                assertTrue("the chat task must finish", executorService.awaitTermination(10, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    /**
+     * {@code createChatMessage} concatenates each message's attachments, mentions and reactions,
+     * so those must be non-null lists for a fixture that reaches it.
+     */
+    private static ChatMessage chatMessageCreatedAt(final String isoInstant) {
+        final ChatMessage message = messageCreatedAt(isoInstant);
+        message.setAttachments(new ArrayList<>());
+        message.setMentions(new ArrayList<>());
+        message.setReactions(new ArrayList<>());
+        return message;
+    }
+
+    /** Feeds a fixed list of chat messages and no members, without issuing any Graph traffic. */
+    private static final class ChattingMicrosoft365Client extends Microsoft365Client {
+        private final List<ChatMessage> messages;
+
+        ChattingMicrosoft365Client(final DataStoreParams params, final List<ChatMessage> messages) {
+            super(params);
+            this.messages = messages;
+        }
+
+        @Override
+        public void getChatMessages(final List<Object> options, final Consumer<ChatMessage> consumer, final String chatId) {
+            messages.forEach(consumer::accept);
+        }
+
+        @Override
+        public void getChatMembers(final List<Object> options, final Consumer<ConversationMember> consumer, final String chatId) {
+            // No members are needed: these tests assert only on what is indexed.
+        }
     }
 
     private static ChatMessage messageCreatedAt(final String isoInstant) {

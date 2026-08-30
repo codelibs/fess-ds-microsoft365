@@ -221,6 +221,19 @@ public class TeamsDataStore extends Microsoft365DataStore {
     /**
      * Processes chat messages.
      *
+     * <p>A chat is consolidated into a single document, so {@code start_date}/{@code end_date} are
+     * evaluated once for the whole conversation by {@link #isTargetChatDate}: the chat is kept when
+     * <em>any</em> of its messages falls inside the range. The consolidated document's own
+     * timestamp cannot be used for that decision -- {@link #createChatMessage} inherits it from
+     * {@code msgList.get(0)}, and {@link Microsoft365Client#getChatMessages} sets no
+     * {@code $orderby} and does not sort, so which message that is depends entirely on Graph's
+     * default ordering. Deciding across the whole list needs no assumption about that ordering and
+     * cannot drop a conversation the operator asked for.</p>
+     *
+     * <p>The consolidated document is therefore processed with the bounds removed from its
+     * configuration: the range decision has already been made, with the whole conversation in view,
+     * and re-applying it to a single synthetic timestamp would only undo it.</p>
+     *
      * @param dataConfig The data configuration.
      * @param callback The index update callback.
      * @param paramMap The data store parameters.
@@ -250,19 +263,29 @@ public class TeamsDataStore extends Microsoft365DataStore {
             }, chatId);
 
             if (!msgList.isEmpty()) {
+                final List<ChatMessage> messagesSnapshot = Collections.unmodifiableList(new ArrayList<>(msgList));
+
+                if (!isTargetChatDate(configMap, messagesSnapshot)) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Skipping chat outside the configured date range: {} ({} messages, none in range)", chatId,
+                                messagesSnapshot.size());
+                    }
+                    return;
+                }
+
                 if (logger.isDebugEnabled()) {
                     logger.debug("Creating consolidated chat message from {} individual messages for chat: {}", msgList.size(), chatId);
                 }
 
-                final List<ChatMessage> messagesSnapshot = Collections.unmodifiableList(new ArrayList<>(msgList));
                 final ChatMessage consolidatedMessage = createChatMessage(messagesSnapshot, client);
                 final List<String> chatRoles = getGroupRoles(client, chatId);
+                final Map<String, Object> chatConfigMap = withoutDateRange(configMap);
                 executorService.execute(() -> {
                     if (logger.isDebugEnabled()) {
                         logger.debug("Submitting consolidated chat processing task for chat: {}", chatId);
                     }
-                    processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, chatRoles, consolidatedMessage,
-                            map -> map.put("messages", messagesSnapshot), client);
+                    processChatMessage(dataConfig, callback, chatConfigMap, paramMap, scriptMap, defaultDataMap, chatRoles,
+                            consolidatedMessage, map -> map.put("messages", messagesSnapshot), client);
                 });
 
                 if (logger.isDebugEnabled()) {
@@ -734,6 +757,50 @@ public class TeamsDataStore extends Microsoft365DataStore {
             return false;
         }
         return endDate == null || !timestamp.isAfter(endDate);
+    }
+
+    /**
+     * Checks whether a chat, which is indexed as one consolidated document, falls inside the
+     * configured date range.
+     *
+     * <p>The chat is kept when <em>any</em> of its messages is in range. Judging the chat by the
+     * consolidated document's own timestamp would judge it by whichever message
+     * {@link Microsoft365Client#getChatMessages} happened to yield first -- that call sets no
+     * {@code $orderby} and does no client-side sort, so the order is Graph's default and not
+     * something this code controls. A chat spanning years would then be dropped whole on the
+     * strength of one message's timestamp, taking every in-range message with it.</p>
+     *
+     * <p>The consequence of the all-or-nothing shape is that the indexed body is still the whole
+     * conversation, including its out-of-range messages: consolidating a chat into one document
+     * leaves no way to index part of it.</p>
+     *
+     * @param configMap The configuration map holding the parsed bounds.
+     * @param messages The chat's messages.
+     * @return true if the chat should be indexed, false otherwise.
+     */
+    protected boolean isTargetChatDate(final Map<String, Object> configMap, final List<ChatMessage> messages) {
+        if (configMap.get(START_DATE) == null && configMap.get(END_DATE) == null) {
+            return true;
+        }
+        return messages.stream().anyMatch(message -> isTargetMessageDate(configMap, message));
+    }
+
+    /**
+     * Returns a copy of the configuration with both date bounds cleared.
+     *
+     * <p>Used for the consolidated chat document, whose range decision {@link #isTargetChatDate}
+     * has already made across the whole conversation. Leaving the bounds in place would let the
+     * per-message guard in {@link #processChatMessage} re-decide it from the single synthetic
+     * timestamp the consolidated document carries, and overturn it.</p>
+     *
+     * @param configMap The configuration map.
+     * @return a new map with the same entries except the two date bounds.
+     */
+    protected Map<String, Object> withoutDateRange(final Map<String, Object> configMap) {
+        final Map<String, Object> copy = new HashMap<>(configMap);
+        copy.remove(START_DATE);
+        copy.remove(END_DATE);
+        return copy;
     }
 
     /**
