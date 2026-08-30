@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
+import com.microsoft.graph.models.UserCollectionResponse;
 
 /**
  * Exercises Microsoft365Client against a mock Graph endpoint. These paths --
@@ -200,5 +201,75 @@ public class Microsoft365ClientMockTest {
 
             assertEquals(1, groups.size(), "an empty option list must not exclude a team");
         }
+    }
+
+    /**
+     * paginate must consume every page and stop exactly when the next link is absent. A helper
+     * that stopped one page early would drop documents and drop roles from ACLs with no error
+     * at all, which is why this is asserted directly rather than only through a mock server.
+     */
+    @Test
+    public void test_paginate_consumesEveryPageAndStopsAtTheLastOne() {
+        final UserCollectionResponse page1 = new UserCollectionResponse();
+        page1.setValue(List.of(namedUser("u1"), namedUser("u2")));
+        page1.setOdataNextLink("https://graph.example/next-2");
+
+        final UserCollectionResponse page2 = new UserCollectionResponse();
+        page2.setValue(List.of(namedUser("u3")));
+        page2.setOdataNextLink(null);
+
+        final List<String> requestedLinks = new ArrayList<>();
+        final List<String> seen = new ArrayList<>();
+
+        Microsoft365Client.paginate(page1, UserCollectionResponse::getValue, link -> {
+            requestedLinks.add(link);
+            return page2;
+        }, user -> seen.add(user.getId()));
+
+        assertEquals(List.of("u1", "u2", "u3"), seen);
+        assertEquals(List.of("https://graph.example/next-2"), requestedLinks, "exactly one refetch, with the page-1 next link");
+    }
+
+    /**
+     * Graph returns an empty string rather than omitting @odata.nextLink in some responses.
+     * Treating "" as a link would refetch the same page forever.
+     */
+    @Test
+    public void test_paginate_treatsAnEmptyNextLinkAsTheEnd() {
+        final UserCollectionResponse only = new UserCollectionResponse();
+        only.setValue(List.of(namedUser("u1")));
+        only.setOdataNextLink("");
+
+        final List<String> seen = new ArrayList<>();
+        Microsoft365Client.paginate(only, UserCollectionResponse::getValue, link -> {
+            throw new AssertionError("must not refetch on an empty next link");
+        }, user -> seen.add(user.getId()));
+
+        assertEquals(List.of("u1"), seen);
+    }
+
+    /**
+     * A null first response, or a page whose value list is null, must terminate rather than
+     * throw -- the hand-written loops all guarded on both.
+     */
+    @Test
+    public void test_paginate_toleratesNullResponseAndNullValue() {
+        final List<String> seen = new ArrayList<>();
+
+        Microsoft365Client.paginate((UserCollectionResponse) null, UserCollectionResponse::getValue, link -> new UserCollectionResponse(),
+                user -> seen.add(user.getId()));
+
+        final UserCollectionResponse nullValue = new UserCollectionResponse();
+        nullValue.setValue(null);
+        Microsoft365Client.paginate(nullValue, UserCollectionResponse::getValue, link -> new UserCollectionResponse(),
+                user -> seen.add(user.getId()));
+
+        assertTrue(seen.isEmpty());
+    }
+
+    private static User namedUser(final String id) {
+        final User user = new User();
+        user.setId(id);
+        return user;
     }
 }

@@ -54,6 +54,7 @@ import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.microsoft.graph.core.authentication.AzureIdentityAuthenticationProvider;
 import com.microsoft.graph.core.requests.GraphClientFactory;
+import com.microsoft.graph.models.BaseCollectionPaginationCountResponse;
 import com.microsoft.graph.models.BaseSitePage;
 import com.microsoft.graph.models.Channel;
 import com.microsoft.graph.models.ChannelCollectionResponse;
@@ -674,7 +675,7 @@ public class Microsoft365Client implements Closeable {
      */
     public void getUsers(final List<Object> options, final Consumer<User> consumer) {
         // Microsoft Graph SDK v6 uses requestConfiguration instead of QueryOption
-        UserCollectionResponse response = client.users().get(requestConfiguration -> {
+        final UserCollectionResponse response = client.users().get(requestConfiguration -> {
             // Select only essential fields to improve performance and include assignedLicenses for license checking
             requestConfiguration.queryParameters.select =
                     new String[] { "id", "displayName", "mail", "userPrincipalName", "assignedLicenses" };
@@ -682,17 +683,7 @@ public class Microsoft365Client implements Closeable {
             // This avoids "Complex query on property assignedLicenses is not supported" error
         });
 
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                // No more pages, exit loop
-                break;
-            }
-            // Request the next page using the nextLink URL
-            response = client.users().withUrl(response.getOdataNextLink()).get();
-        }
+        paginate(response, UserCollectionResponse::getValue, nextLink -> client.users().withUrl(nextLink).get(), consumer::accept);
     }
 
     /**
@@ -719,24 +710,14 @@ public class Microsoft365Client implements Closeable {
      */
     public void getGroups(final List<Object> options, final Consumer<Group> consumer) {
         // Microsoft Graph SDK v6 uses requestConfiguration instead of QueryOption
-        GroupCollectionResponse response = client.groups().get(requestConfiguration -> {
+        final GroupCollectionResponse response = client.groups().get(requestConfiguration -> {
             // Select only essential fields to improve performance
             requestConfiguration.queryParameters.select =
                     new String[] { "id", "displayName", "mail", "groupTypes", "resourceProvisioningOptions", "visibility" };
             requestConfiguration.queryParameters.orderby = new String[] { "displayName" };
         });
 
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                // No more pages, exit loop
-                break;
-            }
-            // Request the next page using the nextLink URL
-            response = client.groups().withUrl(response.getOdataNextLink()).get();
-        }
+        paginate(response, GroupCollectionResponse::getValue, nextLink -> client.groups().withUrl(nextLink).get(), consumer::accept);
     }
 
     /**
@@ -747,7 +728,7 @@ public class Microsoft365Client implements Closeable {
      */
     public void getMicrosoft365Groups(final Consumer<Group> consumer) {
         // Microsoft Graph SDK v6 uses requestConfiguration instead of QueryOption
-        GroupCollectionResponse response = client.groups().get(requestConfiguration -> {
+        final GroupCollectionResponse response = client.groups().get(requestConfiguration -> {
             // Filter for Microsoft 365 groups (Unified groups) only at server level
             requestConfiguration.queryParameters.filter = "groupTypes/any(c:c eq 'Unified')";
             // Select only essential fields to improve performance
@@ -759,17 +740,7 @@ public class Microsoft365Client implements Closeable {
             requestConfiguration.headers.add("ConsistencyLevel", "eventual");
         });
 
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                // No more pages, exit loop
-                break;
-            }
-            // Request the next page using the nextLink URL
-            response = client.groups().withUrl(response.getOdataNextLink()).get();
-        }
+        paginate(response, GroupCollectionResponse::getValue, nextLink -> client.groups().withUrl(nextLink).get(), consumer::accept);
     }
 
     /**
@@ -1224,23 +1195,14 @@ public class Microsoft365Client implements Closeable {
      */
     public void getListItems(final String siteId, final String listId, final Consumer<ListItem> consumer) {
         // Get list items with expanded fields to ensure content is available
-        ListItemCollectionResponse response = client.sites().bySiteId(siteId).lists().byListId(listId).items().get(config -> {
+        final ListItemCollectionResponse response = client.sites().bySiteId(siteId).lists().byListId(listId).items().get(config -> {
             config.queryParameters.expand = new String[] { "fields" };
             config.queryParameters.select = new String[] { "id", "createdDateTime", "lastModifiedDateTime", "webUrl", "fields" };
         });
 
         // Handle pagination with odata.nextLink
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                // No more pages, exit loop
-                break;
-            }
-            // Request the next page using the nextLink URL
-            response = client.sites().bySiteId(siteId).lists().byListId(listId).items().withUrl(response.getOdataNextLink()).get();
-        }
+        paginate(response, ListItemCollectionResponse::getValue,
+                nextLink -> client.sites().bySiteId(siteId).lists().byListId(listId).items().withUrl(nextLink).get(), consumer::accept);
     }
 
     /**
@@ -1367,20 +1329,10 @@ public class Microsoft365Client implements Closeable {
      */
     // for testing
     public void getDrives(final Consumer<Drive> consumer) {
-        DriveCollectionResponse response = client.drives().get();
+        final DriveCollectionResponse response = client.drives().get();
 
         // Handle pagination with odata.nextLink
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                // No more pages, exit loop
-                break;
-            }
-            // Request the next page using the nextLink URL
-            response = client.drives().withUrl(response.getOdataNextLink()).get();
-        }
+        paginate(response, DriveCollectionResponse::getValue, nextLink -> client.drives().withUrl(nextLink).get(), consumer::accept);
     }
 
     /**
@@ -1391,20 +1343,11 @@ public class Microsoft365Client implements Closeable {
      * @param consumer A consumer to process each Drive object.
      */
     public void getSiteDrives(final String siteId, final Consumer<Drive> consumer) {
-        DriveCollectionResponse response = client.sites().bySiteId(siteId).drives().get();
+        final DriveCollectionResponse response = client.sites().bySiteId(siteId).drives().get();
 
         // Handle pagination with odata.nextLink
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                // No more pages, exit loop
-                break;
-            }
-            // Request the next page using the nextLink URL
-            response = client.sites().bySiteId(siteId).drives().withUrl(response.getOdataNextLink()).get();
-        }
+        paginate(response, DriveCollectionResponse::getValue, nextLink -> client.sites().bySiteId(siteId).drives().withUrl(nextLink).get(),
+                consumer::accept);
     }
 
     /**
@@ -1617,29 +1560,21 @@ public class Microsoft365Client implements Closeable {
      */
     public void getTeamReplyMessages(final List<Object> options, final Consumer<ChatMessage> consumer, final String teamId,
             final String channelId, final String messageId) {
-        ChatMessageCollectionResponse response =
+        final ChatMessageCollectionResponse response =
                 client.teams().byTeamId(teamId).channels().byChannelId(channelId).messages().byChatMessageId(messageId).replies().get();
 
         // Handle pagination with odata.nextLink
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                // No more pages, exit loop
-                break;
-            }
-            // Request the next page using the nextLink URL
-            response = client.teams()
-                    .byTeamId(teamId)
-                    .channels()
-                    .byChannelId(channelId)
-                    .messages()
-                    .byChatMessageId(messageId)
-                    .replies()
-                    .withUrl(response.getOdataNextLink())
-                    .get();
-        }
+        paginate(response, ChatMessageCollectionResponse::getValue,
+                nextLink -> client.teams()
+                        .byTeamId(teamId)
+                        .channels()
+                        .byChannelId(channelId)
+                        .messages()
+                        .byChatMessageId(messageId)
+                        .replies()
+                        .withUrl(nextLink)
+                        .get(),
+                consumer::accept);
     }
 
     /**
@@ -1652,21 +1587,13 @@ public class Microsoft365Client implements Closeable {
      */
     public void getChannelMembers(final List<Object> options, final Consumer<ConversationMember> consumer, final String teamId,
             final String channelId) {
-        ConversationMemberCollectionResponse response = client.teams().byTeamId(teamId).channels().byChannelId(channelId).members().get();
+        final ConversationMemberCollectionResponse response =
+                client.teams().byTeamId(teamId).channels().byChannelId(channelId).members().get();
 
         // Handle pagination with odata.nextLink
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                // No more pages, exit loop
-                break;
-            }
-            // Request the next page using the nextLink URL
-            response =
-                    client.teams().byTeamId(teamId).channels().byChannelId(channelId).members().withUrl(response.getOdataNextLink()).get();
-        }
+        paginate(response, ConversationMemberCollectionResponse::getValue,
+                nextLink -> client.teams().byTeamId(teamId).channels().byChannelId(channelId).members().withUrl(nextLink).get(),
+                consumer::accept);
     }
 
     /**
@@ -1739,20 +1666,11 @@ public class Microsoft365Client implements Closeable {
      * @param chatId The ID of the chat.
      */
     public void getChatMembers(final List<Object> options, final Consumer<ConversationMember> consumer, final String chatId) {
-        ConversationMemberCollectionResponse response = client.chats().byChatId(chatId).members().get();
+        final ConversationMemberCollectionResponse response = client.chats().byChatId(chatId).members().get();
 
         // Handle pagination with odata.nextLink
-        while (response != null && response.getValue() != null) {
-            response.getValue().forEach(consumer::accept);
-
-            // Check if there's a next page
-            if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                // No more pages, exit loop
-                break;
-            }
-            // Request the next page using the nextLink URL
-            response = client.chats().byChatId(chatId).members().withUrl(response.getOdataNextLink()).get();
-        }
+        paginate(response, ConversationMemberCollectionResponse::getValue,
+                nextLink -> client.chats().byChatId(chatId).members().withUrl(nextLink).get(), consumer::accept);
     }
 
     /**
@@ -2016,19 +1934,10 @@ public class Microsoft365Client implements Closeable {
      */
     public void getSitePages(final String siteId, final Consumer<BaseSitePage> consumer) {
         try {
-            SitePageCollectionResponse response = client.sites().bySiteId(siteId).pages().graphSitePage().get();
+            final SitePageCollectionResponse response = client.sites().bySiteId(siteId).pages().graphSitePage().get();
 
-            while (response != null && response.getValue() != null) {
-                response.getValue().forEach(consumer::accept);
-
-                // Check if there's a next page
-                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                    // No more pages, exit loop
-                    break;
-                }
-                // Request the next page using the nextLink URL
-                response = client.sites().bySiteId(siteId).pages().graphSitePage().withUrl(response.getOdataNextLink()).get();
-            }
+            paginate(response, SitePageCollectionResponse::getValue,
+                    nextLink -> client.sites().bySiteId(siteId).pages().graphSitePage().withUrl(nextLink).get(), consumer::accept);
         } catch (final Exception e) {
             logger.warn("Failed to get pages for site: {} - {}", siteId, e.getMessage());
             if (logger.isDebugEnabled()) {
@@ -2062,6 +1971,42 @@ public class Microsoft365Client implements Closeable {
                 logger.error("Failed to get basic page info for page: {} in site: {} - {}", pageId, siteId, ex.getMessage());
                 throw new RuntimeException("Unable to retrieve page: " + pageId, ex);
             }
+        }
+    }
+
+    /**
+     * Walks a Graph collection response through its {@code @odata.nextLink} chain, handing each
+     * item to {@code consumer}.
+     *
+     * <p>{@code valueFn} is required because {@code getOdataNextLink()} is declared on
+     * {@link BaseCollectionPaginationCountResponse} but {@code getValue()} is not: each concrete
+     * {@code XxxCollectionResponse} re-declares it independently with its own return type and no
+     * common interface exposes it. Every call site therefore supplies {@code Xxx::getValue}
+     * explicitly. Reflection would work but would trade a compile-time guarantee for a runtime
+     * one in code that carries ACLs.</p>
+     *
+     * <p>Package-private and static: it is pure, it is not part of any subclassing surface, and
+     * the tests in this package call it directly.</p>
+     *
+     * @param <T> the element type of one page
+     * @param <R> the concrete collection response type
+     * @param first the first page, which may be null
+     * @param valueFn reads one page's items, normally {@code Xxx::getValue}
+     * @param nextFn fetches the page at the given {@code @odata.nextLink} URL
+     * @param consumer receives every item of every page, in page order
+     */
+    static <T, R extends BaseCollectionPaginationCountResponse> void paginate(final R first,
+            final java.util.function.Function<R, java.util.List<T>> valueFn, final java.util.function.Function<String, R> nextFn,
+            final java.util.function.Consumer<T> consumer) {
+        R response = first;
+        while (response != null && valueFn.apply(response) != null) {
+            valueFn.apply(response).forEach(consumer::accept);
+
+            final String nextLink = response.getOdataNextLink();
+            if (nextLink == null || nextLink.isEmpty()) {
+                break;
+            }
+            response = nextFn.apply(nextLink);
         }
     }
 }
