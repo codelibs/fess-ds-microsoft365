@@ -513,6 +513,36 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
                 dataStore.isTargetNotebook(null, excludePattern, notebookNamed("Production Test Notes")));
     }
 
+    /**
+     * A notebook with no usable display name is matched as "" instead of bypassing both patterns.
+     * An operator who configured include_pattern said what they want indexed, and an unnamed
+     * notebook is not it; an operator who only configured exclude_pattern named what they want
+     * dropped, and an unnamed notebook is not that either.
+     */
+    @Test
+    public void test_isTargetNotebook_blankNameIsMatchedAsEmptyString() {
+        final Pattern includePattern = Pattern.compile("Project.*");
+        final Pattern excludePattern = Pattern.compile("Test.*");
+
+        assertFalse("a null-named notebook must not satisfy an include_pattern that rejects \"\"",
+                dataStore.isTargetNotebook(includePattern, null, notebookNamed(null)));
+        assertFalse("an empty-named notebook must not satisfy an include_pattern that rejects \"\"",
+                dataStore.isTargetNotebook(includePattern, null, notebookNamed("")));
+        assertFalse("a whitespace-named notebook must not satisfy an include_pattern that rejects it",
+                dataStore.isTargetNotebook(includePattern, null, notebookNamed("   ")));
+
+        assertTrue("a null-named notebook must survive an exclude_pattern that does not match \"\"",
+                dataStore.isTargetNotebook(null, excludePattern, notebookNamed(null)));
+        assertTrue("an empty-named notebook must survive an exclude_pattern that does not match \"\"",
+                dataStore.isTargetNotebook(null, excludePattern, notebookNamed("")));
+
+        // The patterns really do decide: one that matches "" admits/drops the unnamed notebook.
+        assertTrue("an include_pattern matching \"\" must admit an unnamed notebook",
+                dataStore.isTargetNotebook(Pattern.compile(".*"), null, notebookNamed(null)));
+        assertFalse("an exclude_pattern matching \"\" must drop an unnamed notebook",
+                dataStore.isTargetNotebook(null, Pattern.compile(".*"), notebookNamed(null)));
+    }
+
     @Test
     public void test_isTargetNotebook_excludeWinsOverInclude() {
         final Pattern includePattern = Pattern.compile(".*Notebook");

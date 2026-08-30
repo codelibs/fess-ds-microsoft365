@@ -522,7 +522,10 @@ public class OneNoteDataStore extends Microsoft365DataStore {
      * <p>Both patterns are matched against the notebook's display name as a <em>full</em> match
      * ({@link java.util.regex.Matcher#matches()}), the same semantics
      * {@code sharePointListDataStore} applies to a list item's title. A notebook with no display
-     * name is never filtered out.</p>
+     * name is matched as the empty string rather than bypassing the filters: an operator who set
+     * {@code include_pattern} has said what they want indexed, and an unnamed notebook is not it,
+     * so such a notebook is excluded by any {@code include_pattern} that does not match {@code ""}
+     * and kept under an {@code exclude_pattern} that does not match {@code ""}.</p>
      *
      * @param includePattern the include pattern, or null for no include filtering
      * @param excludePattern the exclude pattern, or null for no exclude filtering
@@ -533,10 +536,9 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         if (includePattern == null && excludePattern == null) {
             return true;
         }
-        final String displayName = notebook.getDisplayName();
-        if (StringUtil.isBlank(displayName)) {
-            return true;
-        }
+        // A missing name is matched as "" rather than special-cased into an unconditional pass:
+        // the configured patterns decide, with the same full-match semantics as every other name.
+        final String displayName = notebook.getDisplayName() != null ? notebook.getDisplayName() : StringUtil.EMPTY;
         if (includePattern != null && !includePattern.matcher(displayName).matches()) {
             if (logger.isDebugEnabled()) {
                 logger.debug("Skipping notebook {}: does not match {}", displayName, INCLUDE_PATTERN);

@@ -531,9 +531,9 @@ The filter is applied once per notebook, in the `getNotebooks` callback for each
 USER and GROUP scopes, before that notebook is handed off for processing. It therefore selects
 whole notebooks only: there is no way to admit a notebook but exclude one of its sections or
 pages, because `oneNoteDataStore` indexes one document per notebook and never inspects section or
-page names to filter on. A notebook with a blank or missing display name is never filtered out by
-either pattern, admitted or not - there is nothing for the pattern to match against, so it always
-passes through.
+page names to filter on. A notebook with a blank or missing display name is matched as the empty
+string, like any other name: with `include_pattern` set it is excluded unless that pattern matches
+`""`, and with only `exclude_pattern` set it is kept unless that pattern matches `""`.
 
 Note that `oneNoteDataStore` ignored both parameters in earlier releases - a configuration that
 set them expecting them to be a no-op will start filtering notebooks after upgrading.
