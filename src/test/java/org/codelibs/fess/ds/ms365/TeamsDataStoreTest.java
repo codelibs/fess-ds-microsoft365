@@ -24,11 +24,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
-import org.codelibs.fess.ds.ms365.client.GraphMockServer;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
@@ -37,9 +37,10 @@ import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
+import com.microsoft.graph.models.ChatMessage;
 import com.microsoft.graph.models.Channel;
+import com.microsoft.graph.models.ConversationMember;
 import com.microsoft.graph.models.Group;
-import com.microsoft.graph.serviceclient.GraphServiceClient;
 
 public class TeamsDataStoreTest extends UnitDsTestCase {
 
@@ -635,7 +636,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("default_permissions", "{role}admin");
 
-        final List<String> channelRoles = new java.util.ArrayList<>(List.of("1alice"));
+        final List<String> channelRoles = new ArrayList<>(List.of("1alice"));
 
         final List<String> first = dataStore.buildMessageRoles(paramMap, channelRoles);
         final List<String> second = dataStore.buildMessageRoles(paramMap, channelRoles);
@@ -696,27 +697,29 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
      * {@code getGroupRoles(client, teamId, channelId)} pages {@code GET
      * /teams/{id}/channels/{id}/members} to exhaustion. Before this task it was called once per
      * message and once per reply, every call returning the same membership -- a channel with 500
-     * messages and 2000 replies issued 2500 identical listings. Runs
-     * {@link TeamsDataStore#processChannelMessages} against a real {@link Microsoft365Client}
-     * wired to a {@link GraphMockServer} so the assertion is on actual HTTP traffic, not a mock's
-     * bookkeeping.
+     * messages and 2000 replies issued 2500 identical listings.
+     *
+     * <p>Uses a {@link CountingMicrosoft365Client} subclass -- the fallback the brief offered --
+     * rather than a {@code GraphMockServer}: a {@code GraphMockServer} is a strict FIFO
+     * {@code MockWebServer} with no path-based dispatcher, so a fixture ordered for the post-hoist
+     * call sequence cannot survive the pre-hoist sequence long enough for a count assertion to run
+     * (it derails into a {@code CrawlerStatsHelper} exception on mismatched response content
+     * instead). Counting calls directly on the client removes that coupling entirely: the
+     * assertion below is the only thing that can fail, regardless of call order.
      */
     @Test
     public void test_processChannelMessages_resolvesChannelMembersOncePerChannel() throws Exception {
         registerPermissionHelper();
         registerCrawlerStatsHelper();
 
-        try (GraphMockServer server = new GraphMockServer();
-                MockableMicrosoft365Client client = new MockableMicrosoft365Client(dummyParams())) {
-            // Observed order after hoisting: one membership listing, then the messages page, then
-            // one (empty) replies listing per message.
-            server.enqueueJson("{\"value\":[{\"id\":\"m1\",\"userId\":\"11111111-1111-1111-1111-111111111111\"}]}");
-            server.enqueueJson("{\"value\":[{\"id\":\"msg-1\",\"webUrl\":\"https://example.com/msg-1\"},"
-                    + "{\"id\":\"msg-2\",\"webUrl\":\"https://example.com/msg-2\"}]}");
-            server.enqueueJson("{\"value\":[]}");
-            server.enqueueJson("{\"value\":[]}");
-            client.useServer(server.newGraphClient());
+        final ChatMessage message1 = new ChatMessage();
+        message1.setId("msg-1");
+        message1.setWebUrl("https://example.com/msg-1");
+        final ChatMessage message2 = new ChatMessage();
+        message2.setId("msg-2");
+        message2.setWebUrl("https://example.com/msg-2");
 
+        try (CountingMicrosoft365Client client = new CountingMicrosoft365Client(dummyParams(), List.of(message1, message2))) {
             final Group group = new Group();
             group.setId("team-1");
             group.setDisplayName("Team One");
@@ -736,7 +739,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
             final IndexUpdateCallback callback = new IndexUpdateCallback() {
                 @Override
                 public void store(final DataStoreParams storeParamMap, final Map<String, Object> dataMap) {
-                    // no-op: this test asserts only on the HTTP traffic reaching Graph
+                    // no-op: this test asserts only on how many times getChannelMembers is called
                 }
 
                 @Override
@@ -758,18 +761,14 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
             dataStore.processChannelMessages(new DataConfig(), callback, paramMap, new HashMap<>(), new HashMap<>(), configMap, client,
                     group, channel);
 
-            final List<String> paths = new ArrayList<>();
-            for (int i = 0; i < server.requestCount(); i++) {
-                paths.add(server.takePath());
-            }
-            final long memberRequests = paths.stream().filter(path -> path.contains("/members")).count();
-            assertEquals("channel membership must be fetched once, but paths were: " + paths, 1L, memberRequests);
+            assertEquals("channel membership must be fetched once, but was fetched " + client.getChannelMembersCallCount() + " times", 1,
+                    client.getChannelMembersCallCount());
         }
     }
 
     /**
-     * Credentials are never used: {@link GraphMockServer} does not authenticate, and
-     * {@code ClientSecretCredential} acquires tokens lazily, so construction is offline.
+     * Credentials are never used: {@code ClientSecretCredential} acquires tokens lazily, so
+     * construction is offline.
      */
     private static DataStoreParams dummyParams() {
         final DataStoreParams params = new DataStoreParams();
@@ -791,18 +790,44 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
     }
 
     /**
-     * {@link Microsoft365Client#client} is {@code protected}, reachable directly only from its
-     * own {@code client} package (see {@code Microsoft365ClientMockTest}); this subclass exposes
-     * it to tests in this package too, so a real {@code Microsoft365Client} can be pointed at a
-     * {@link GraphMockServer} instead of stubbing individual methods with Mockito.
+     * A {@link Microsoft365Client} that counts {@code getChannelMembers} calls instead of issuing
+     * any Graph traffic, and feeds a fixed list of messages with no replies. Overriding at the
+     * client layer (rather than mocking with Mockito) keeps {@link TeamsDataStore#processChannelMessages}
+     * exercised completely unmodified, exactly as {@code MockableMicrosoft365Client}-style
+     * subclasses do elsewhere in this test suite (see {@code OneNoteDataStoreTest},
+     * {@code SharePointPageDataStoreTest}) -- just without the {@code GraphMockServer} wiring,
+     * since no HTTP traffic needs to flow for this test's assertion.
      */
-    private static final class MockableMicrosoft365Client extends Microsoft365Client {
-        MockableMicrosoft365Client(final DataStoreParams params) {
+    private static final class CountingMicrosoft365Client extends Microsoft365Client {
+        private final List<ChatMessage> messages;
+        private int channelMembersCallCount;
+
+        CountingMicrosoft365Client(final DataStoreParams params, final List<ChatMessage> messages) {
             super(params);
+            this.messages = messages;
         }
 
-        void useServer(final GraphServiceClient graphClient) {
-            this.client = graphClient;
+        int getChannelMembersCallCount() {
+            return channelMembersCallCount;
+        }
+
+        @Override
+        public void getChannelMembers(final List<Object> options, final Consumer<ConversationMember> consumer, final String teamId,
+                final String channelId) {
+            channelMembersCallCount++;
+            // No members are needed: this test only cares about how many times this is called.
+        }
+
+        @Override
+        public void getTeamMessages(final List<Object> options, final Consumer<ChatMessage> consumer, final String teamId,
+                final String channelId) {
+            messages.forEach(consumer::accept);
+        }
+
+        @Override
+        public void getTeamReplyMessages(final List<Object> options, final Consumer<ChatMessage> consumer, final String teamId,
+                final String channelId, final String messageId) {
+            // No replies in this fixture.
         }
     }
 }
