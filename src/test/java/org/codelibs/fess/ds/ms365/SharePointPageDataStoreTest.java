@@ -356,6 +356,19 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
     }
 
     @Test
+    public void test_stripWebPartMarkup_stripsTagsBeforeDecodingEntities() {
+        // Decoding "&lt;"/"&gt;" before stripping tags turns them into a literal "<"/">", which
+        // the tag-stripping regex then treats as a new tag and eats everything in between,
+        // silently deleting real text. Tags must be stripped first.
+        assertEquals("5 < 10 and a > b", dataStore.stripWebPartMarkup("<p>5 &lt; 10 and a &gt; b</p>"));
+    }
+
+    @Test
+    public void test_stripWebPartMarkup_decodesApostropheAndQuote() {
+        assertEquals("it's a \"test\"", dataStore.stripWebPartMarkup("it&#39;s a &quot;test&quot;"));
+    }
+
+    @Test
     public void test_extractDataFromObject_map() {
         final StringBuilder content = new StringBuilder();
         final Map<String, Object> data = new HashMap<>();

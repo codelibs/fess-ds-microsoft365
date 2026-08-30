@@ -570,20 +570,26 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Decodes HTML entities, removes HTML tags and normalizes whitespace.
+     * Strips HTML tags, decodes HTML entities and normalizes whitespace.
      *
-     * <p>Identical to the cleanup {@link #extractDataFromObject(Object, StringBuilder)} applies,
-     * so typed and untyped web-part text are normalized the same way.</p>
+     * <p>Tags are stripped <em>before</em> entities are decoded. Decoding first would turn a
+     * decoded {@code &lt;} into a literal {@code <}, which the tag-stripping regex would then
+     * treat as the start of a new tag and consume everything up to the next {@code >} - silently
+     * deleting real text (e.g. {@code 5 &lt; 10 and a &gt; b} would collapse to {@code 5 b}).
+     * This is the single implementation of that cleanup; {@link #extractDataFromObject(Object,
+     * StringBuilder)} calls it too instead of duplicating it.</p>
      *
      * @param value the raw value, must not be null
      * @return the cleaned text
      */
     protected String stripWebPartMarkup(final String value) {
-        return value.replace("&nbsp;", " ")
+        return value.replaceAll("<[^>]+>", " ")
+                .replace("&nbsp;", " ")
                 .replace("&lt;", "<")
                 .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
                 .replace("&amp;", "&")
-                .replaceAll("<[^>]+>", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
     }
@@ -612,16 +618,7 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                     final String text = ((String) value).trim();
                     // Filter based on key names to avoid extracting IDs, GUIDs, or metadata
                     if (!text.isEmpty() && text.length() > 5 && !isGuidOrId(text)) {
-
-                        // Clean up HTML entities and tags if present
-                        final String cleanText = text.replace("&nbsp;", " ")
-                                .replace("&lt;", "<")
-                                .replace("&gt;", ">")
-                                .replace("&amp;", "&")
-                                .replaceAll("<[^>]+>", " ")
-                                .replaceAll("\\s+", " ")
-                                .trim();
-
+                        final String cleanText = stripWebPartMarkup(text);
                         if (cleanText.length() > 5) {
                             content.append(cleanText).append(" ");
                         }
@@ -638,14 +635,7 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         } else if (data instanceof String) {
             final String text = ((String) data).trim();
             if (!text.isEmpty() && text.length() > 5 && !isGuidOrId(text)) {
-                final String cleanText = text.replace("&nbsp;", " ")
-                        .replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&amp;", "&")
-                        .replaceAll("<[^>]+>", " ")
-                        .replaceAll("\\s+", " ")
-                        .trim();
-
+                final String cleanText = stripWebPartMarkup(text);
                 if (cleanText.length() > 5) {
                     content.append(cleanText).append(" ");
                 }
