@@ -948,6 +948,45 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
                 group, channel);
     }
 
+    /**
+     * {@code processChatMessages} had no error handling at all and {@code storeData}'s
+     * try-with-resources has no {@code catch}, so an unreachable {@code chat_id} aborted the whole
+     * crawl even with {@code ignore_error=true}. Gated the same way the four team and channel
+     * sites are - the path already threw, so gating it leaves an unset {@code ignore_error}
+     * aborting exactly as before.
+     */
+    @Test
+    public void test_processChatMessages_rethrowsByDefault() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        doThrow(new RuntimeException("chat unavailable")).when(client).getChatMessages(any(), any(), eq("chat-1"));
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("chat_id", "chat-1");
+        // "ignore_error" deliberately absent: an absent key must mean the default, false.
+
+        try {
+            dataStore.processChatMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
+                    client);
+            fail("a chat failure must abort the crawl when ignore_error is unset");
+        } catch (final DataStoreException e) {
+            assertTrue("expected the chat id in the message, got: " + e.getMessage(), e.getMessage().contains("chat-1"));
+        }
+    }
+
+    @Test
+    public void test_processChatMessages_ignoreErrorSuppressesChatFailure() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        doThrow(new RuntimeException("chat unavailable")).when(client).getChatMessages(any(), any(), eq("chat-1"));
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("chat_id", "chat-1");
+        configMap.put("ignore_error", Boolean.TRUE);
+
+        // Must return normally: with ignore_error=true the failed chat is skipped, not fatal.
+        dataStore.processChatMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
+                client);
+    }
+
     @Test
     public void test_processTeamMessages_unknownTeamRethrowsByDefault() {
         final Microsoft365Client client = mock(Microsoft365Client.class);

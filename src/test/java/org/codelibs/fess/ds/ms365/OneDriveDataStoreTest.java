@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
@@ -36,6 +38,7 @@ import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
@@ -614,6 +617,33 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
      */
     private static List<String> messagesOf(final List<LogEvent> events) {
         return events.stream().map(event -> event.getMessage().getFormattedMessage()).collect(Collectors.toList());
+    }
+
+    /**
+     * {@code getUrlFilter} hands include_pattern/exclude_pattern to fess-crawler's
+     * {@code UrlFilterImpl}, which logs one WARN for a pattern that does not compile and then
+     * drops it - leaving the crawl running with no filter, so a mistyped {@code exclude_pattern}
+     * indexes exactly what it was meant to keep out. Pins that the crawl fails at its start
+     * instead, the same way the three {@code getPattern} DataStores now do.
+     */
+    @Test
+    public void test_storeData_malformedExcludePatternFailsBeforeAnyGraphCall() {
+        final java.util.concurrent.atomic.AtomicInteger clientsCreated = new java.util.concurrent.atomic.AtomicInteger();
+        final OneDriveDataStore testDataStore = new OneDriveDataStore() {
+            @Override
+            protected Microsoft365Client createClient(final DataStoreParams paramMap) {
+                clientsCreated.incrementAndGet();
+                throw new AssertionError("storeData must fail on the malformed pattern before creating a client");
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("exclude_pattern", ".*secret.*[");
+
+        final DataStoreException e = assertThrows(DataStoreException.class,
+                () -> testDataStore.storeData(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>()));
+        assertTrue("the failure must name the parameter, got: " + e.getMessage(), e.getMessage().contains("exclude_pattern"));
+        assertEquals("no Graph client may be created for a crawl that cannot honour its own filter", 0, clientsCreated.get());
     }
 
     static abstract class TestCallback implements IndexUpdateCallback {

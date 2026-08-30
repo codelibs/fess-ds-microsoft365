@@ -28,6 +28,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -41,6 +42,7 @@ import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.AbstractDataStore;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
@@ -490,20 +492,49 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      * #EXCLUDE_PATTERN}; what the returned pattern is matched against, and whether that match is
      * full or partial, is decided by the caller.</p>
      *
+     * <p>A malformed pattern is a configuration error, not a document-level one, so it is thrown
+     * rather than logged and swallowed. Returning {@code null} for it would read to every caller
+     * as &quot;no filtering configured&quot;, which turns a mistyped {@link #EXCLUDE_PATTERN} into
+     * a silent fail-open: the crawl reports success while indexing exactly the documents the
+     * operator asked to keep out. {@link #validatePatterns} calls this once at crawl start so the
+     * failure is reported once, before any document is processed, instead of once per document
+     * from a per-item predicate.</p>
+     *
      * @param paramMap the data store parameters
      * @param key the parameter key for the pattern
-     * @return compiled Pattern, or null if the pattern is blank or invalid (i.e. no filtering)
+     * @return compiled Pattern, or null if the pattern is blank (i.e. no filtering)
+     * @throws DataStoreException if the pattern is not a valid regular expression
      */
     protected Pattern getPattern(final DataStoreParams paramMap, final String key) {
         final String pattern = paramMap.getAsString(key);
-        if (StringUtil.isNotBlank(pattern)) {
-            try {
-                return Pattern.compile(pattern);
-            } catch (final Exception e) {
-                logger.warn("Invalid regex pattern for {}: {}", key, pattern, e);
-            }
+        if (StringUtil.isBlank(pattern)) {
+            return null;
         }
-        return null;
+        try {
+            return Pattern.compile(pattern);
+        } catch (final PatternSyntaxException e) {
+            throw new DataStoreException(key + " is not a valid regular expression: " + pattern + " (" + e.getDescription() + " near index "
+                    + e.getIndex() + ")", e);
+        }
+    }
+
+    /**
+     * Compiles {@link #INCLUDE_PATTERN} and {@link #EXCLUDE_PATTERN} once, so a malformed one
+     * fails the crawl at its start.
+     *
+     * <p>Called from {@code storeData} before any site, list or notebook is touched. Every
+     * DataStore that filters with these two parameters evaluates them inside a per-document
+     * predicate; validating there would report the same configuration error once per document,
+     * and - if the compile failure were tolerated - would silently drop the filter altogether.
+     * The compiled patterns are discarded here: this method exists for its failure, not its
+     * result.</p>
+     *
+     * @param paramMap the data store parameters
+     * @throws DataStoreException if either pattern is not a valid regular expression
+     */
+    protected void validatePatterns(final DataStoreParams paramMap) {
+        getPattern(paramMap, INCLUDE_PATTERN);
+        getPattern(paramMap, EXCLUDE_PATTERN);
     }
 
     /**

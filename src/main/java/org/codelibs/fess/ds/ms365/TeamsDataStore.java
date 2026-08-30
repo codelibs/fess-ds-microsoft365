@@ -233,6 +233,14 @@ public class TeamsDataStore extends Microsoft365DataStore {
      * configuration: the range decision has already been made, with the whole conversation in view,
      * and re-applying it to a single synthetic timestamp would only undo it.</p>
      *
+     * <p>A failure listing the chat's messages or resolving its roles aborted the whole crawl even
+     * with {@code ignore_error=true}, because nothing here caught it and {@code storeData}'s
+     * try-with-resources has no {@code catch}. It is gated the same way the four team and channel
+     * sites are: the default is unchanged - the failure still aborts - and {@code ignore_error=true}
+     * now downgrades it to a WARN, as an operator who sets the flag to survive a stale ID expects.
+     * Only paths that already threw are gated; gating one that already logged and continued would
+     * turn it into an abort for configurations that never set the parameter.</p>
+     *
      * @param dataConfig The data configuration.
      * @param callback The index update callback.
      * @param paramMap The data store parameters.
@@ -252,47 +260,54 @@ public class TeamsDataStore extends Microsoft365DataStore {
                 logger.debug("Processing messages for specific chat: {}", chatId);
             }
 
-            final List<ChatMessage> msgList = new ArrayList<>();
+            try {
+                final List<ChatMessage> msgList = new ArrayList<>();
 
-            client.getChatMessages(Collections.emptyList(), m -> {
-                msgList.add(m);
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Retrieved chat: {}", chatId);
-                }
-            }, chatId);
-
-            if (!msgList.isEmpty()) {
-                final List<ChatMessage> messagesSnapshot = Collections.unmodifiableList(new ArrayList<>(msgList));
-
-                if (!isTargetChatDate(configMap, messagesSnapshot)) {
+                client.getChatMessages(Collections.emptyList(), m -> {
+                    msgList.add(m);
                     if (logger.isDebugEnabled()) {
-                        logger.debug("Skipping chat outside the configured date range: {} ({} messages, none in range)", chatId,
-                                messagesSnapshot.size());
+                        logger.debug("Retrieved chat: {}", chatId);
                     }
-                    return;
-                }
+                }, chatId);
 
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Creating consolidated chat message from {} individual messages for chat: {}", msgList.size(), chatId);
-                }
+                if (!msgList.isEmpty()) {
+                    final List<ChatMessage> messagesSnapshot = Collections.unmodifiableList(new ArrayList<>(msgList));
 
-                final ChatMessage consolidatedMessage = createChatMessage(messagesSnapshot, client);
-                final List<String> chatRoles = getGroupRoles(client, chatId);
-                final Map<String, Object> chatConfigMap = withoutDateRange(configMap);
-                executorService.execute(() -> {
+                    if (!isTargetChatDate(configMap, messagesSnapshot)) {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Skipping chat outside the configured date range: {} ({} messages, none in range)", chatId,
+                                    messagesSnapshot.size());
+                        }
+                        return;
+                    }
+
                     if (logger.isDebugEnabled()) {
-                        logger.debug("Submitting consolidated chat processing task for chat: {}", chatId);
+                        logger.debug("Creating consolidated chat message from {} individual messages for chat: {}", msgList.size(), chatId);
                     }
-                    processChatMessage(dataConfig, callback, chatConfigMap, paramMap, scriptMap, defaultDataMap, chatRoles,
-                            consolidatedMessage, map -> map.put("messages", messagesSnapshot), client);
-                });
 
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Submitted consolidated chat processing task for chat: {} with {} individual messages", chatId,
-                            msgList.size());
+                    final ChatMessage consolidatedMessage = createChatMessage(messagesSnapshot, client);
+                    final List<String> chatRoles = getGroupRoles(client, chatId);
+                    final Map<String, Object> chatConfigMap = withoutDateRange(configMap);
+                    executorService.execute(() -> {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Submitting consolidated chat processing task for chat: {}", chatId);
+                        }
+                        processChatMessage(dataConfig, callback, chatConfigMap, paramMap, scriptMap, defaultDataMap, chatRoles,
+                                consolidatedMessage, map -> map.put("messages", messagesSnapshot), client);
+                    });
+
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Submitted consolidated chat processing task for chat: {} with {} individual messages", chatId,
+                                msgList.size());
+                    }
+                } else if (logger.isDebugEnabled()) {
+                    logger.debug("No messages found for chat: {}", chatId);
                 }
-            } else if (logger.isDebugEnabled()) {
-                logger.debug("No messages found for chat: {}", chatId);
+            } catch (final RuntimeException e) {
+                if (!Boolean.TRUE.equals(configMap.get(IGNORE_ERROR))) {
+                    throw new DataStoreException("Failed to process chat: " + chatId, e);
+                }
+                logger.warn("Failed to process chat: {}. Skipping it because {} is enabled.", chatId, IGNORE_ERROR, e);
             }
         } else if (logger.isDebugEnabled()) {
             logger.debug("No specific chat ID configured - skipping chat message processing");

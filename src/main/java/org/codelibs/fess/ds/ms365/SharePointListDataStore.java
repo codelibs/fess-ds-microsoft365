@@ -126,6 +126,12 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         // warning from inside it would repeat once per list item processed.
         validateListTemplateFilter(paramMap);
 
+        // Same reason, one step stronger: isTargetItem compiles include_pattern/exclude_pattern
+        // once per list item, so a malformed one has to fail here or it fails tens of thousands
+        // of times -- and a malformed exclude_pattern that merely warned would index every item
+        // the operator asked to exclude.
+        validatePatterns(paramMap);
+
         if (logger.isDebugEnabled()) {
             logger.debug(
                     "SharePoint lists crawling started - Configuration: SiteID={}, ListID={}, IgnoreError={}, IgnoreSystemLists={}, Threads={}",

@@ -121,6 +121,11 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
         configMap.put(IGNORE_SYSTEM_PAGES, isIgnoreSystemPages(paramMap));
 
+        // Compile include_pattern/exclude_pattern once, before any site is contacted, so a
+        // malformed one fails the crawl here instead of being reported once per site -- or, worse,
+        // dropping the filter and indexing the pages an exclude_pattern was meant to keep out.
+        validatePatterns(paramMap);
+
         if (logger.isDebugEnabled()) {
             logger.debug("SharePoint Pages crawling started - Configuration: IgnoreError={}, IgnoreSystemPages={}, Threads={}",
                     configMap.get(IGNORE_ERROR), configMap.get(IGNORE_SYSTEM_PAGES), paramMap.getAsString(NUMBER_OF_THREADS, "1"));

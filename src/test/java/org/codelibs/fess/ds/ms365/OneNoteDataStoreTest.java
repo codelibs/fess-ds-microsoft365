@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -49,6 +51,7 @@ import org.codelibs.fess.ds.ms365.client.GraphMockServer;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.ds.ms365.client.NotebookScope;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.mylasta.direction.FessConfig;
@@ -393,7 +396,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
             final ExecutorService executorService = Executors.newSingleThreadExecutor();
             try {
                 dataStore.storeSiteNotes(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), executorService,
-                        client);
+                        client, new OneNoteDataStore.NotebookFilterStats());
             } finally {
                 executorService.shutdown();
                 assertTrue(executorService.awaitTermination(5, TimeUnit.SECONDS));
@@ -455,7 +458,8 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final ExecutorService executorService = Executors.newSingleThreadExecutor();
         try {
-            captureDataStore.storeSiteNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client);
+            captureDataStore.storeSiteNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client,
+                    new OneNoteDataStore.NotebookFilterStats());
         } finally {
             executorService.shutdown();
             assertTrue("processNotebook must have run before the test asserts on captured roles",
@@ -477,8 +481,13 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         paramMap.put("include_pattern", "   ");
         assertNull("a blank pattern must not filter anything", dataStore.getPattern(paramMap, "include_pattern"));
 
+        // A malformed pattern used to be logged and swallowed, and null reads to every caller as
+        // "no filtering configured" -- which turns a mistyped exclude_pattern into a fail-open.
         paramMap.put("include_pattern", "[invalid");
-        assertNull("an invalid regex must be ignored, not thrown", dataStore.getPattern(paramMap, "include_pattern"));
+        final DataStoreException e = assertThrows(DataStoreException.class, () -> dataStore.getPattern(paramMap, "include_pattern"));
+        assertTrue("the message must name the parameter, got: " + e.getMessage(), e.getMessage().contains("include_pattern"));
+        assertTrue("the message must carry the regex syntax error, got: " + e.getMessage(),
+                e.getMessage().contains("Unclosed character class"));
 
         paramMap.put("include_pattern", "Project.*");
         assertNotNull(dataStore.getPattern(paramMap, "include_pattern"));
@@ -623,7 +632,8 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final ExecutorService executorService = Executors.newSingleThreadExecutor();
         try {
-            captureDataStore.storeSiteNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client);
+            captureDataStore.storeSiteNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client,
+                    new OneNoteDataStore.NotebookFilterStats());
         } finally {
             executorService.shutdown();
             assertTrue(executorService.awaitTermination(5, TimeUnit.SECONDS));
@@ -684,7 +694,8 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final ExecutorService executorService = Executors.newSingleThreadExecutor();
         try {
-            captureDataStore.storeUsersNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client);
+            captureDataStore.storeUsersNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client,
+                    new OneNoteDataStore.NotebookFilterStats());
         } finally {
             executorService.shutdown();
             assertTrue(executorService.awaitTermination(5, TimeUnit.SECONDS));
@@ -740,7 +751,8 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final ExecutorService executorService = Executors.newSingleThreadExecutor();
         try {
-            captureDataStore.storeGroupsNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client);
+            captureDataStore.storeGroupsNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client,
+                    new OneNoteDataStore.NotebookFilterStats());
         } finally {
             executorService.shutdown();
             assertTrue(executorService.awaitTermination(5, TimeUnit.SECONDS));
@@ -834,7 +846,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         final ExecutorService executorService = Executors.newSingleThreadExecutor();
         try {
             captureDataStore.storeUsersNotes(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(),
-                    executorService, client);
+                    executorService, client, new OneNoteDataStore.NotebookFilterStats());
         } finally {
             executorService.shutdown();
             assertTrue("processNotebook must have run before the test asserts on the captured scope",
@@ -892,7 +904,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         final ExecutorService executorService = Executors.newSingleThreadExecutor();
         try {
             captureDataStore.storeGroupsNotes(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(),
-                    executorService, client);
+                    executorService, client, new OneNoteDataStore.NotebookFilterStats());
         } finally {
             executorService.shutdown();
             assertTrue("processNotebook must have run before the test asserts on the captured scope",
@@ -954,7 +966,8 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final ExecutorService executorService = Executors.newSingleThreadExecutor();
         try {
-            captureDataStore.storeUsersNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client);
+            captureDataStore.storeUsersNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client,
+                    new OneNoteDataStore.NotebookFilterStats());
         } finally {
             executorService.shutdown();
             assertTrue("processNotebook must have run before the test asserts on captured roles",
@@ -1017,7 +1030,8 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final ExecutorService executorService = Executors.newSingleThreadExecutor();
         try {
-            captureDataStore.storeGroupsNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client);
+            captureDataStore.storeGroupsNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client,
+                    new OneNoteDataStore.NotebookFilterStats());
         } finally {
             executorService.shutdown();
             assertTrue("processNotebook must have run before the test asserts on captured roles",
@@ -1256,6 +1270,180 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
                 messagesOf(events).stream().filter(message -> message.contains("matched none")).collect(Collectors.toList());
         assertTrue("expected no 'matched none' WARN when a notebook was admitted, got: " + messagesOf(events),
                 matchedNothingWarnings.isEmpty());
+    }
+
+    /**
+     * A malformed pattern used to be logged and swallowed by {@code getPattern}, once per scope -
+     * three identical WARNs with three stack traces for one typo - and the null it returned reads
+     * to {@code isTargetNotebook} as "no filtering", so a mistyped {@code exclude_pattern}
+     * indexed every notebook it was meant to keep out. Pins that the crawl fails once, before any
+     * Graph call, and that the swallowed WARNs are gone.
+     */
+    @Test
+    public void test_storeData_malformedExcludePatternFailsOnceBeforeAnyGraphCall() {
+        final java.util.concurrent.atomic.AtomicInteger clientsCreated = new java.util.concurrent.atomic.AtomicInteger();
+        final OneNoteDataStore testDataStore = new OneNoteDataStore() {
+            @Override
+            protected Microsoft365Client createClient(final DataStoreParams paramMap) {
+                clientsCreated.incrementAndGet();
+                throw new AssertionError("storeData must fail on the malformed pattern before creating a client");
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("exclude_pattern", "Archive.*[");
+
+        final DataStoreException e = assertThrows(DataStoreException.class,
+                () -> testDataStore.storeData(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>()));
+        assertTrue("the failure must name the parameter, got: " + e.getMessage(), e.getMessage().contains("exclude_pattern"));
+        assertTrue("the failure must carry the regex syntax error, got: " + e.getMessage(),
+                e.getMessage().contains("Unclosed character class"));
+        assertEquals("no Graph client may be created for a crawl that cannot honour its own filter", 0, clientsCreated.get());
+    }
+
+    /**
+     * The same typo used to produce one {@code Invalid regex pattern} WARN per scope, because all
+     * three of {@code site_note_crawler}, {@code user_note_crawler} and {@code group_note_crawler}
+     * default to true and each asked {@code getPattern} for itself. It must be reported once.
+     */
+    @Test
+    public void test_storeData_malformedPatternIsReportedOnceNotOncePerScope() {
+        final OneNoteDataStore testDataStore = new OneNoteDataStore() {
+            @Override
+            protected Microsoft365Client createClient(final DataStoreParams paramMap) {
+                throw new AssertionError("storeData must fail on the malformed pattern before creating a client");
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("include_pattern", "Project[");
+
+        final List<LogEvent> events = Collections.synchronizedList(new ArrayList<>());
+        final org.apache.logging.log4j.core.Logger coreLogger =
+                (org.apache.logging.log4j.core.Logger) LogManager.getLogger(Microsoft365DataStore.class);
+        final AbstractAppender appender =
+                new AbstractAppender("test-onenote-invalid-pattern-warn-capture", null, null, false, Property.EMPTY_ARRAY) {
+                    @Override
+                    public void append(final LogEvent event) {
+                        if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                            events.add(event.toImmutable());
+                        }
+                    }
+                };
+        appender.start();
+        coreLogger.addAppender(appender);
+        try {
+            assertThrows(DataStoreException.class,
+                    () -> testDataStore.storeData(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>()));
+        } finally {
+            coreLogger.removeAppender(appender);
+            appender.stop();
+        }
+
+        final List<String> invalidPatternWarnings =
+                messagesOf(events).stream().filter(message -> message.contains("Invalid regex pattern")).collect(Collectors.toList());
+        assertTrue("one malformed pattern must not be reported through a per-scope WARN, got: " + messagesOf(events),
+                invalidPatternWarnings.isEmpty());
+    }
+
+    /**
+     * The "matched none" WARN used to name {@code include_pattern/exclude_pattern} unconditionally,
+     * telling an operator who set only {@code exclude_pattern} to go and check an
+     * {@code include_pattern} that is not in their configuration.
+     */
+    @Test
+    public void test_storeData_matchedNoneWarningNamesOnlyTheConfiguredPattern() throws Exception {
+        registerPermissionHelper();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        final Site root = new Site();
+        root.setId("site-1");
+        when(client.getSite("root")).thenReturn(root);
+
+        final Notebook excluded = new Notebook();
+        excluded.setId("notebook-1");
+        excluded.setDisplayName("Test Notebook");
+        final NotebookCollectionResponse notebookResponse = new NotebookCollectionResponse();
+        notebookResponse.setValue(List.of(excluded));
+        when(client.getNotebookPage(NotebookScope.SITE, "site-1")).thenReturn(notebookResponse);
+
+        doAnswer(invocation -> null).when(client).getUsers(any(), any());
+        doAnswer(invocation -> null).when(client).getMicrosoft365Groups(any());
+
+        final OneNoteDataStore testDataStore = new OneNoteDataStore() {
+            @Override
+            protected Microsoft365Client createClient(final DataStoreParams paramMap) {
+                return client;
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("exclude_pattern", "Test.*");
+
+        final List<LogEvent> events = captureOneNoteDataStoreWarnings(
+                () -> testDataStore.storeData(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>()));
+
+        final String matchedNone = messagesOf(events).stream()
+                .filter(message -> message.contains("matched none"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("expected a 'matched none' WARN, got: " + messagesOf(events)));
+        assertTrue("the WARN must name exclude_pattern, got: " + matchedNone, matchedNone.contains("exclude_pattern"));
+        assertFalse("the WARN must not name a pattern the operator never set, got: " + matchedNone,
+                matchedNone.contains("include_pattern"));
+    }
+
+    /**
+     * The notebook filter counters used to be stashed in {@code paramMap} under
+     * {@code _onenote_notebook_filter_stats}, and {@code processNotebook} copies {@code paramMap}
+     * wholesale into every notebook's script bindings - so internal bookkeeping became an
+     * operator-visible script variable on every OneNote document, whether or not a pattern was
+     * configured. Pins that nothing internal reaches the bindings.
+     */
+    @Test
+    public void test_storeData_doesNotLeakInternalStateIntoScriptBindings() throws Exception {
+        registerPermissionHelper();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        final Site root = new Site();
+        root.setId("site-1");
+        when(client.getSite("root")).thenReturn(root);
+
+        final Notebook notebook = new Notebook();
+        notebook.setId("notebook-1");
+        notebook.setDisplayName("Production Notebook");
+        final NotebookCollectionResponse notebookResponse = new NotebookCollectionResponse();
+        notebookResponse.setValue(List.of(notebook));
+        when(client.getNotebookPage(NotebookScope.SITE, "site-1")).thenReturn(notebookResponse);
+
+        doAnswer(invocation -> null).when(client).getUsers(any(), any());
+        doAnswer(invocation -> null).when(client).getMicrosoft365Groups(any());
+
+        final List<java.util.Set<String>> capturedBindingKeys = Collections.synchronizedList(new ArrayList<>());
+        final OneNoteDataStore testDataStore = new OneNoteDataStore() {
+            @Override
+            protected Microsoft365Client createClient(final DataStoreParams paramMap) {
+                return client;
+            }
+
+            @Override
+            protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+                    final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
+                    final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
+                // The real processNotebook builds its script bindings from exactly this map.
+                capturedBindingKeys.add(new java.util.LinkedHashSet<>(paramMap.asMap().keySet()));
+            }
+        };
+
+        testDataStore.storeData(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>());
+
+        assertEquals("expected the one site notebook to be processed", 1, capturedBindingKeys.size());
+        final java.util.Set<String> keys = capturedBindingKeys.get(0);
+        assertFalse("the notebook filter counters must not reach the script bindings, got: " + keys,
+                keys.contains("_onenote_notebook_filter_stats"));
+        assertTrue("no internal bookkeeping key may reach the script bindings, got: " + keys,
+                keys.stream().noneMatch(key -> key.startsWith("_onenote")));
     }
 
     /**

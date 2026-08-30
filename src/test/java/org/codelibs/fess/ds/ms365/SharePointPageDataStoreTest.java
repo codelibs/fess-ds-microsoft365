@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
@@ -32,6 +34,7 @@ import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.GraphMockServer;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
@@ -227,8 +230,10 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("invalid_pattern", "[invalid");
 
-        final Pattern pattern = dataStore.getPattern(paramMap, "invalid_pattern");
-        assertNull(pattern);
+        // A malformed pattern is a configuration error, not a document-level one: returning null
+        // would read as "no filtering configured" and silently widen the crawl.
+        final DataStoreException e = assertThrows(DataStoreException.class, () -> dataStore.getPattern(paramMap, "invalid_pattern"));
+        assertTrue("the message must name the parameter, got: " + e.getMessage(), e.getMessage().contains("invalid_pattern"));
     }
 
     @Test
@@ -824,6 +829,32 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         logger.info("Callback count: {}", callback.getCount());
         assertTrue(callback.getCount() > 0);
         */
+    }
+
+    /**
+     * A malformed pattern used to be logged and swallowed by {@code getPattern}, and null reads
+     * to {@code isTargetPage} as "no filtering" - so a mistyped {@code exclude_pattern} indexed
+     * the pages it was meant to keep out while the job reported success. Pins that the crawl
+     * fails instead, once, before the first Graph call rather than once per site.
+     */
+    @Test
+    public void test_storeData_malformedExcludePatternFailsBeforeAnyGraphCall() {
+        final java.util.concurrent.atomic.AtomicInteger clientsCreated = new java.util.concurrent.atomic.AtomicInteger();
+        final SharePointPageDataStore testDataStore = new SharePointPageDataStore() {
+            @Override
+            protected Microsoft365Client createClient(final DataStoreParams paramMap) {
+                clientsCreated.incrementAndGet();
+                throw new AssertionError("storeData must fail on the malformed pattern before creating a client");
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("exclude_pattern", ".*private.*[");
+
+        final DataStoreException e = assertThrows(DataStoreException.class,
+                () -> testDataStore.storeData(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>()));
+        assertTrue("the failure must name the parameter, got: " + e.getMessage(), e.getMessage().contains("exclude_pattern"));
+        assertEquals("no Graph client may be created for a crawl that cannot honour its own filter", 0, clientsCreated.get());
     }
 
     /**
