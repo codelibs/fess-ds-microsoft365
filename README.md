@@ -514,12 +514,18 @@ that is visible from the table above:
 | `sharePointDocLibDataStore` | the document library's **canonical URL** (`doclib.url`, built by `generateDocumentLibraryUrl(site, drive)`) - **not** the raw Graph `webUrl` (`doclib.web_url`) or the library's display name | Fess `UrlFilter` - full match (`Matcher.matches()`) |
 | `sharePointListDataStore` | the list item's title (`Title`/`LinkTitle`/`FileLeafRef`, whichever resolves first) | `java.util.regex.Pattern.matches()` - full match |
 | `sharePointPageDataStore` | the page's `webUrl` | `java.util.regex.Pattern.find()` - **partial** match |
-| `teamsDataStore`, `oneNoteDataStore` | not supported - both parameters are silently ignored | - |
+| `oneNoteDataStore` | the notebook's display name | `java.util.regex.Pattern.matches()` - full match |
+| `teamsDataStore` | not supported - both parameters are silently ignored | - |
 
 Practically: a OneDrive or SharePoint document library pattern must match the *entire* URL, a
 SharePoint List pattern must match the *entire* title, and a SharePoint Pages pattern only needs
 to match *somewhere inside* the URL. A pattern written for one DataStore will not necessarily
 behave the same way on another.
+
+A OneNote pattern must also match the *entire* notebook display name: `exclude_pattern=Test.*`
+removes a notebook called "Test Notebook" but keeps one called "Latest Notes". Note that
+`oneNoteDataStore` ignored both parameters in earlier releases - a configuration that set them
+expecting them to be a no-op will start filtering notebooks after upgrading.
 
 #### Permission lookup failures
 
@@ -826,6 +832,8 @@ The implementation extracts comprehensive message metadata including:
 | `site_note_crawler` | Enable crawling of site notebooks | `true` | Crawls notebooks at the root SharePoint site |
 | `user_note_crawler` | Enable crawling of user notebooks | `true` | Crawls personal OneNote notebooks for licensed users |
 | `group_note_crawler` | Enable crawling of group notebooks | `true` | Crawls shared notebooks in Microsoft 365 groups |
+| `include_pattern` | Regex a notebook name must fully match to be crawled | - | Matched against the notebook's display name with `Pattern.matches()` (full match). An invalid regex is logged and ignored |
+| `exclude_pattern` | Regex a notebook name must not fully match to be crawled | - | Matched against the notebook's display name with `Pattern.matches()` (full match). Applied after `include_pattern`; an invalid regex is logged and ignored |
 | `number_of_threads` | Number of processing threads | `1` | Controls concurrent notebook processing |
 
 #### OneNote Implementation Details

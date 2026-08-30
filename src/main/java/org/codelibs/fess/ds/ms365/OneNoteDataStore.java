@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
@@ -197,8 +198,15 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         // so site notebooks carry no owner-derived roles. default_permissions is their only role
         // source.
         final List<String> roles = getDefaultPermissions(paramMap);
-        getNotebooks(client, NotebookScope.SITE, root.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig,
-                callback, paramMap, scriptMap, defaultDataMap, client, NotebookScope.SITE, root.getId(), notebook, roles)));
+        final Pattern includePattern = getPattern(paramMap, INCLUDE_PATTERN);
+        final Pattern excludePattern = getPattern(paramMap, EXCLUDE_PATTERN);
+        getNotebooks(client, NotebookScope.SITE, root.getId(), notebook -> {
+            if (!isTargetNotebook(includePattern, excludePattern, notebook)) {
+                return;
+            }
+            executorService.execute(() -> processNotebook(dataConfig, callback, paramMap, scriptMap, defaultDataMap, client,
+                    NotebookScope.SITE, root.getId(), notebook, roles));
+        });
     }
 
     /**
@@ -220,6 +228,8 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             logger.debug("Starting user notebooks processing - retrieving licensed users");
         }
 
+        final Pattern includePattern = getPattern(paramMap, INCLUDE_PATTERN);
+        final Pattern excludePattern = getPattern(paramMap, EXCLUDE_PATTERN);
         getLicensedUsers(client, user -> {
             // A user notebook already derives roles from its owner; default_permissions adds to
             // that list, it does not replace it. getUserRoles returns an immutable singleton
@@ -233,6 +243,9 @@ public class OneNoteDataStore extends Microsoft365DataStore {
 
             try {
                 getNotebooks(client, NotebookScope.USER, user.getId(), notebook -> {
+                    if (!isTargetNotebook(includePattern, excludePattern, notebook)) {
+                        return;
+                    }
                     if (logger.isDebugEnabled()) {
                         logger.debug("Processing notebook: {} for user: {}", notebook.getDisplayName(), user.getDisplayName());
                     }
@@ -264,6 +277,8 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             logger.debug("Starting group notebooks processing - retrieving Microsoft 365 groups");
         }
 
+        final Pattern includePattern = getPattern(paramMap, INCLUDE_PATTERN);
+        final Pattern excludePattern = getPattern(paramMap, EXCLUDE_PATTERN);
         getMicrosoft365Groups(client, group -> {
             // A group notebook already derives roles from its owner; default_permissions adds to
             // that list, it does not replace it. getGroupRoles returns an immutable singleton
@@ -277,6 +292,9 @@ public class OneNoteDataStore extends Microsoft365DataStore {
 
             try {
                 getNotebooks(client, NotebookScope.GROUP, group.getId(), notebook -> {
+                    if (!isTargetNotebook(includePattern, excludePattern, notebook)) {
+                        return;
+                    }
                     if (logger.isDebugEnabled()) {
                         logger.debug("Processing notebook: {} for group: {}", notebook.getDisplayName(), group.getDisplayName());
                     }
@@ -475,6 +493,61 @@ public class OneNoteDataStore extends Microsoft365DataStore {
                 logger.warn("Failed to retrieve notebooks for {} {}.", scope, ownerId, e);
             }
         }
+    }
+
+    /**
+     * Gets a compiled regex pattern from parameters.
+     *
+     * @param paramMap the data store parameters
+     * @param key the parameter key for the pattern
+     * @return compiled Pattern, or null if the pattern is blank or invalid (i.e. no filtering)
+     */
+    protected Pattern getPattern(final DataStoreParams paramMap, final String key) {
+        final String pattern = paramMap.getAsString(key);
+        if (StringUtil.isNotBlank(pattern)) {
+            try {
+                return Pattern.compile(pattern);
+            } catch (final Exception e) {
+                logger.warn("Invalid regex pattern for {}: {}", key, pattern, e);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Checks whether a notebook passes the configured include/exclude filters.
+     *
+     * <p>Both patterns are matched against the notebook's display name as a <em>full</em> match
+     * ({@link java.util.regex.Matcher#matches()}), the same semantics
+     * {@code sharePointListDataStore} applies to a list item's title. A notebook with no display
+     * name is never filtered out.</p>
+     *
+     * @param includePattern the include pattern, or null for no include filtering
+     * @param excludePattern the exclude pattern, or null for no exclude filtering
+     * @param notebook the notebook to check
+     * @return true if the notebook should be crawled, false otherwise
+     */
+    protected boolean isTargetNotebook(final Pattern includePattern, final Pattern excludePattern, final Notebook notebook) {
+        if (includePattern == null && excludePattern == null) {
+            return true;
+        }
+        final String displayName = notebook.getDisplayName();
+        if (StringUtil.isBlank(displayName)) {
+            return true;
+        }
+        if (includePattern != null && !includePattern.matcher(displayName).matches()) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping notebook {}: does not match {}", displayName, INCLUDE_PATTERN);
+            }
+            return false;
+        }
+        if (excludePattern != null && excludePattern.matcher(displayName).matches()) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping notebook {}: matches {}", displayName, EXCLUDE_PATTERN);
+            }
+            return false;
+        }
+        return true;
     }
 
 }

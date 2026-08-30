@@ -33,6 +33,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -461,6 +462,108 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
         assertTrue("expected the configured default_permissions role in the notebook's roles, got " + roles,
                 roles.contains(permissionHelper.encode("{role}admin")));
+    }
+
+    @Test
+    public void test_getPattern_blankAndInvalid() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        assertNull("an unset pattern must not filter anything", dataStore.getPattern(paramMap, "include_pattern"));
+
+        paramMap.put("include_pattern", "   ");
+        assertNull("a blank pattern must not filter anything", dataStore.getPattern(paramMap, "include_pattern"));
+
+        paramMap.put("include_pattern", "[invalid");
+        assertNull("an invalid regex must be ignored, not thrown", dataStore.getPattern(paramMap, "include_pattern"));
+
+        paramMap.put("include_pattern", "Project.*");
+        assertNotNull(dataStore.getPattern(paramMap, "include_pattern"));
+    }
+
+    @Test
+    public void test_isTargetNotebook_noPatternsAcceptsEverything() {
+        assertTrue(dataStore.isTargetNotebook(null, null, notebookNamed("Anything At All")));
+        assertTrue("a null display name must not be filtered out", dataStore.isTargetNotebook(null, null, notebookNamed(null)));
+    }
+
+    @Test
+    public void test_isTargetNotebook_includePatternIsFullMatch() {
+        final Pattern includePattern = Pattern.compile("Project.*");
+        assertTrue(dataStore.isTargetNotebook(includePattern, null, notebookNamed("Project Apollo")));
+        // Full match, not find(): a name that merely contains the pattern is excluded.
+        assertFalse(dataStore.isTargetNotebook(includePattern, null, notebookNamed("Archived Project Apollo")));
+    }
+
+    @Test
+    public void test_isTargetNotebook_excludePatternIsFullMatch() {
+        final Pattern excludePattern = Pattern.compile("Test.*");
+        assertFalse(dataStore.isTargetNotebook(null, excludePattern, notebookNamed("Test Notebook")));
+        assertTrue(dataStore.isTargetNotebook(null, excludePattern, notebookNamed("Production Notebook")));
+        // Full match, not find(): "Latest Notes" contains "test" but must survive Test.*
+        assertTrue("full-match semantics must not exclude a name that merely contains the pattern",
+                dataStore.isTargetNotebook(null, excludePattern, notebookNamed("Latest Notes")));
+    }
+
+    @Test
+    public void test_isTargetNotebook_excludeWinsOverInclude() {
+        final Pattern includePattern = Pattern.compile(".*Notebook");
+        final Pattern excludePattern = Pattern.compile("Test.*");
+        assertFalse(dataStore.isTargetNotebook(includePattern, excludePattern, notebookNamed("Test Notebook")));
+    }
+
+    /**
+     * The predicate being correct proves nothing if storeSiteNotes never calls it. Pins the
+     * wiring by overriding processNotebook to capture which notebooks actually got through.
+     */
+    @Test
+    public void test_storeSiteNotes_appliesExcludePatternToNotebooks() throws Exception {
+        registerPermissionHelper();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        final Site root = new Site();
+        root.setId("site-1");
+        when(client.getSite("root")).thenReturn(root);
+
+        final Notebook kept = new Notebook();
+        kept.setId("notebook-kept");
+        kept.setDisplayName("Production Notebook");
+        final Notebook dropped = new Notebook();
+        dropped.setId("notebook-dropped");
+        dropped.setDisplayName("Test Notebook");
+        final NotebookCollectionResponse notebookResponse = new NotebookCollectionResponse();
+        notebookResponse.setValue(List.of(kept, dropped));
+        when(client.getNotebookPage(NotebookScope.SITE, "site-1")).thenReturn(notebookResponse);
+
+        final List<String> processedIds = Collections.synchronizedList(new ArrayList<>());
+        final OneNoteDataStore captureDataStore = new OneNoteDataStore() {
+            @Override
+            protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+                    final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
+                    final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
+                processedIds.add(notebook.getId());
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("exclude_pattern", "Test.*");
+
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            captureDataStore.storeSiteNotes(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>(), executorService, client);
+        } finally {
+            executorService.shutdown();
+            assertTrue(executorService.awaitTermination(5, TimeUnit.SECONDS));
+        }
+
+        // 2-argument assertEquals: the expected/actual order of the 3-argument form is a known
+        // trap in this codebase, and the failure message already prints both values.
+        assertEquals(List.of("notebook-kept"), processedIds);
+    }
+
+    private static Notebook notebookNamed(final String displayName) {
+        final Notebook notebook = new Notebook();
+        notebook.setDisplayName(displayName);
+        return notebook;
     }
 
     /** Credentials are never used: GraphMockServer does not authenticate, and ClientSecretCredential
