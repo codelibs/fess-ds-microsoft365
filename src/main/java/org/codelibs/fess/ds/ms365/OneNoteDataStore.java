@@ -21,13 +21,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.fess.Constants;
 import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
@@ -136,10 +134,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             if (logger.isDebugEnabled()) {
                 logger.debug("OneNote crawling completed - shutting down thread executor");
             }
-            executorService.shutdown();
-            executorService.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        } catch (final InterruptedException e) {
-            throw new InterruptedRuntimeException(e);
+            shutdownExecutor(executorService, paramMap);
         } finally {
             executorService.shutdownNow();
         }

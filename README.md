@@ -489,6 +489,7 @@ role=page.roles
 | Parameter | Description | Default | Example |
 |-----------|-------------|---------|----------|
 | `number_of_threads` | Concurrent crawling threads | `1` | `3` |
+| `executor_shutdown_timeout` | How long to wait for submitted crawling tasks to finish, in whole seconds. Whatever has not finished by then is cancelled and its documents are missing from the crawl, which is reported at `ERROR`. Raise it for a large tenant. | `60` | `600` |
 | `ignore_error` | Continue on errors | `true` | `false` |
 | `include_pattern` | Regex pattern for inclusion - semantics differ by DataStore, see below | - | `.*\.pdf$` |
 | `exclude_pattern` | Regex pattern for exclusion - semantics differ by DataStore, see below | - | `.*temp.*` |

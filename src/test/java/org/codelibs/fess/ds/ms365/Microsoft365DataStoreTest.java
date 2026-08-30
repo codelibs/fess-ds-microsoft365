@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
@@ -270,6 +271,135 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
     }
 
     @Test
+    public void test_getShutdownTimeoutSeconds_defaultsToTheExistingValue() {
+        assertEquals(Microsoft365DataStore.EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, dataStore.getShutdownTimeoutSeconds(new DataStoreParams()));
+    }
+
+    @Test
+    public void test_getShutdownTimeoutSeconds_readsTheParameter() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("executor_shutdown_timeout", "600");
+        assertEquals(600L, dataStore.getShutdownTimeoutSeconds(paramMap));
+    }
+
+    @Test
+    public void test_getShutdownTimeoutSeconds_malformedValueFallsBackToTheDefault() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("executor_shutdown_timeout", "soon");
+        assertEquals(Microsoft365DataStore.EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, dataStore.getShutdownTimeoutSeconds(paramMap));
+    }
+
+    @Test
+    public void test_getShutdownTimeoutSeconds_zeroFallsBackToTheDefault() {
+        // A zero wait would cancel every in-flight task the moment shutdown starts.
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("executor_shutdown_timeout", "0");
+        assertEquals(Microsoft365DataStore.EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, dataStore.getShutdownTimeoutSeconds(paramMap));
+    }
+
+    @Test
+    public void test_getShutdownTimeoutSeconds_negativeValueFallsBackToTheDefault() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("executor_shutdown_timeout", "-1");
+        assertEquals(Microsoft365DataStore.EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, dataStore.getShutdownTimeoutSeconds(paramMap));
+    }
+
+    @Test
+    public void test_shutdownExecutor_reportsTasksThatDidNotFinish() {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            final java.util.concurrent.CountDownLatch block = new java.util.concurrent.CountDownLatch(1);
+            executor.execute(() -> {
+                try {
+                    block.await();
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            paramMap.put("executor_shutdown_timeout", "1");
+
+            final long started = System.nanoTime();
+            dataStore.shutdownExecutor(executor, paramMap);
+            final long elapsedSeconds = (System.nanoTime() - started) / 1_000_000_000L;
+
+            // it must wait the configured period and return rather than hang or throw
+            assertTrue("expected roughly the configured 1s wait but took " + elapsedSeconds + "s", elapsedSeconds < 10L);
+            assertEquals("the unfinished tasks must be reported once", 1, dataStore.unfinishedReports.size());
+            final String message = dataStore.unfinishedReports.get(0);
+            assertTrue(message, message.contains("1 crawling task(s) were still running and 0 had not started after 1 seconds"));
+            assertTrue(message, message.contains("executor_shutdown_timeout"));
+            block.countDown();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_shutdownExecutor_reportsNothingWhenEveryTaskFinishes() {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            executor.execute(() -> {});
+            dataStore.shutdownExecutor(executor, new DataStoreParams());
+            assertTrue("a completed pool must not be reported as unfinished", dataStore.unfinishedReports.isEmpty());
+            assertTrue("a pool with no failures must not be reported", dataStore.failureReports.isEmpty());
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_shutdownExecutor_reportsHowManyTasksFailed() {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            executor.execute(() -> {
+                throw new IllegalStateException("boom");
+            });
+            dataStore.shutdownExecutor(executor, new DataStoreParams());
+            assertEquals("the failure count must be reported once", 1, dataStore.failureReports.size());
+            assertTrue(dataStore.failureReports.get(0), dataStore.failureReports.get(0).contains("1 crawling task(s) failed"));
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_shutdownExecutor_restoresTheInterruptStatusBeforeRethrowing() {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            final java.util.concurrent.CountDownLatch block = new java.util.concurrent.CountDownLatch(1);
+            executor.execute(() -> {
+                try {
+                    block.await();
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            paramMap.put("executor_shutdown_timeout", "30");
+
+            // awaitTermination throws immediately when the calling thread is already interrupted,
+            // and clears the status while doing so.
+            Thread.currentThread().interrupt();
+            boolean interruptStatusRestored = false;
+            try {
+                dataStore.shutdownExecutor(executor, paramMap);
+                fail("shutdownExecutor should have rethrown the interrupt");
+            } catch (final InterruptedRuntimeException e) {
+                interruptStatusRestored = Thread.interrupted();
+            }
+            assertTrue("the interrupt status must be restored before the exception is rethrown", interruptStatusRestored);
+            block.countDown();
+        } finally {
+            // never let the flag leak into another test
+            Thread.interrupted();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     public void test_getUserRoles_structure() {
         // Test that getUserRoles method exists and has correct signature
         // Note: Actual testing of getUserRoles requires SystemHelper to be configured
@@ -400,9 +530,29 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
      */
     static class TestDataStore extends Microsoft365DataStore {
 
+        /** Every message {@link #describeUnfinished} produced, in order. */
+        final List<String> unfinishedReports = new ArrayList<>();
+
+        /** Every message {@link #describeFailures} produced, in order. */
+        final List<String> failureReports = new ArrayList<>();
+
         @Override
         protected String getName() {
             return "TestDataStore";
+        }
+
+        @Override
+        protected String describeUnfinished(final int active, final int queued, final long timeout) {
+            final String message = super.describeUnfinished(active, queued, timeout);
+            unfinishedReports.add(message);
+            return message;
+        }
+
+        @Override
+        protected String describeFailures(final int failures) {
+            final String message = super.describeFailures(failures);
+            failureReports.add(message);
+            return message;
         }
 
         @Override

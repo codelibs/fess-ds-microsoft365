@@ -29,6 +29,7 @@ import java.util.function.Consumer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
@@ -77,6 +78,9 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     // Thread pool constants
     /** Default timeout in seconds for executor service shutdown. */
     protected static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 60L;
+
+    /** The parameter name for how long to wait for crawling tasks to finish, in seconds. */
+    protected static final String EXECUTOR_SHUTDOWN_TIMEOUT = "executor_shutdown_timeout";
 
     /**
      * Default constructor.
@@ -149,6 +153,81 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         }
 
         return new ReportingExecutor(actualThreads);
+    }
+
+    /**
+     * Returns how long to wait for submitted crawling tasks to finish, in seconds.
+     *
+     * @param paramMap The data store parameters.
+     * @return the configured wait, or {@link #EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS} when absent or malformed.
+     */
+    protected long getShutdownTimeoutSeconds(final DataStoreParams paramMap) {
+        final String value = paramMap.getAsString(EXECUTOR_SHUTDOWN_TIMEOUT, String.valueOf(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS));
+        try {
+            final long timeout = Long.parseLong(value.trim());
+            if (timeout <= 0L) {
+                logger.warn("{}={} must be positive. Using {}.", EXECUTOR_SHUTDOWN_TIMEOUT, value, EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS);
+                return EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS;
+            }
+            return timeout;
+        } catch (final NumberFormatException e) {
+            logger.warn("Failed to parse {}={}. Using {}.", EXECUTOR_SHUTDOWN_TIMEOUT, value, EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, e);
+            return EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS;
+        }
+    }
+
+    /**
+     * Stops accepting new crawling tasks and waits for the submitted ones, reporting whatever did
+     * not finish and whatever failed. Cancellation stays with the caller's {@code finally} block.
+     *
+     * @param executorService The pool to shut down.
+     * @param paramMap The data store parameters.
+     */
+    protected void shutdownExecutor(final ReportingExecutor executorService, final DataStoreParams paramMap) {
+        executorService.shutdown();
+        final long timeout = getShutdownTimeoutSeconds(paramMap);
+        try {
+            if (!executorService.awaitTermination(timeout, TimeUnit.SECONDS)) {
+                logger.error(describeUnfinished(executorService.getActiveCount(), executorService.getQueue().size(), timeout));
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new InterruptedRuntimeException(e);
+        }
+        final int failures = executorService.getFailureCount();
+        if (failures > 0) {
+            logger.error(describeFailures(failures));
+        }
+    }
+
+    /**
+     * Describes a crawl that ran out of time before its tasks finished.
+     *
+     * <p>Extracted out of {@link #shutdownExecutor} so a test can assert on it: the log line is
+     * the entire production effect of noticing that {@code awaitTermination} returned false, so
+     * without this seam discarding that result again -- the defect being fixed -- would leave the
+     * suite green.
+     *
+     * @param active the tasks still running when the wait expired.
+     * @param queued the tasks that had not started when the wait expired.
+     * @param timeout the wait that expired, in seconds.
+     * @return the message to log.
+     */
+    protected String describeUnfinished(final int active, final int queued, final long timeout) {
+        return active + " crawling task(s) were still running and " + queued + " had not started after " + timeout
+                + " seconds. They are about to be cancelled, and the documents they would have produced are missing from this crawl. Raise "
+                + EXECUTOR_SHUTDOWN_TIMEOUT + " for a large tenant.";
+    }
+
+    /**
+     * Describes how many crawling tasks ended by throwing, giving a flood of per-task errors one
+     * countable number at the end. Extracted for the same reason as {@link #describeUnfinished}.
+     *
+     * @param failures the number of tasks that ended by throwing.
+     * @return the message to log.
+     */
+    protected String describeFailures(final int failures) {
+        return failures + " crawling task(s) failed; their documents are missing from this crawl. See the errors above.";
     }
 
     /**
