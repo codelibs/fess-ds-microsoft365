@@ -867,6 +867,7 @@ no effect at all. The cap is logged at `DEBUG` when it applies.
 | `chat_id` | Specific chat ID to crawl | - | For 1:1 or group chats |
 | `ignore_replies` | Skip reply messages | `false` | Process only root messages |
 | `append_attachment` | Include attachments in content | `true` | Append attachment text to message body |
+| `max_content_length` | Byte cap on the text extracted from **each Teams attachment** | `-1` (defer to Fess's per-MIME-type limit) | Only reached when `append_attachment=true`. An attachment over the cap contributes no text; whether that also fails the message depends on Fess's `crawler.ignore.content.exception`. See [`max_content_length` is applied twice](#max_content_length-is-applied-twice) |
 | `ignore_system_events` | Skip system event messages | `true` | Filter out system notifications |
 | `title_dateformat` | Date format for message titles | `yyyy/MM/dd'T'HH:mm:ss` | Java date pattern |
 | `title_timezone_offset` | Timezone offset for message titles | `Z` | e.g., `Z`, `+09:00`, `-05:00` |
@@ -1056,6 +1057,7 @@ The implementation extracts comprehensive message metadata including:
 | `group_note_crawler` | Enable crawling of group notebooks | `true` | Crawls shared notebooks in Microsoft 365 groups |
 | `include_pattern` | Regex a notebook name must fully match to be crawled | - | Matched against the notebook's display name with `Pattern.matches()` (full match). An invalid regex is logged and ignored |
 | `exclude_pattern` | Regex a notebook name must not fully match to be crawled | - | Matched against the notebook's display name with `Pattern.matches()` (full match). An invalid regex is logged and ignored |
+| `max_content_length` | Byte cap on the text extracted from **each OneNote page** | `-1` (defer to Fess's per-MIME-type limit) | The extraction passes no MIME type or filename, so `-1` always resolves to Fess's *default* content-length limit. See [`max_content_length` is applied twice](#max_content_length-is-applied-twice) |
 | `number_of_threads` | Number of processing threads | `1` | Controls concurrent notebook processing |
 
 If `include_pattern` or `exclude_pattern` is configured and, across all enabled scopes combined,
