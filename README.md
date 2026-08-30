@@ -421,7 +421,6 @@ role=item.roles
 | item.modified | The last time the list item was modified. |
 | item.url | A link for opening the list item in SharePoint. |
 | item.fields | All fields and values from the SharePoint list item as a map |
-| item.attachments | File attachments associated with the list item (if any) |
 | item.roles | Users/groups who can access the list item. |
 | item.site | Site information containing `id`, `name`, and `url` |
 | item.list | List information containing `name`, `description`, `url`, and `template_type` |
@@ -1204,11 +1203,15 @@ The implementation intelligently extracts content from list items:
 - Supports default permission assignment through configuration
 - Inherits site and list-level permissions for items
 
-**Attachment Support:**
-- **List Item Attachments**: Detects and processes file attachments on SharePoint list items
-- **Attachment Metadata**: Extracts attachment metadata including names, URLs, and file information
-- **Content Integration**: Includes attachment information in indexed content for comprehensive search
-- **Secure Access**: Inherits SharePoint permissions for proper access control to attached files
+**Attachments are not supported:**
+- Classic SharePoint list-item attachments are **not** indexed, and there is no script field for
+  them. Microsoft Graph exposes no list-item attachments endpoint in either v1.0 or beta - the
+  `listItem` resource's relationships are `activities`, `analytics`, `documentSetVersions`,
+  `driveItem`, `fields`, `permissions` and `versions`. The documented API is SharePoint REST
+  (`_api/web/lists/.../AttachmentFiles`), which Microsoft requires a **certificate** credential to
+  call app-only; this plugin authenticates with a client secret scoped to Microsoft Graph.
+- Files stored in a **document library** are indexed normally by `oneDriveDataStore` (individual
+  files) and `sharePointDocLibDataStore` (library metadata).
 
 **URL Filtering:**
 - **Include Pattern**: Regex-based filtering to include specific items by title
@@ -1219,7 +1222,6 @@ The implementation intelligently extracts content from list items:
 - **Structured Data Search**: Index and search custom business data stored in SharePoint lists
 - **Task and Issue Tracking**: Search across task lists, issue trackers, and project lists
 - **Document Metadata**: Index document libraries managed as SharePoint lists
-- **List Attachments**: Search file attachments uploaded to SharePoint list items
 - **Custom Applications**: Search data from Power Apps and custom SharePoint solutions
 - **Business Process Content**: Index workflow-related lists and approval items
 

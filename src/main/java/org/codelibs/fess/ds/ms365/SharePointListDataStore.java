@@ -80,8 +80,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     protected static final String LIST_ITEM_CONTENT_TYPE = "content_type";
     /** The field name for list item fields. */
     protected static final String LIST_ITEM_FIELDS = "fields";
-    /** The field name for list item attachments. */
-    protected static final String LIST_ITEM_ATTACHMENTS = "attachments";
     /** The field name for list item roles. */
     protected static final String LIST_ITEM_ROLES = "roles";
 
