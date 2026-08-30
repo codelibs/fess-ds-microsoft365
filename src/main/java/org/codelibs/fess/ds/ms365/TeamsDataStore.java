@@ -430,7 +430,11 @@ public class TeamsDataStore extends Microsoft365DataStore {
                             g.getDisplayName(), IGNORE_ERROR, e);
                 }
             }
-        } else if (teamId == null) {
+        } else {
+            // teamId is null (absent) or blank (present but empty, e.g. team_id=): both mean "no
+            // specific team was requested", so both fall through to the all-teams path. Gating this
+            // on `teamId == null` alone left team_id="" matching neither branch above nor here,
+            // crawling zero teams while still reporting success.
             if (logger.isDebugEnabled()) {
                 logger.debug("Processing messages for all teams with visibility and exclusion filters");
             }

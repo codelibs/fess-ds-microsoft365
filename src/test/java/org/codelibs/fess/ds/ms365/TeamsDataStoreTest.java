@@ -20,6 +20,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import org.junit.jupiter.api.Test;
@@ -1119,6 +1121,39 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
 
         dataStore.processTeamMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
                 client);
+    }
+
+    /**
+     * Defect: {@code team_id=} (present but empty) matched neither the specific-team branch
+     * ({@code StringUtil.isNotBlank(teamId)}) nor the all-teams branch ({@code teamId == null}), so
+     * it fell through both and crawled zero teams while the job still reported success.
+     * {@link DataStoreParams#getAsString} returns {@code ""}, not {@code null}, for a parameter
+     * that is present but empty, so a bare {@code team_id=} in the data config reaches this.
+     * Pins that an empty team_id now behaves exactly like an absent one: the all-teams path runs.
+     */
+    @Test
+    public void test_processTeamMessages_emptyTeamIdCrawlsAllTeamsLikeAbsent() {
+        final Group group = new Group();
+        group.setId("team-1");
+        group.setDisplayName("Team One");
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        doAnswer(invocation -> {
+            final Consumer<Group> consumer = invocation.getArgument(1);
+            consumer.accept(group);
+            return null;
+        }).when(client).getTeams(any(), any());
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put("team_id", "");
+        configMap.put("exclude_team_ids", new String[0]);
+        configMap.put("include_visibility", new String[0]);
+
+        dataStore.processTeamMessages(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), configMap, null,
+                client);
+
+        verify(client).getTeams(any(), any());
+        verify(client, never()).getGroupById(any());
     }
 
     /**

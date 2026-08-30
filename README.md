@@ -860,7 +860,7 @@ no effect at all. The cap is logged at `DEBUG` when it applies.
 
 | Parameter | Description | Default | Notes |
 |-----------|-------------|---------|-------|
-| `team_id` | Specific team ID to crawl | All teams | Microsoft 365 group ID. **Omit the line entirely** to crawl all teams. Writing it with an empty value (`team_id=`) is not the same thing: the all-teams branch is only taken when the parameter is absent, so an empty value crawls **no** teams at all and reports success |
+| `team_id` | Specific team ID to crawl | All teams | Microsoft 365 group ID. Omit the line, or leave it empty (`team_id=`), to crawl all teams - both are treated the same |
 | `exclude_team_ids` | Comma-separated team IDs to exclude | - | Multiple teams to skip |
 | `include_visibility` | Team visibility levels to include | All | Comma-separated: `public`, `private` |
 | `channel_id` | Specific channel ID to crawl | All channels | Within specified team |
