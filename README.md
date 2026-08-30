@@ -1209,6 +1209,24 @@ of the numeric ID.
 
 **Content Processing**: Pages are processed with canvas layout expansion to extract rich content from web parts, including text formatting and embedded data when available through the Microsoft Graph API.
 
+#### Re-crawling after upgrading to standard web-part extraction
+
+Standard web parts (everything except plain text web parts - Quick Links, Hero, Events, News,
+and so on) previously contributed **nothing** to `page.content`: the extractor received a typed
+`WebPartData` object it could not read, so it appended no characters. It now extracts the web
+part's `title`, `description` and SharePoint's own indexable projection
+(`serverProcessedContent.searchablePlainTexts`, `htmlStrings` and `links`), plus any text in the
+web part's `additionalData` map.
+
+No field is renamed or removed and `page.content` never shrinks, so existing scripts and index
+mappings keep working unchanged. But **existing indexes will not contain the new text until the
+pages are re-crawled**, and once re-crawled those documents have longer content and therefore
+different relevance scores. Re-crawl the SharePoint Pages data store after upgrading if you rely
+on web-part text being searchable.
+
+The web part's free-form `properties` object is still not read: Microsoft Graph exposes it as an
+untyped node with no published schema.
+
 ## 🔧 Development
 
 ### Tech Stack

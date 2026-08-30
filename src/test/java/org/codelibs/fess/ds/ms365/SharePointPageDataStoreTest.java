@@ -40,12 +40,15 @@ import com.microsoft.graph.models.BaseSitePage;
 import com.microsoft.graph.models.CanvasLayout;
 import com.microsoft.graph.models.HorizontalSection;
 import com.microsoft.graph.models.HorizontalSectionColumn;
+import com.microsoft.graph.models.MetaDataKeyStringPair;
+import com.microsoft.graph.models.ServerProcessedContent;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.models.SitePage;
 import com.microsoft.graph.models.StandardWebPart;
 import com.microsoft.graph.models.TextWebPart;
 import com.microsoft.graph.models.VerticalSection;
 import com.microsoft.graph.models.WebPart;
+import com.microsoft.graph.models.WebPartData;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
 
 public class SharePointPageDataStoreTest extends UnitDsTestCase {
@@ -246,7 +249,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
 
         assertTrue(content.contains("Test Title"));
         assertTrue(content.contains("Test text content"));
-        // assertTrue(content.contains("Standard web part data")); // Data not set due to type mismatch
+        assertTrue("StandardWebPart text must reach page content, got: " + content, content.contains("Standard web part data"));
     }
 
     @Test
@@ -267,19 +270,89 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
     }
 
     @Test
-    public void test_extractWebPartContent_standardWebPart() {
+    public void test_extractWebPartContent_standardWebPart_nullData() {
         final StringBuilder content = new StringBuilder();
         final StandardWebPart stdPart = new StandardWebPart();
-        final Map<String, Object> data = new HashMap<>();
-        data.put("title", "Standard Web Part Title");
-        data.put("description", "This is a description");
-        // stdPart.setData(data); // WebPartData type mismatch - skip for test
 
         dataStore.extractWebPartContent(stdPart, content);
 
-        // Test passes since getData() returns null and no content is extracted
+        assertTrue(content.toString().isEmpty());
+    }
+
+    @Test
+    public void test_extractWebPartContent_standardWebPart_typedFields() {
+        final StringBuilder content = new StringBuilder();
+        final StandardWebPart stdPart = new StandardWebPart();
+
+        final WebPartData data = new WebPartData();
+        data.setTitle("Standard Web Part Title");
+        data.setDescription("This is a description");
+
+        final ServerProcessedContent processedContent = new ServerProcessedContent();
+
+        final MetaDataKeyStringPair plainText = new MetaDataKeyStringPair();
+        plainText.setKey("title");
+        plainText.setValue("Searchable plain text body");
+        processedContent.setSearchablePlainTexts(List.of(plainText));
+
+        final MetaDataKeyStringPair htmlString = new MetaDataKeyStringPair();
+        htmlString.setKey("content");
+        htmlString.setValue("<p>Html string <strong>body</strong></p>");
+        processedContent.setHtmlStrings(List.of(htmlString));
+
+        final MetaDataKeyStringPair link = new MetaDataKeyStringPair();
+        link.setKey("link");
+        link.setValue("https://contoso.sharepoint.com/sites/marketing");
+        processedContent.setLinks(List.of(link));
+
+        data.setServerProcessedContent(processedContent);
+        stdPart.setData(data);
+
+        dataStore.extractWebPartContent(stdPart, content);
+
         final String result = content.toString();
-        assertTrue(result.isEmpty());
+        assertTrue("expected the title, got: " + result, result.contains("Standard Web Part Title"));
+        assertTrue("expected the description, got: " + result, result.contains("This is a description"));
+        assertTrue("expected searchablePlainTexts, got: " + result, result.contains("Searchable plain text body"));
+        assertTrue("expected htmlStrings text, got: " + result, result.contains("Html string"));
+        assertTrue("expected htmlStrings text, got: " + result, result.contains("body"));
+        assertTrue("expected links, got: " + result, result.contains("https://contoso.sharepoint.com/sites/marketing"));
+        assertFalse("html markup must be stripped, got: " + result, result.contains("<strong>"));
+        assertFalse("html markup must be stripped, got: " + result, result.contains("<p>"));
+    }
+
+    @Test
+    public void test_extractWebPartContent_standardWebPart_additionalData() {
+        final StringBuilder content = new StringBuilder();
+        final StandardWebPart stdPart = new StandardWebPart();
+
+        final WebPartData data = new WebPartData();
+        data.getAdditionalData().put("caption", "Additional data caption text");
+        data.getAdditionalData().put("instanceId", "550e8400-e29b-41d4-a716-446655440000");
+        stdPart.setData(data);
+
+        dataStore.extractWebPartContent(stdPart, content);
+
+        final String result = content.toString();
+        assertTrue("expected the additionalData caption, got: " + result, result.contains("Additional data caption text"));
+        assertFalse("a GUID must still be filtered out by isGuidOrId, got: " + result,
+                result.contains("550e8400-e29b-41d4-a716-446655440000"));
+    }
+
+    @Test
+    public void test_extractWebPartContent_standardWebPart_shortTypedTitleIsKept() {
+        // The typed sources are explicitly named fields, so the >5-character and isGuidOrId
+        // heuristics that extractDataFromObject applies to the untyped bag must NOT apply here:
+        // a three-letter web-part title is real content.
+        final StringBuilder content = new StringBuilder();
+        final StandardWebPart stdPart = new StandardWebPart();
+        final WebPartData data = new WebPartData();
+        data.setTitle("FAQ");
+        stdPart.setData(data);
+
+        dataStore.extractWebPartContent(stdPart, content);
+
+        assertTrue("a short typed title must survive, got: " + content, content.toString().contains("FAQ"));
     }
 
     @Test
@@ -469,9 +542,9 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
 
         // Add standard web part
         final StandardWebPart stdPart = new StandardWebPart();
-        final Map<String, Object> data = new HashMap<>();
-        data.put("content", "Standard web part data");
-        // stdPart.setData(data); // WebPartData type mismatch - skip for test
+        final WebPartData data = new WebPartData();
+        data.setTitle("Standard web part data");
+        stdPart.setData(data);
         webParts.add(stdPart);
 
         column.setWebparts(webParts);

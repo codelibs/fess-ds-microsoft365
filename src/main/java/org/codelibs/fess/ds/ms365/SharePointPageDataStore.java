@@ -44,12 +44,15 @@ import com.microsoft.graph.models.BaseSitePage;
 import com.microsoft.graph.models.CanvasLayout;
 import com.microsoft.graph.models.HorizontalSection;
 import com.microsoft.graph.models.HorizontalSectionColumn;
+import com.microsoft.graph.models.MetaDataKeyStringPair;
+import com.microsoft.graph.models.ServerProcessedContent;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.models.SitePage;
 import com.microsoft.graph.models.StandardWebPart;
 import com.microsoft.graph.models.TextWebPart;
 import com.microsoft.graph.models.VerticalSection;
 import com.microsoft.graph.models.WebPart;
+import com.microsoft.graph.models.WebPartData;
 
 /**
  * SharePointPageDataStore crawls SharePoint pages (including news, wiki, and article pages).
@@ -505,9 +508,21 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                 }
             }
         } else if (webpart instanceof final StandardWebPart stdPart) {
-            if (stdPart.getData() != null) {
+            final WebPartData data = stdPart.getData();
+            if (data != null) {
                 final int beforeLength = content.length();
-                extractDataFromObject(stdPart.getData(), content);
+                appendWebPartText(content, data.getTitle());
+                appendWebPartText(content, data.getDescription());
+                final ServerProcessedContent processedContent = data.getServerProcessedContent();
+                if (processedContent != null) {
+                    appendMetaDataPairs(content, processedContent.getSearchablePlainTexts());
+                    appendMetaDataPairs(content, processedContent.getHtmlStrings());
+                    appendMetaDataPairs(content, processedContent.getLinks());
+                }
+                // getAdditionalData() is a Map<String, Object>, the one shape extractDataFromObject
+                // can walk. getProperties() is deliberately not read: it is a Kiota UntypedNode with
+                // no typed model, and its runtime shape cannot be validated without a live tenant.
+                extractDataFromObject(data.getAdditionalData(), content);
                 if (logger.isDebugEnabled()) {
                     logger.debug("Extracted from StandardWebPart: {} characters", content.length() - beforeLength);
                 }
@@ -515,6 +530,62 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         } else if (logger.isDebugEnabled()) {
             logger.debug("Unsupported web part type: {}", webpart.getClass().getSimpleName());
         }
+    }
+
+    /**
+     * Appends a typed web-part string to the extracted content after stripping markup.
+     *
+     * <p>Unlike {@link #extractDataFromObject(Object, StringBuilder)}, no length or
+     * {@link #isGuidOrId(String)} heuristic is applied: these values come from explicitly named,
+     * typed fields, so a short value such as a three-letter web-part title is real content.</p>
+     *
+     * @param content StringBuilder to append extracted content to
+     * @param value the raw value, may be null or blank
+     */
+    protected void appendWebPartText(final StringBuilder content, final String value) {
+        if (StringUtil.isBlank(value)) {
+            return;
+        }
+        final String text = stripWebPartMarkup(value);
+        if (!text.isEmpty()) {
+            content.append(text).append(' ');
+        }
+    }
+
+    /**
+     * Appends the values of a serverProcessedContent key/value list to the extracted content.
+     *
+     * @param content StringBuilder to append extracted content to
+     * @param pairs the key/value pairs, may be null
+     */
+    protected void appendMetaDataPairs(final StringBuilder content, final List<MetaDataKeyStringPair> pairs) {
+        if (pairs == null) {
+            return;
+        }
+        for (final MetaDataKeyStringPair pair : pairs) {
+            if (pair != null) {
+                appendWebPartText(content, pair.getValue());
+            }
+        }
+    }
+
+    /**
+     * Decodes HTML entities, removes HTML tags and normalizes whitespace.
+     *
+     * <p>Identical to the cleanup {@link #extractDataFromObject(Object, StringBuilder)} applies,
+     * so typed and untyped web-part text are normalized the same way.</p>
+     *
+     * @param value the raw value, must not be null
+     * @return the cleaned text
+     */
+    protected String stripWebPartMarkup(final String value) {
+        return value.replace("&nbsp;", " ")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&amp;", "&")
+                .replaceAll("<[^>]+>", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     /**
