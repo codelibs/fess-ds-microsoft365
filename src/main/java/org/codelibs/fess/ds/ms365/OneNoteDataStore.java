@@ -26,6 +26,7 @@ import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codelibs.core.lang.StringUtil;
 import org.codelibs.fess.Constants;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
@@ -319,9 +320,13 @@ public class OneNoteDataStore extends Microsoft365DataStore {
                     ownerId, roles.size());
         }
 
+        // declared outside the try so the catch arms can key the failure-URL row by it: the row
+        // is looked up with setUrl_Equal, so two notebooks sharing a display name would otherwise
+        // collapse into one row and hide a failure.
+        String url = null;
         try {
             crawlerStatsHelper.begin(statsKey);
-            final String url = notebook.getLinks().getOneNoteWebUrl().getHref();
+            url = notebook.getLinks().getOneNoteWebUrl().getHref();
             logger.info("Crawling notebook URL: {} (Name: {})", url, notebook.getDisplayName());
 
             if (logger.isDebugEnabled()) {
@@ -392,14 +397,41 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         } catch (final CrawlingAccessException e) {
             logger.warn("Crawling Access Exception for notebook: {} (ID: {}) - Data: {}", notebook.getDisplayName(), notebook.getId(),
                     dataMap, e);
-            handleCrawlingException(dataConfig, crawlerStatsHelper, statsKey, notebook.getDisplayName(), e);
+            handleCrawlingException(dataConfig, crawlerStatsHelper, statsKey, failureUrlOf(url, notebook), e);
         } catch (final Throwable t) {
             logger.warn("Processing exception for notebook: {} (ID: {}) - Data: {}", notebook.getDisplayName(), notebook.getId(), dataMap,
                     t);
-            handleCrawlingThrowable(dataConfig, crawlerStatsHelper, statsKey, notebook.getDisplayName(), t);
+            handleCrawlingThrowable(dataConfig, crawlerStatsHelper, statsKey, failureUrlOf(url, notebook), t);
         } finally {
             crawlerStatsHelper.done(statsKey);
         }
+    }
+
+    /**
+     * Chooses the value a failed notebook is recorded under in the Failure URL screen.
+     *
+     * <p>{@code FailureUrlService.store} looks the row up with {@code setUrl_Equal}, so this value
+     * is the row key. The notebook's own web URL is the only one of the three that is unique per
+     * notebook; the id is unique too but is not a URL an operator can follow, and the display name
+     * is not unique at all -- two notebooks that share one would collapse into a single row and an
+     * operator would see one failure where there were two.</p>
+     *
+     * <p>Package-private and static on purpose: it is pure, it is not part of the subclassing
+     * surface, and the tests in this package call it directly.</p>
+     *
+     * @param url the notebook's web URL, or {@code null}/blank when the failure happened before it
+     *            was read
+     * @param notebook the notebook being processed
+     * @return the web URL when there is one, otherwise the notebook id, otherwise its display name
+     */
+    static String failureUrlOf(final String url, final Notebook notebook) {
+        if (StringUtil.isNotBlank(url)) {
+            return url;
+        }
+        if (StringUtil.isNotBlank(notebook.getId())) {
+            return notebook.getId();
+        }
+        return notebook.getDisplayName();
     }
 
     /**

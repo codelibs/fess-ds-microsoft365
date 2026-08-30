@@ -22,6 +22,7 @@ import java.util.List;
 import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.opensearch.config.exentity.CrawlingConfig;
 import org.codelibs.fess.opensearch.config.exentity.FailureUrl;
+import org.codelibs.fess.util.ComponentUtil;
 
 /**
  * A {@link FailureUrlService} that records what it was handed instead of writing to OpenSearch.
@@ -62,6 +63,26 @@ public class CapturingFailureUrlService extends FailureUrlService {
     public FailureUrl store(final CrawlingConfig crawlingConfig, final String errorName, final String url, final Throwable e) {
         storedFailures.add(new StoredFailure(crawlingConfig, errorName, url, e));
         return null;
+    }
+
+    /**
+     * Resolves the stub the container holds and forgets whatever earlier tests recorded on it.
+     *
+     * <p>Asserting the type here is deliberate: it pins that {@code test_app.xml} really is what
+     * satisfies {@code ComponentUtil.getComponent(FailureUrlService.class)} inside the failure
+     * handlers. Without that registration the lookup throws and the handlers cannot run at all,
+     * which is how they came to have no executing coverage.</p>
+     *
+     * @return the container's stub, with no recorded calls.
+     */
+    public static CapturingFailureUrlService empty() {
+        final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
+        if (!(failureUrlService instanceof final CapturingFailureUrlService capturing)) {
+            throw new IllegalStateException("test_app.xml must resolve FailureUrlService to " + CapturingFailureUrlService.class.getName()
+                    + ", got " + failureUrlService.getClass().getName());
+        }
+        capturing.clear();
+        return capturing;
     }
 
     /**

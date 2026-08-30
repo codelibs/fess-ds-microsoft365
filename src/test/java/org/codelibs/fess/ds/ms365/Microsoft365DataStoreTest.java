@@ -35,7 +35,6 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
 import org.codelibs.core.exception.InterruptedRuntimeException;
-import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
@@ -703,25 +702,6 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
     }
 
     /**
-     * Returns the {@link CapturingFailureUrlService} the container resolves, emptied.
-     *
-     * <p>Asserting the type here is deliberate: it pins that {@code test_app.xml} really is what
-     * satisfies {@code ComponentUtil.getComponent(FailureUrlService.class)} inside the helpers.
-     * Without that registration the lookup throws and the helper bodies below could not run at
-     * all, which is how they came to have no executing coverage.</p>
-     *
-     * @return the stub, with no recorded calls.
-     */
-    private CapturingFailureUrlService emptyCapturingFailureUrlService() {
-        final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-        assertTrue("test_app.xml must resolve FailureUrlService to the capturing stub, got " + failureUrlService.getClass().getName(),
-                failureUrlService instanceof CapturingFailureUrlService);
-        final CapturingFailureUrlService capturing = (CapturingFailureUrlService) failureUrlService;
-        capturing.clear();
-        return capturing;
-    }
-
-    /**
      * The failure-URL row is keyed by the URL argument and stamped with an error name taken from
      * the UNWRAPPED cause, not from the {@link MultipleCrawlingAccessException} wrapper. Recording
      * the wrapper would make every row in the Failure URL admin screen read
@@ -729,7 +709,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
      */
     @Test
     public void test_handleCrawlingException_storesTheUnwrappedCauseAgainstTheFailureUrl() {
-        final CapturingFailureUrlService failureUrlService = emptyCapturingFailureUrlService();
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
         final RecordingCrawlerStatsHelper crawlerStatsHelper = new RecordingCrawlerStatsHelper();
         final DataConfig dataConfig = new DataConfig();
         final StatsKeyObject statsKey = new StatsKeyObject("item-1");
@@ -760,7 +740,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
      */
     @Test
     public void test_handleCrawlingThrowable_storesTheThrowableUnderItsOwnClassName() {
-        final CapturingFailureUrlService failureUrlService = emptyCapturingFailureUrlService();
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
         final RecordingCrawlerStatsHelper crawlerStatsHelper = new RecordingCrawlerStatsHelper();
         final DataConfig dataConfig = new DataConfig();
         final StatsKeyObject statsKey = new StatsKeyObject("item-2");
@@ -791,7 +771,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
      */
     @Test
     public void test_handleCrawlingException_withNothingToUnwrapStoresTheExceptionItself() {
-        final CapturingFailureUrlService failureUrlService = emptyCapturingFailureUrlService();
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
         final RecordingCrawlerStatsHelper crawlerStatsHelper = new RecordingCrawlerStatsHelper();
         final CrawlingAccessException e = new CrawlingAccessException("plain");
 
