@@ -728,7 +728,9 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             logger.warn("Crawling Access Exception at : {}", dataMap, e);
             handleCrawlingException(dataConfig, crawlerStatsHelper, statsKey, item.getWebUrl(), e);
         } catch (final Throwable t) {
-            logger.warn("Crawling Access Exception at : {}", dataMap, t);
+            // deliberately not the CrawlingAccessException arm's text: this was the only one of
+            // the six data stores whose two arms could not be told apart in the crawler log.
+            logger.warn("Processing exception at : {}", dataMap, t);
             handleCrawlingThrowable(dataConfig, crawlerStatsHelper, statsKey, item.getWebUrl(), t);
         } finally {
             crawlerStatsHelper.done(statsKey);

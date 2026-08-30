@@ -18,14 +18,26 @@ package org.codelibs.fess.ds.ms365;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
+import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.CrawlerStatsHelper;
+import org.codelibs.fess.helper.SystemHelper;
+import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.Drive;
@@ -377,6 +389,114 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         }, paramMap, scriptMap, defaultDataMap);
     }
     */
+
+    /**
+     * {@code processDriveItem} logged "Crawling Access Exception at : {}" from BOTH catch arms,
+     * which made OneDrive the only one of the six data stores whose two failure paths could not be
+     * told apart in the crawler log. Pins that the texts differ and that the {@code Throwable} arm
+     * names what it actually caught.
+     *
+     * <p>Both stay at {@code WARN} on purpose: {@code ERROR} from {@code org.codelibs} is wired to
+     * operator notification in this project, and a single item failing is not one.</p>
+     */
+    @Test
+    public void test_processDriveItem_theTwoCatchArmsAreDistinguishableInTheLog() {
+        registerDriveItemProcessingComponents();
+
+        final List<LogEvent> accessArm = captureDataStoreWarnings(() -> processFailingDriveItem(new CrawlingAccessException("denied")));
+        final List<LogEvent> throwableArm = captureDataStoreWarnings(() -> processFailingDriveItem(new IllegalStateException("boom")));
+
+        assertEquals("the CrawlingAccessException arm must report once, got " + messagesOf(accessArm), 1, accessArm.size());
+        assertEquals("the Throwable arm must report once, got " + messagesOf(throwableArm), 1, throwableArm.size());
+
+        final String accessMessage = accessArm.get(0).getMessage().getFormattedMessage();
+        final String throwableMessage = throwableArm.get(0).getMessage().getFormattedMessage();
+        assertFalse("the two arms must not be indistinguishable in the log, both said: " + accessMessage,
+                accessMessage.equals(throwableMessage));
+        assertTrue(accessMessage, accessMessage.startsWith("Crawling Access Exception at : "));
+        assertTrue(throwableMessage, throwableMessage.startsWith("Processing exception at : "));
+
+        assertEquals("a per-item failure must not become an operator notification", Level.WARN, accessArm.get(0).getLevel());
+        assertEquals("a per-item failure must not become an operator notification", Level.WARN, throwableArm.get(0).getLevel());
+    }
+
+    /**
+     * {@code processDriveItem} resolves the stats helper from the container, which in turn needs
+     * the system helper; the failure paths resolve {@code FailureUrlService}, which
+     * {@code test_app.xml} answers with {@link CapturingFailureUrlService}.
+     */
+    private static void registerDriveItemProcessingComponents() {
+        CapturingFailureUrlService.empty();
+        ComponentUtil.register(new SystemHelper(), "systemHelper");
+        final CrawlerStatsHelper crawlerStatsHelper = new CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+    }
+
+    /**
+     * Runs one drive item through {@code processDriveItem} with {@code getUrl} rigged to fail, so
+     * both catch arms are entered at exactly the same point.
+     *
+     * @param failure the failure {@code getUrl} raises.
+     */
+    private void processFailingDriveItem(final RuntimeException failure) {
+        final OneDriveDataStore failingDataStore = new OneDriveDataStore() {
+            @Override
+            protected String getUrl(final Map<String, Object> configMap, final DataStoreParams paramMap, final DriveItem item) {
+                throw failure;
+            }
+        };
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.IGNORE_FOLDER, Boolean.FALSE);
+        configMap.put(OneDriveDataStore.SUPPORTED_MIMETYPES, new String[] { ".*" });
+
+        final DriveItem item = new DriveItem();
+        item.setId("item-1");
+        item.setName("item-1.txt");
+        item.setWebUrl("https://example.com/item-1");
+
+        failingDataStore.processDriveItem(new DataConfig(), null, configMap, new DataStoreParams(), Collections.emptyMap(), new HashMap<>(),
+                null, "drive-1", item, Collections.emptyList());
+    }
+
+    /**
+     * Runs {@code action}, returning every record {@link OneDriveDataStore} logged at {@code WARN}
+     * or worse while it ran, in order.
+     *
+     * @param action the code whose logging should be captured.
+     * @return the captured records.
+     */
+    private static List<LogEvent> captureDataStoreWarnings(final Runnable action) {
+        final List<LogEvent> events = Collections.synchronizedList(new ArrayList<>());
+        final org.apache.logging.log4j.core.Logger coreLogger =
+                (org.apache.logging.log4j.core.Logger) LogManager.getLogger(OneDriveDataStore.class);
+        final AbstractAppender appender = new AbstractAppender("test-ms365-onedrive-capture", null, null, false, Property.EMPTY_ARRAY) {
+            @Override
+            public void append(final LogEvent event) {
+                if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                    events.add(event.toImmutable());
+                }
+            }
+        };
+        appender.start();
+        coreLogger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            coreLogger.removeAppender(appender);
+            appender.stop();
+        }
+        return events;
+    }
+
+    /**
+     * @param events the captured records.
+     * @return their formatted messages, for an assertion failure that can be read.
+     */
+    private static List<String> messagesOf(final List<LogEvent> events) {
+        return events.stream().map(event -> event.getMessage().getFormattedMessage()).collect(Collectors.toList());
+    }
 
     static abstract class TestCallback implements IndexUpdateCallback {
         private long documentSize = 0;
