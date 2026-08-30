@@ -35,11 +35,15 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
 import org.codelibs.core.exception.InterruptedRuntimeException;
+import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.CrawlerStatsHelper;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -696,6 +700,133 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
 
         final Throwable withoutCause = new CrawlingAccessException("outer");
         assertEquals("org.codelibs.fess.crawler.exception.CrawlingAccessException", Microsoft365DataStore.failureErrorName(withoutCause));
+    }
+
+    /**
+     * Returns the {@link CapturingFailureUrlService} the container resolves, emptied.
+     *
+     * <p>Asserting the type here is deliberate: it pins that {@code test_app.xml} really is what
+     * satisfies {@code ComponentUtil.getComponent(FailureUrlService.class)} inside the helpers.
+     * Without that registration the lookup throws and the helper bodies below could not run at
+     * all, which is how they came to have no executing coverage.</p>
+     *
+     * @return the stub, with no recorded calls.
+     */
+    private CapturingFailureUrlService emptyCapturingFailureUrlService() {
+        final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
+        assertTrue("test_app.xml must resolve FailureUrlService to the capturing stub, got " + failureUrlService.getClass().getName(),
+                failureUrlService instanceof CapturingFailureUrlService);
+        final CapturingFailureUrlService capturing = (CapturingFailureUrlService) failureUrlService;
+        capturing.clear();
+        return capturing;
+    }
+
+    /**
+     * The failure-URL row is keyed by the URL argument and stamped with an error name taken from
+     * the UNWRAPPED cause, not from the {@link MultipleCrawlingAccessException} wrapper. Recording
+     * the wrapper would make every row in the Failure URL admin screen read
+     * "MultipleCrawlingAccessException" and hide the real reason.
+     */
+    @Test
+    public void test_handleCrawlingException_storesTheUnwrappedCauseAgainstTheFailureUrl() {
+        final CapturingFailureUrlService failureUrlService = emptyCapturingFailureUrlService();
+        final RecordingCrawlerStatsHelper crawlerStatsHelper = new RecordingCrawlerStatsHelper();
+        final DataConfig dataConfig = new DataConfig();
+        final StatsKeyObject statsKey = new StatsKeyObject("item-1");
+
+        final Throwable earlierCause = new IllegalStateException("earlier");
+        final Throwable lastCause = new CrawlingAccessException("last", new java.net.SocketTimeoutException("inner"));
+        final MultipleCrawlingAccessException e = new MultipleCrawlingAccessException("multi", new Throwable[] { earlierCause, lastCause });
+
+        dataStore.handleCrawlingException(dataConfig, crawlerStatsHelper, statsKey, "https://example.com/item-1", e);
+
+        final List<CapturingFailureUrlService.StoredFailure> stored = failureUrlService.getStoredFailures();
+        assertEquals("exactly one failure row must be written", 1, stored.size());
+        final CapturingFailureUrlService.StoredFailure failure = stored.get(0);
+        assertSame("the row must be recorded against the crawl's own data config", dataConfig, failure.crawlingConfig());
+        assertEquals("the row key must be the URL argument the caller passed", "https://example.com/item-1", failure.url());
+        assertEquals("the error name must come from the unwrapped cause", "java.net.SocketTimeoutException", failure.errorName());
+        assertSame("the stored throwable must be the unwrapped last cause, not the wrapper", lastCause, failure.throwable());
+
+        assertEquals("the item must be counted as an access exception", List.of(StatsAction.ACCESS_EXCEPTION),
+                crawlerStatsHelper.getRecordedActions());
+        assertEquals("the stats must be recorded against the item's own key", List.of(statsKey), crawlerStatsHelper.getRecordedKeys());
+    }
+
+    /**
+     * The other arm. A throwable that is not a {@link CrawlingAccessException} is recorded under
+     * its OWN class name and counted as {@link StatsAction#EXCEPTION}: swapping the two arms'
+     * rules would be invisible in the crawler log but would relabel every row.
+     */
+    @Test
+    public void test_handleCrawlingThrowable_storesTheThrowableUnderItsOwnClassName() {
+        final CapturingFailureUrlService failureUrlService = emptyCapturingFailureUrlService();
+        final RecordingCrawlerStatsHelper crawlerStatsHelper = new RecordingCrawlerStatsHelper();
+        final DataConfig dataConfig = new DataConfig();
+        final StatsKeyObject statsKey = new StatsKeyObject("item-2");
+
+        // a cause is present on purpose: the CrawlingAccessException arm would report the cause,
+        // this arm must report the throwable itself.
+        final Throwable t = new IllegalStateException("boom", new java.net.SocketTimeoutException("inner"));
+
+        dataStore.handleCrawlingThrowable(dataConfig, crawlerStatsHelper, statsKey, "https://example.com/item-2", t);
+
+        final List<CapturingFailureUrlService.StoredFailure> stored = failureUrlService.getStoredFailures();
+        assertEquals("exactly one failure row must be written", 1, stored.size());
+        final CapturingFailureUrlService.StoredFailure failure = stored.get(0);
+        assertSame("the row must be recorded against the crawl's own data config", dataConfig, failure.crawlingConfig());
+        assertEquals("the row key must be the URL argument the caller passed", "https://example.com/item-2", failure.url());
+        assertEquals("this arm must record the throwable's own class name, not its cause's", "java.lang.IllegalStateException",
+                failure.errorName());
+        assertSame("the stored throwable must be the throwable that was caught", t, failure.throwable());
+
+        assertEquals("the item must be counted as a plain exception", List.of(StatsAction.EXCEPTION),
+                crawlerStatsHelper.getRecordedActions());
+        assertEquals("the stats must be recorded against the item's own key", List.of(statsKey), crawlerStatsHelper.getRecordedKeys());
+    }
+
+    /**
+     * A {@link CrawlingAccessException} that is not a {@link MultipleCrawlingAccessException} has
+     * nothing to unwrap, so the exception itself is stored.
+     */
+    @Test
+    public void test_handleCrawlingException_withNothingToUnwrapStoresTheExceptionItself() {
+        final CapturingFailureUrlService failureUrlService = emptyCapturingFailureUrlService();
+        final RecordingCrawlerStatsHelper crawlerStatsHelper = new RecordingCrawlerStatsHelper();
+        final CrawlingAccessException e = new CrawlingAccessException("plain");
+
+        dataStore.handleCrawlingException(new DataConfig(), crawlerStatsHelper, new StatsKeyObject("item-3"), "https://example.com/item-3",
+                e);
+
+        final List<CapturingFailureUrlService.StoredFailure> stored = failureUrlService.getStoredFailures();
+        assertEquals("exactly one failure row must be written", 1, stored.size());
+        assertSame(e, stored.get(0).throwable());
+        assertEquals("org.codelibs.fess.crawler.exception.CrawlingAccessException", stored.get(0).errorName());
+        assertEquals(List.of(StatsAction.ACCESS_EXCEPTION), crawlerStatsHelper.getRecordedActions());
+    }
+
+    /**
+     * A {@link CrawlerStatsHelper} that records what it was asked to count instead of counting.
+     */
+    static class RecordingCrawlerStatsHelper extends CrawlerStatsHelper {
+
+        private final List<Object> recordedKeys = Collections.synchronizedList(new ArrayList<>());
+
+        private final List<StatsAction> recordedActions = Collections.synchronizedList(new ArrayList<>());
+
+        @Override
+        public void record(final Object keyObj, final StatsAction action) {
+            recordedKeys.add(keyObj);
+            recordedActions.add(action);
+        }
+
+        List<Object> getRecordedKeys() {
+            return new ArrayList<>(recordedKeys);
+        }
+
+        List<StatsAction> getRecordedActions() {
+            return new ArrayList<>(recordedActions);
+        }
     }
 
     /**

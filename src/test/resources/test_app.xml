@@ -5,4 +5,9 @@
 	<include path="convention.xml" />
 	<include path="lastaflute.xml" />
 	<component name="fileTypeHelper" class="org.codelibs.fess.helper.FileTypeHelper"></component>
+	<!-- The real FailureUrlService needs a behavior bound to a live OpenSearch, so nothing
+	     resolved FailureUrlService here and the failure-handling helpers on
+	     Microsoft365DataStore executed in no test. The stub records its arguments instead of
+	     writing; autoBinding="none" keeps the container from trying to inject the behavior. -->
+	<component name="failureUrlService" class="org.codelibs.fess.ds.ms365.CapturingFailureUrlService" autoBinding="none"></component>
 </components>
