@@ -834,7 +834,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
             resultMap.put(MESSAGE, messageMap);
             resultAppender.accept(resultMap);
 
-            messageMap.put(MESSAGE_ROLES, buildMessageRoles(paramMap, permissions));
+            messageMap.put(MESSAGE_ROLES, buildMessageRoles(paramMap, defaultDataMap, permissions));
 
             crawlerStatsHelper.record(statsKey, StatsAction.PREPARED);
 
@@ -883,20 +883,23 @@ public class TeamsDataStore extends Microsoft365DataStore {
 
     /**
      * Builds the role list for one indexed message: the roles its container contributed, plus the
-     * configured {@code default_permissions}, de-duplicated.
+     * configured {@code default_permissions}, plus the data config's own Permissions field carried
+     * in {@code defaultDataMap}, de-duplicated.
      *
      * <p>The returned list is new. The caller's list is never modified -- a channel's membership is
      * resolved once and shared across every message in that channel, so appending to it here would
      * accumulate one copy of {@code default_permissions} per message.
      *
      * @param paramMap The data store parameters.
+     * @param defaultDataMap The data store's default data map, holding the data config's Permissions field.
      * @param permissions The roles contributed by the message's channel or chat.
      * @return a new list of roles for this document.
      */
-    protected List<String> buildMessageRoles(final DataStoreParams paramMap, final List<String> permissions) {
+    protected List<String> buildMessageRoles(final DataStoreParams paramMap, final Map<String, Object> defaultDataMap,
+            final List<String> permissions) {
         final List<String> roles = new ArrayList<>(permissions);
         roles.addAll(getDefaultPermissions(paramMap));
-        return roles.stream().distinct().collect(Collectors.toList());
+        return mergeDefaultRoles(roles, defaultDataMap).stream().distinct().collect(Collectors.toList());
     }
 
     /**
