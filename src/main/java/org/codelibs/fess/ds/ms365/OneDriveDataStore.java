@@ -358,6 +358,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         try {
             return StringUtil.isNotBlank(value) ? Long.parseLong(value) : DEFAULT_MAX_SIZE;
         } catch (final NumberFormatException e) {
+            logger.warn("Failed to parse {}={}. Using {}.", MAX_CONTENT_LENGTH, value, DEFAULT_MAX_SIZE, e);
             return DEFAULT_MAX_SIZE;
         }
     }

@@ -207,6 +207,24 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertEquals(OneDriveDataStore.DEFAULT_MAX_SIZE, dataStore.getMaxSize(paramMap));
     }
 
+    /**
+     * A malformed {@code max_content_length} used to fall back to {@link OneDriveDataStore#DEFAULT_MAX_SIZE}
+     * with no log line at all, unlike every other malformed-value path in this plugin. Pins that a
+     * WARN is now emitted, naming the parameter and the value that failed to parse.
+     */
+    @Test
+    public void test_getMaxSize_malformedValueLogsWarning() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.MAX_CONTENT_LENGTH, "invalid");
+
+        final List<LogEvent> events = captureDataStoreWarnings(() -> dataStore.getMaxSize(paramMap));
+
+        assertEquals("a malformed max_content_length must log exactly one warning, got " + messagesOf(events), 1, events.size());
+        final String message = events.get(0).getMessage().getFormattedMessage();
+        assertTrue("warning must name the parameter, got: " + message, message.contains(OneDriveDataStore.MAX_CONTENT_LENGTH));
+        assertTrue("warning must name the offending value, got: " + message, message.contains("invalid"));
+    }
+
     @Test
     public void test_getSupportedMimeTypes() {
         DataStoreParams paramMap = new DataStoreParams();
