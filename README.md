@@ -391,6 +391,7 @@ role=message.roles
 | team | The team object containing team information (when applicable). |
 | channel | The channel object containing channel information (when applicable). |
 | parent | The parent message for replies (when applicable). |
+| messages | Only on a `chat_id` crawl: the raw Graph `ChatMessage` objects the consolidated document was built from. |
 
 Every key populated by `TeamsDataStore` is listed above. There is no `message.reactions`: reactions
 are read only to build the consolidated document for a `chat_id` crawl, and are never published as
@@ -646,11 +647,13 @@ over the cap is rejected, not shortened.
 
 `-1` (the default) does **not** mean unlimited at either point. It means "defer to Fess", and the
 effective cap becomes `ContentLengthHelper`'s limit for that MIME type, or its default limit when
-the MIME type is unknown. Of the three extractor call sites, only OneDrive file contents passes a
-MIME type, so only there can a per-MIME-type limit apply. **OneNote page content and Teams
-attachments always resolve to Fess's default limit**: the OneNote call passes neither a MIME type
-nor a filename, and the Teams call passes a filename but no MIME type - and a filename only steers
-which extractor is chosen, it never reaches the length lookup.
+the MIME type is unknown. No extractor call site passes a MIME type. OneDrive reaches a
+per-MIME-type cap a different way: `OneDriveDataStore` resolves `-1` itself, calling
+`ContentLengthHelper.getMaxLength(mimetype)` with the drive item's own MIME type before the file is
+downloaded, and rejects an oversized item there. **OneNote page content and Teams attachments always
+resolve to Fess's default limit**, because neither consults a MIME type at all - the Teams call
+passes a filename, but a filename only steers which extractor is chosen and never reaches the length
+lookup.
 
 Two further asymmetries are worth knowing. OneDriveDataStore parses the value as a `long`, while
 the Graph client parses it as an `int`: a value above `2147483647` is accepted by the first and
