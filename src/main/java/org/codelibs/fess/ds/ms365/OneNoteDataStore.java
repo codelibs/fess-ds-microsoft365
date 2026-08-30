@@ -27,9 +27,7 @@ import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.Constants;
-import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
-import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.ds.ms365.client.NotebookScope;
@@ -394,32 +392,11 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         } catch (final CrawlingAccessException e) {
             logger.warn("Crawling Access Exception for notebook: {} (ID: {}) - Data: {}", notebook.getDisplayName(), notebook.getId(),
                     dataMap, e);
-
-            Throwable target = e;
-            if (target instanceof final MultipleCrawlingAccessException ex) {
-                final Throwable[] causes = ex.getCauses();
-                if (causes.length > 0) {
-                    target = causes[causes.length - 1];
-                }
-            }
-
-            String errorName;
-            final Throwable cause = target.getCause();
-            if (cause != null) {
-                errorName = cause.getClass().getCanonicalName();
-            } else {
-                errorName = target.getClass().getCanonicalName();
-            }
-
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, errorName, notebook.getDisplayName(), target);
-            crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
+            handleCrawlingException(dataConfig, crawlerStatsHelper, statsKey, notebook.getDisplayName(), e);
         } catch (final Throwable t) {
             logger.warn("Processing exception for notebook: {} (ID: {}) - Data: {}", notebook.getDisplayName(), notebook.getId(), dataMap,
                     t);
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), notebook.getDisplayName(), t);
-            crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
+            handleCrawlingThrowable(dataConfig, crawlerStatsHelper, statsKey, notebook.getDisplayName(), t);
         } finally {
             crawlerStatsHelper.done(statsKey);
         }

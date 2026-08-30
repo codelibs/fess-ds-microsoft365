@@ -35,6 +35,8 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
 import org.codelibs.core.exception.InterruptedRuntimeException;
+import org.codelibs.fess.crawler.exception.CrawlingAccessException;
+import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
@@ -657,6 +659,43 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         assertEquals("include_pattern", TestDataStore.getIncludePatternConstant());
         assertEquals("exclude_pattern", TestDataStore.getExcludePatternConstant());
         assertEquals("url_filter", TestDataStore.getUrlFilterConstant());
+    }
+
+    /**
+     * MultipleCrawlingAccessException carries an array of causes; the six data stores all record
+     * the LAST one against the failure URL. Picking the first, or not unwrapping at all, would
+     * put a different exception class in the Failure URL admin screen.
+     */
+    @Test
+    public void test_unwrapCrawlingAccessException_returnsLastCause() {
+        final Throwable first = new IllegalStateException("first");
+        final Throwable last = new IllegalArgumentException("last");
+        final MultipleCrawlingAccessException multiple = new MultipleCrawlingAccessException("multi", new Throwable[] { first, last });
+
+        assertSame(last, Microsoft365DataStore.unwrapCrawlingAccessException(multiple));
+    }
+
+    @Test
+    public void test_unwrapCrawlingAccessException_withNoCausesReturnsTheExceptionItself() {
+        final MultipleCrawlingAccessException empty = new MultipleCrawlingAccessException("multi", new Throwable[0]);
+        assertSame(empty, Microsoft365DataStore.unwrapCrawlingAccessException(empty));
+
+        final CrawlingAccessException plain = new CrawlingAccessException("plain");
+        assertSame(plain, Microsoft365DataStore.unwrapCrawlingAccessException(plain));
+    }
+
+    /**
+     * The recorded errorName is the CAUSE's class name when there is a cause, and the
+     * exception's own class name otherwise. Getting this backwards makes every failure row
+     * read "CrawlingAccessException" and hides the real reason.
+     */
+    @Test
+    public void test_failureErrorName_prefersTheCauseClassName() {
+        final Throwable withCause = new CrawlingAccessException("outer", new java.net.SocketTimeoutException("inner"));
+        assertEquals("java.net.SocketTimeoutException", Microsoft365DataStore.failureErrorName(withCause));
+
+        final Throwable withoutCause = new CrawlingAccessException("outer");
+        assertEquals("org.codelibs.fess.crawler.exception.CrawlingAccessException", Microsoft365DataStore.failureErrorName(withoutCause));
     }
 
     /**

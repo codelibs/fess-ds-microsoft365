@@ -33,11 +33,18 @@ import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
+import org.codelibs.fess.app.service.FailureUrlService;
+import org.codelibs.fess.crawler.exception.CrawlingAccessException;
+import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.AbstractDataStore;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.CrawlerStatsHelper;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
 import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.helper.SystemHelper;
+import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.Drive;
@@ -695,6 +702,84 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     protected String getPermissionFailurePolicy(final DataStoreParams paramMap) {
         final String policy = paramMap.getAsString(PERMISSION_FAILURE_POLICY, POLICY_SKIP);
         return policy == null ? POLICY_SKIP : policy.trim();
+    }
+
+    /**
+     * Unwraps a {@link MultipleCrawlingAccessException} to its last recorded cause.
+     *
+     * <p>Package-private and static on purpose: it is pure, it is not part of the subclassing
+     * surface, and the tests in this package call it directly.</p>
+     *
+     * @param e the caught exception
+     * @return the last cause of a {@link MultipleCrawlingAccessException} that has one, otherwise {@code e} itself
+     */
+    static Throwable unwrapCrawlingAccessException(final CrawlingAccessException e) {
+        Throwable target = e;
+        if (target instanceof final MultipleCrawlingAccessException ex) {
+            final Throwable[] causes = ex.getCauses();
+            if (causes.length > 0) {
+                target = causes[causes.length - 1];
+            }
+        }
+        return target;
+    }
+
+    /**
+     * Derives the error name recorded against a failure URL.
+     *
+     * @param target the unwrapped throwable
+     * @return the canonical class name of {@code target}'s cause, or of {@code target} itself when it has none
+     */
+    static String failureErrorName(final Throwable target) {
+        final Throwable cause = target.getCause();
+        if (cause != null) {
+            return cause.getClass().getCanonicalName();
+        }
+        return target.getClass().getCanonicalName();
+    }
+
+    /**
+     * Records a {@link CrawlingAccessException} raised while processing one item: stores a
+     * failure-URL row and records {@link StatsAction#ACCESS_EXCEPTION}.
+     *
+     * <p>The caller keeps its own {@code logger.warn(...)}: the six data stores use different
+     * message text and argument lists, and operators grep the crawler log for those strings.</p>
+     *
+     * @param dataConfig the data configuration the failure is recorded against
+     * @param crawlerStatsHelper the stats helper for the current crawl
+     * @param statsKey the stats key for the item being processed
+     * @param failureUrl the value recorded as the failure "URL" for this item
+     * @param e the caught exception
+     */
+    protected void handleCrawlingException(final DataConfig dataConfig, final CrawlerStatsHelper crawlerStatsHelper,
+            final StatsKeyObject statsKey, final String failureUrl, final CrawlingAccessException e) {
+        final Throwable target = unwrapCrawlingAccessException(e);
+        final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
+        failureUrlService.store(dataConfig, failureErrorName(target), failureUrl, target);
+        crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
+    }
+
+    /**
+     * Records any other {@link Throwable} raised while processing one item: stores a
+     * failure-URL row under the throwable's own class name and records
+     * {@link StatsAction#EXCEPTION}.
+     *
+     * <p>Named separately from {@link #handleCrawlingException} rather than overloaded:
+     * {@link CrawlingAccessException} is a subtype of {@link Throwable}, so an overload would
+     * resolve on the catch parameter's static type and would silently pick the wrong arm the
+     * first time a catch clause were widened.</p>
+     *
+     * @param dataConfig the data configuration the failure is recorded against
+     * @param crawlerStatsHelper the stats helper for the current crawl
+     * @param statsKey the stats key for the item being processed
+     * @param failureUrl the value recorded as the failure "URL" for this item
+     * @param t the caught throwable
+     */
+    protected void handleCrawlingThrowable(final DataConfig dataConfig, final CrawlerStatsHelper crawlerStatsHelper,
+            final StatsKeyObject statsKey, final String failureUrl, final Throwable t) {
+        final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
+        failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), failureUrl, t);
+        crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
     }
 
     /**

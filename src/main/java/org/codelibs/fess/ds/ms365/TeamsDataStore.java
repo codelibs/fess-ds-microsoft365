@@ -37,9 +37,7 @@ import org.apache.lucene.analysis.charfilter.HTMLStripCharFilter;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
-import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
-import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client.UserType;
@@ -873,31 +871,10 @@ public class TeamsDataStore extends Microsoft365DataStore {
             }
         } catch (final CrawlingAccessException e) {
             logger.warn("Crawling Access Exception for message: {} (ID: {}) - Data: {}", message.getWebUrl(), message.getId(), dataMap, e);
-
-            Throwable target = e;
-            if (target instanceof final MultipleCrawlingAccessException ex) {
-                final Throwable[] causes = ex.getCauses();
-                if (causes.length > 0) {
-                    target = causes[causes.length - 1];
-                }
-            }
-
-            String errorName;
-            final Throwable cause = target.getCause();
-            if (cause != null) {
-                errorName = cause.getClass().getCanonicalName();
-            } else {
-                errorName = target.getClass().getCanonicalName();
-            }
-
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, errorName, message.getWebUrl(), target);
-            crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
+            handleCrawlingException(dataConfig, crawlerStatsHelper, statsKey, message.getWebUrl(), e);
         } catch (final Throwable t) {
             logger.warn("Processing exception for message: {} (ID: {}) - Data: {}", message.getWebUrl(), message.getId(), dataMap, t);
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), message.getWebUrl(), t);
-            crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
+            handleCrawlingThrowable(dataConfig, crawlerStatsHelper, statsKey, message.getWebUrl(), t);
         } finally {
             crawlerStatsHelper.done(statsKey);
         }
