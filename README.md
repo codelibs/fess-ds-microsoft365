@@ -28,7 +28,7 @@ This plugin extends [Fess](https://fess.codelibs.org/) enterprise search capabil
 ### ⚡ **Performance & Reliability**
 - **Microsoft Graph SDK v6**: Latest API with efficient pagination and caching
 - **Multi-threaded Processing**: Configurable thread pools for optimal performance
-- **Smart Caching**: Drive ID, user type, and group ID caching to reduce API calls
+- **Smart Caching**: User type, group ID, UPN and group name caching to reduce API calls, bounded by `cache_size`
 - **Robust Error Handling**: Comprehensive error tracking with configurable failure recovery
 - **Content Filtering**: Advanced include/exclude patterns with system content filtering
 
@@ -489,7 +489,7 @@ role=page.roles
 |-----------|-------------|---------|----------|
 | `number_of_threads` | Concurrent crawling threads | `1` | `3` |
 | `executor_shutdown_timeout` | How long to wait for submitted crawling tasks to finish, in whole seconds. Whatever has not finished by then is cancelled and its documents are missing from the crawl, which is reported at `ERROR` - see below. Raise it for a large tenant. A value that is not a positive whole number keeps this default and logs a `WARN`. | `60` | `600` |
-| `ignore_error` | Continue on errors | `true` | `false` |
+| `ignore_error` | Continue on errors. What "errors" means differs by DataStore - see below | `false` | `true` |
 | `include_pattern` | Regex pattern for inclusion - semantics differ by DataStore, see below | - | `.*\.pdf$` |
 | `exclude_pattern` | Regex pattern for exclusion - semantics differ by DataStore, see below | - | `.*temp.*` |
 | `default_permissions` | Default role assignments | - | `{role}admin` |
@@ -499,6 +499,12 @@ role=page.roles
 | `access_timeout` | Overall timeout for a Microsoft Graph HTTP call, in whole seconds - see below | `100` | `120` |
 | `max_retry_count` | Maximum automatic retries for a failed Graph request - see below | `3` | `5` |
 | `retry_interval` | Delay between automatic retries, in whole seconds - see below | `3` | `10` |
+| `cache_size` | Maximum number of entries in each of the client's four lookup caches (user type, group IDs by mail, user object ID to UPN, group object ID to name) - see below | `10000` | `50000` |
+| `max_content_length` | Content length cap in bytes, applied at two different points - see [`max_content_length` is applied twice](#max_content_length-is-applied-twice) below | `-1` (defer to Fess's own per-MIME-type limit, **not** unlimited) | `10485760` |
+| `proxy_host` | HTTP proxy host for both Azure AD token acquisition and Microsoft Graph calls - see below | - | `proxy.example.com` |
+| `proxy_port` | HTTP proxy port. Required alongside `proxy_host`; neither takes effect on its own - see below | - | `8080` |
+| `proxy_username` | Proxy user name. Only used when `proxy_password` is also set - see below | - | `crawler` |
+| `proxy_password` | Proxy password. Only used when `proxy_username` is also set - see below | - | `********` |
 | `additionally_allowed_tenants` | Tenant IDs the credential may also acquire tokens for, comma-separated, or `*` for any tenant - see below | - (only the configured `tenant`) | `*` |
 
 #### `include_pattern` / `exclude_pattern` semantics differ by DataStore
@@ -530,12 +536,91 @@ The filter is applied once per notebook, in the `getNotebooks` callback for each
 USER and GROUP scopes, before that notebook is handed off for processing. It therefore selects
 whole notebooks only: there is no way to admit a notebook but exclude one of its sections or
 pages, because `oneNoteDataStore` indexes one document per notebook and never inspects section or
-page names to filter on. A notebook with a blank or missing display name is matched as the empty
-string, like any other name: with `include_pattern` set it is excluded unless that pattern matches
-`""`, and with only `exclude_pattern` set it is kept unless that pattern matches `""`.
+page names to filter on. A notebook whose display name is missing, empty **or whitespace-only** is
+matched as the empty string, like any other name - the three are treated as one thing, so a pattern
+such as `.+` cannot admit one and reject another: with `include_pattern` set such a notebook is
+excluded unless that pattern matches `""`, and with only `exclude_pattern` set it is kept unless
+that pattern matches `""`. A name with any other character is matched verbatim, surrounding
+whitespace included.
 
 Note that `oneNoteDataStore` ignored both parameters in earlier releases - a configuration that
 set them expecting them to be a no-op will start filtering notebooks after upgrading.
+
+#### `ignore_error` scope differs by DataStore
+
+`ignore_error` defaults to **`false`** in all six DataStores. It is not a blanket "keep going"
+switch: each DataStore relaxes a specific, fixed set of failures, and the rest behave the same way
+at either setting.
+
+| DataStore | What `ignore_error=true` tolerates |
+|-----------|------------------------------------|
+| `oneDriveDataStore` | a failure extracting one file's content (the document is still indexed, without contents) |
+| `sharePointDocLibDataStore` | a site whose drives cannot be listed, and a document library that fails to process |
+| `sharePointListDataStore` | a site that fails to process, a list that fails to process, and a list item that fails to process |
+| `sharePointPageDataStore` | a site that fails to process and a page that fails to process |
+| `oneNoteDataStore` | nothing - it does not read this parameter; a user or group whose notebooks cannot be listed is logged at `WARN` and skipped either way |
+| `teamsDataStore` | an unresolvable `team_id`, an unresolvable `channel_id`, a failure listing an explicitly configured team's channels, and a failure fetching a channel's messages |
+
+`ignore_error` never widens a crawl. A `team_id` listed in `exclude_team_ids` that cannot be
+resolved still aborts the crawl even with `ignore_error=true`, so that a team you asked to exclude
+is never silently crawled.
+
+#### `cache_size` and the client's lookup caches
+
+`cache_size` bounds each of the four Guava caches the Graph client keeps, **individually** - it is
+not a total across them. They are: user-type (is this object ID a user or a group?), group IDs by
+mail address, user object ID to UPN, and group object ID to group name. The last two back the ACL
+roles OneDriveDataStore and SharePointDocLibDataStore add alongside each raw object ID.
+
+The default is `10000` entries per cache. A negative or non-numeric value logs a `WARN` and falls
+back to that default; `0` is accepted as written and disables caching, so every lookup goes back to
+Microsoft Graph. The caches are an optimisation, never a correctness requirement - a bad value
+must not stop the client from being constructed - and they are dropped when the crawl closes the
+client.
+
+#### `max_content_length` is applied twice
+
+The same parameter name is read by two different pieces of code, at two different points in a
+crawl, with two different consequences. Both are **byte** counts, and neither truncates: content
+over the cap is rejected, not shortened.
+
+- **A pre-download size check, in OneDriveDataStore only.** Before a file is fetched, the drive
+  item's Graph-reported `size` is compared against the cap. Over it, the item is **not indexed at
+  all**: a `MaxLengthExceededException` is raised and the item is recorded in the failed-URL list.
+  This is the only place `max_content_length` decides whether a document exists.
+- **An extractor input cap, wherever text is extracted.** The value is handed to Fess's extractor
+  as `maxContentLength(...)`, which measures the bytes it actually read and throws
+  `MaxLengthExceededException` if they exceed it. Three call sites use it: OneDrive file contents,
+  OneNote page contents, and **Teams attachment text** (reached whenever `append_attachment=true`,
+  which is the default). Failing here does not necessarily drop the document - Fess's
+  `crawler.ignore.content.exception` decides, and for OneDrive files `ignore_error` does too; when
+  it is tolerated the document is indexed with empty contents for that source.
+
+`-1` (the default) does **not** mean unlimited at either point. It means "defer to Fess", and the
+effective cap becomes `ContentLengthHelper`'s limit for that MIME type, or its default limit when
+the MIME type is unknown - which it always is for OneNote page content, since that extraction
+passes neither a MIME type nor a filename.
+
+Two further asymmetries are worth knowing. OneDriveDataStore parses the value as a `long`, while
+the Graph client parses it as an `int`: a value above `2147483647` is accepted by the first and
+logged as unparseable by the second, which then keeps `-1`. And a Teams attachment or a OneNote
+page is never skipped in advance on size - only its extraction can fail - because neither has a
+Graph-reported size the way a drive item does.
+
+#### Proxy parameters
+
+`proxy_host` and `proxy_port` take effect only when **both** are set; either one alone is ignored
+with no warning. When both are set, the proxy is applied to two independent HTTP stacks: the Azure
+Identity client that acquires the OAuth token, and the OkHttp client the Microsoft Graph SDK uses
+for every API call. A `proxy_port` that is not a number aborts the crawl with
+`DataStoreException: Invalid proxy port`.
+
+`proxy_username` and `proxy_password` are likewise applied only when **both** are non-empty; a user
+name with no password (or the reverse) is silently ignored and the proxy is used unauthenticated.
+Graph requests authenticate to the proxy with HTTP Basic via a `Proxy-Authorization` header.
+
+See [`additionally_allowed_tenants` and the Graph host allowlist](#additionally_allowed_tenants-and-the-graph-host-allowlist)
+below for a bearer-token leak that used to affect proxied deployments specifically.
 
 #### Permission lookup failures
 
@@ -581,9 +666,11 @@ that should have narrowed access down were never added. Choose `index_without_ac
 surfacing a document without its full ACL is preferable to not surfacing it at all.
 
 `ignore_error` and `permission_failure_policy` cover different failures. `ignore_error` governs
-failures while enumerating sites, drives, and lists (for example, a site that fails to list);
-it has no effect on permission lookups for an individual document. Those are governed solely by
-`permission_failure_policy`.
+failures while enumerating and processing containers and their contents - sites, drives, lists,
+list items, pages, and (since Teams started honouring the parameter) teams and channels; see
+[`ignore_error` scope differs by DataStore](#ignore_error-scope-differs-by-datastore) above for the
+exact set per DataStore. It has no effect on permission lookups for an individual document. Those
+are governed solely by `permission_failure_policy`.
 
 #### Re-crawling after upgrading to this fix
 
@@ -878,10 +965,10 @@ The implementation extracts comprehensive message metadata including:
 - **Chat History Search**: Search through direct and group chat conversations
 
 **Crawling Modes**:
-- **Shared Documents Drive**: Enable `shared_documents_drive_crawler` to crawl the current user's OneDrive
+- **Shared Documents Drive**: Enable `shared_documents_drive_crawler` to crawl every SharePoint site's document libraries
 - **User Drives**: Enable `user_drive_crawler` to crawl all licensed users' OneDrive
 - **Group Drives**: Enable `group_drive_crawler` to crawl Microsoft 365 group drives
-- **Specific Drive**: Set `drive_id` to crawl only that specific drive
+- **Specific Drive**: Set `drive_id` to crawl that drive *in addition to* whichever of the three modes above are enabled
 
 ### OneNote-Specific Parameters
 
@@ -971,11 +1058,11 @@ The implementation extracts and indexes the following notebook metadata:
 
 | Parameter | Description | Default | Notes |
 |-----------|-------------|---------|-------|
-| `max_content_length` | Maximum content length in bytes | `-1` (unlimited) | Set size limit for file content |
+| `max_content_length` | Maximum file size in bytes. Checked against the drive item's Graph-reported size before download, and again by the extractor against the bytes read | `-1` (defer to Fess's per-MIME-type limit, **not** unlimited) | Files over the cap are not indexed at all - see [`max_content_length` is applied twice](#max_content_length-is-applied-twice) |
 | `ignore_folder` | Skip folder documents | `true` | Process files only, ignore folders |
 | `supported_mimetypes` | Supported MIME types pattern | `.*` | Regex pattern for supported file types |
-| `drive_id` | Specific drive ID to crawl | - | If specified, only crawls this drive |
-| `shared_documents_drive_crawler` | Enable shared documents crawling | `true` | Crawl default user's OneDrive |
+| `drive_id` | Additional specific drive ID to crawl | - | Adds a fourth crawl of that one drive. It does **not** restrict the others: the three `*_drive_crawler` modes still run according to their own flags (all default to `true`), so setting only `drive_id` crawls that drive *in addition to* everything else. To crawl one drive and nothing else, also set `shared_documents_drive_crawler`, `user_drive_crawler` and `group_drive_crawler` to `false` |
+| `shared_documents_drive_crawler` | Enable SharePoint document library crawling | `true` | Enumerates every SharePoint site and crawls the files in its document libraries. It does **not** crawl the signed-in user's own OneDrive - no `/me/drive` request is ever issued by this DataStore |
 | `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
 | `ignore_system_libraries` | Skip system libraries (`_catalogs`, `Forms`, Style Library, `FormServerTemplates`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the drive's URL, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below - so a site whose path merely contains a `/Forms/` segment (e.g. a site collection named "Forms") is misdetected as a system library and has all of its files skipped by default, not just an actual Forms system library |
@@ -991,7 +1078,7 @@ The OneDriveDataStore provides comprehensive Microsoft 365 file crawling capabil
 - **Permission Integration**: Extracts and maps Microsoft 365 access permissions to Fess role-based access control
 
 **Crawling Modes (Processing Order):**
-1. **Shared Documents Drive**: Crawls the authenticated user's OneDrive (`/me/drive`) or all SharePoint sites' document libraries (the latter honors `ignore_system_libraries`, see the parameters table above). Runs whenever `shared_documents_drive_crawler=true` (default), regardless of whether `drive_id` is also set for Mode 4 below - the two crawls run independently, not exclusively
+1. **Shared Documents Drive**: Enumerates every SharePoint site (`GET /sites`) and crawls the files in each site's document libraries (honoring `ignore_system_libraries`, see the parameters table above). Despite the mode's name it never touches the signed-in user's own OneDrive - the code has no `/me/drive` call path at all. Runs whenever `shared_documents_drive_crawler=true` (default), regardless of whether `drive_id` is also set for Mode 4 below - the two crawls run independently, not exclusively
 2. **User Drives**: Iterates through all licensed users and crawls their personal OneDrive (`/users/{userId}/drive`)
 3. **Group Drives**: Crawls Microsoft 365 group-associated drives (`/groups/{groupId}/drive`)
 4. **Specific Drive**: Targets a single drive by ID when `drive_id` parameter is specified (`/drives/{driveId}`)
@@ -1005,14 +1092,13 @@ The OneDriveDataStore provides comprehensive Microsoft 365 file crawling capabil
 6. **URL Generation**: Creates user-friendly URLs based on crawler type and SharePoint/OneDrive location patterns
 
 **Performance Optimizations:**
-- **Drive ID Caching**: Thread-safe caching of user drive IDs using double-checked locking pattern (`cachedUserDriveId` with `driveIdCacheLock`)
 - **Concurrent Processing**: Configurable thread pool (`number_of_threads`) for parallel processing of multiple drives and files
 - **Efficient Pagination**: Handles Microsoft Graph API pagination using `@odata.nextLink` with helper methods
 - **Smart Filtering**: Pre-filters items by MIME type patterns and file size before expensive content extraction
-- **Interruption Handling**: Proper detection and handling of thread interruption during long-running operations
+- **Identity Caching**: The Graph client caches the user/group lookups this DataStore's ACL building repeats - see [`cache_size` and the client's lookup caches](#cache_size-and-the-clients-lookup-caches). There is no drive-ID cache: earlier releases of this document described one (`cachedUserDriveId`/`driveIdCacheLock`), but it had no callers and has been removed
 
 **Error Handling & Resilience:**
-- **Configurable Error Tolerance**: `ignore_error` parameter controls whether to continue crawling on individual item failures
+- **Configurable Error Tolerance**: `ignore_error` relaxes exactly one failure here - a file whose content cannot be extracted is indexed with empty contents instead of failing. It does not affect item enumeration; see [`ignore_error` scope differs by DataStore](#ignore_error-scope-differs-by-datastore)
 - **Exception Classification**: Differentiates between access exceptions and general exceptions for appropriate error handling
 - **Failure URL Tracking**: Integration with Fess failure URL service for monitoring and retry capabilities
 - **Comprehensive Logging**: Debug-level logging for detailed crawling progress monitoring and troubleshooting
@@ -1116,7 +1202,7 @@ The implementation creates rich, searchable content by combining:
 - Configurable concurrent processing using `number_of_threads` parameter (default: 1)
 - Thread-safe execution with proper ExecutorService management and resource cleanup
 - Graceful handling of thread interruption during long-running operations
-- 60-second timeout for executor shutdown with forced termination as fallback
+- Executor shutdown waits `executor_shutdown_timeout` seconds (default 60) before cancelling whatever has not finished
 
 **Error Handling & Resilience:**
 - Comprehensive error tracking with integration into Fess failure URL service
