@@ -523,9 +523,20 @@ to match *somewhere inside* the URL. A pattern written for one DataStore will no
 behave the same way on another.
 
 A OneNote pattern must also match the *entire* notebook display name: `exclude_pattern=Test.*`
-removes a notebook called "Test Notebook" but keeps one called "Latest Notes". Note that
-`oneNoteDataStore` ignored both parameters in earlier releases - a configuration that set them
-expecting them to be a no-op will start filtering notebooks after upgrading.
+removes a notebook called "Test Notebook" but keeps one called "Production Test Notes" - the name
+contains "Test", but does not *start* with it, so the full match fails and the notebook is kept.
+(A partial-match DataStore such as `sharePointPageDataStore` would drop it instead.)
+
+The filter is applied once per notebook, in the `getNotebooks` callback for each of the SITE,
+USER and GROUP scopes, before that notebook is handed off for processing. It therefore selects
+whole notebooks only: there is no way to admit a notebook but exclude one of its sections or
+pages, because `oneNoteDataStore` indexes one document per notebook and never inspects section or
+page names to filter on. A notebook with a blank or missing display name is never filtered out by
+either pattern, admitted or not - there is nothing for the pattern to match against, so it always
+passes through.
+
+Note that `oneNoteDataStore` ignored both parameters in earlier releases - a configuration that
+set them expecting them to be a no-op will start filtering notebooks after upgrading.
 
 #### Permission lookup failures
 
@@ -833,8 +844,13 @@ The implementation extracts comprehensive message metadata including:
 | `user_note_crawler` | Enable crawling of user notebooks | `true` | Crawls personal OneNote notebooks for licensed users |
 | `group_note_crawler` | Enable crawling of group notebooks | `true` | Crawls shared notebooks in Microsoft 365 groups |
 | `include_pattern` | Regex a notebook name must fully match to be crawled | - | Matched against the notebook's display name with `Pattern.matches()` (full match). An invalid regex is logged and ignored |
-| `exclude_pattern` | Regex a notebook name must not fully match to be crawled | - | Matched against the notebook's display name with `Pattern.matches()` (full match). Applied after `include_pattern`; an invalid regex is logged and ignored |
+| `exclude_pattern` | Regex a notebook name must not fully match to be crawled | - | Matched against the notebook's display name with `Pattern.matches()` (full match). An invalid regex is logged and ignored |
 | `number_of_threads` | Number of processing threads | `1` | Controls concurrent notebook processing |
+
+If `include_pattern` or `exclude_pattern` is configured and, across all enabled scopes combined,
+it admits zero of the notebooks the crawl actually saw, the crawl still finishes normally but logs
+one `WARN` summarizing that - a hint that the pattern may be misconfigured, since the same crawl
+otherwise reports success while indexing nothing.
 
 #### OneNote Implementation Details
 
@@ -1223,8 +1239,15 @@ Standard web parts (everything except plain text web parts - Quick Links, Hero, 
 and so on) previously contributed **nothing** to `page.content`: the extractor received a typed
 `WebPartData` object it could not read, so it appended no characters. It now extracts the web
 part's `title`, `description` and SharePoint's own indexable projection
-(`serverProcessedContent.searchablePlainTexts`, `htmlStrings` and `links`), plus any text in the
-web part's `additionalData` map.
+(`serverProcessedContent.searchablePlainTexts`, `htmlStrings` and `links`).
+
+It also walks the web part's `additionalData` map - a forward-compatibility read for any Graph
+field the SDK's typed `WebPartData` model does not (yet) declare, not a source of text today. On
+the pinned Graph SDK version, `WebPartData` already models every documented field except
+`audiences` (a list of GUIDs), and a GUID is filtered out the same as anywhere else in this
+extractor. So as of this SDK version `additionalData` contributes no text - and no noise - to
+`page.content`; the read is kept because it is free once the SDK adds a new field Graph starts
+populating there.
 
 No field is renamed or removed and `page.content` never shrinks, so existing scripts and index
 mappings keep working unchanged. But **existing indexes will not contain the new text until the
