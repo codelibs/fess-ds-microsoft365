@@ -102,9 +102,6 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     /** Field mapping for canonical URL */
     protected static final String DOCLIB_CANONICAL_URL = "url";
 
-    /** Name of the extractor to use for file content extraction */
-    protected String extractorName = "sharePointDocLibExtractor";
-
     /**
      * Default constructor for SharePointDocLibDataStore.
      */
@@ -578,9 +575,5 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             logger.warn("Failed to encode URL component: {}", component, e);
             return component;
         }
-    }
-
-    void setExtractorName(final String extractorName) {
-        this.extractorName = extractorName;
     }
 }

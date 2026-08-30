@@ -32,7 +32,6 @@ import java.util.stream.Stream;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.CoreLibConstants;
-import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
@@ -77,11 +76,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
 
     /** Default maximum size of a file to be crawled. */
     protected static final long DEFAULT_MAX_SIZE = -1L;
-
-    /** Cache for the current user's drive ID to avoid repeated expensive API calls */
-    protected volatile String cachedUserDriveId = null;
-    /** Lock object for thread-safe cache initialization */
-    protected final Object driveIdCacheLock = new Object();
 
     /** Key for the current crawler type in the configuration map. */
     protected static final String CURRENT_CRAWLER = "current_crawler";
@@ -523,17 +517,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Checks if the current thread is interrupted.
-     *
-     * @param e The exception to check.
-     */
-    protected void isInterrupted(final Exception e) {
-        if (e instanceof InterruptedException) {
-            throw new InterruptedRuntimeException((InterruptedException) e);
-        }
-    }
-
-    /**
      * Stores the groups' drives.
      *
      * @param dataConfig The data configuration.
@@ -948,38 +931,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                         item != null ? item.getName() : "root", e.getResponseStatusCode(), e);
             }
         }
-    }
-
-    /**
-     * Gets the current user's drive ID with caching to avoid expensive repeated API calls.
-     * Thread-safe implementation using double-checked locking pattern.
-     *
-     * @param client The Microsoft365Client to use for API calls.
-     * @return The cached user drive ID, or null if unable to retrieve.
-     */
-    protected String getCachedUserDriveId(final Microsoft365Client client) {
-        // Double-checked locking pattern for thread-safe lazy initialization
-        if (cachedUserDriveId == null) {
-            synchronized (driveIdCacheLock) {
-                if (cachedUserDriveId == null) {
-                    try {
-                        // Make the expensive API call only once
-                        cachedUserDriveId = client.getDrive(null).getId();
-                        if (logger.isDebugEnabled()) {
-                            logger.debug("Successfully cached user drive ID: {}", cachedUserDriveId);
-                        }
-                    } catch (final Exception e) {
-                        if (logger.isDebugEnabled()) {
-                            logger.debug("Exception occurred while retrieving user drive ID", e);
-                        } else {
-                            logger.warn("Exception occurred while retrieving user drive ID: {}", e.getMessage());
-                        }
-                        return null;
-                    }
-                }
-            }
-        }
-        return cachedUserDriveId;
     }
 
     /**

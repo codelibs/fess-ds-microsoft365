@@ -115,9 +115,6 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     /** Field mapping for page promotion state */
     protected static final String PAGE_PROMOTION_STATE = "promotion_state";
 
-    /** Name of the extractor to use for page content extraction */
-    protected String extractorName = "sharePointPageExtractor";
-
     /**
      * Default constructor for SharePointPageDataStore.
      */
@@ -810,37 +807,5 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
             }
         }
         return null;
-    }
-
-    /**
-     * Gets the field name with proper mapping.
-     *
-     * @param paramMap data store parameters
-     * @param prefix the prefix for the field
-     * @param field the field name
-     * @return the mapped field name
-     */
-    protected String getFieldName(final DataStoreParams paramMap, final String prefix, final String field) {
-        final String key = prefix + "." + field;
-        return paramMap.getAsString(key, prefix + "_" + field);
-    }
-
-    /**
-     * Gets crawler stats key for the site.
-     *
-     * @param siteName the name of the SharePoint site
-     * @return statistics key object for tracking crawl metrics
-     */
-    protected StatsKeyObject getCrawlerStats(final String siteName) {
-        return new StatsKeyObject("SharePointPage#" + siteName);
-    }
-
-    /**
-     * Sets the extractor name for content extraction.
-     *
-     * @param extractorName the name of the extractor to use
-     */
-    public void setExtractorName(final String extractorName) {
-        this.extractorName = extractorName;
     }
 }

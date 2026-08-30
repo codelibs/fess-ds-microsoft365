@@ -203,35 +203,6 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
     }
 
     @Test
-    public void test_buildContentFromFields() {
-        final Map<String, Object> fields = new HashMap<>();
-        fields.put("Title", "Test Title");
-        fields.put("Description", "Test Description");
-        fields.put("_SystemField", "System Value");
-        fields.put("ID", "123");
-        fields.put("ContentType", "Item");
-        fields.put("Notes", "Some notes");
-        fields.put("EmptyField", "");
-        fields.put("NullField", null);
-
-        final String content = dataStore.buildContentFromFields(fields);
-
-        // Should include regular fields but not system fields
-        assertTrue(content.contains("Test Title"));
-        assertTrue(content.contains("Test Description"));
-        assertTrue(content.contains("Some notes"));
-
-        // Should not include system fields
-        assertFalse(content.contains("System Value"));
-        assertFalse(content.contains("123"));
-        assertFalse(content.contains("Item"));
-
-        // Test with null/empty fields
-        assertEquals("", dataStore.buildContentFromFields(null));
-        assertEquals("", dataStore.buildContentFromFields(new HashMap<>()));
-    }
-
-    @Test
     public void test_urlFilter() {
         // Test URL filter functionality added in processListItem improvement
         final DataStoreParams paramMap1 = new DataStoreParams();
@@ -288,28 +259,6 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
 
         // Test that parameters needed for permission processing are available
         assertEquals("Should get site ID for permission context", "test-site-123", paramMap.getAsString("site_id"));
-    }
-
-    @Test
-    public void test_isSystemField() {
-        // System fields should return true
-        assertTrue(dataStore.isSystemField("_SystemField"));
-        assertTrue(dataStore.isSystemField("_vti_title"));
-        assertTrue(dataStore.isSystemField("ID"));
-        assertTrue(dataStore.isSystemField("ContentType"));
-        assertTrue(dataStore.isSystemField("Version"));
-        assertTrue(dataStore.isSystemField("Attachments"));
-        assertTrue(dataStore.isSystemField("owsHiddenVersion"));
-
-        // Regular fields should return false
-        assertFalse(dataStore.isSystemField("Title"));
-        assertFalse(dataStore.isSystemField("Description"));
-        assertFalse(dataStore.isSystemField("Notes"));
-        assertFalse(dataStore.isSystemField("CustomField"));
-
-        // Edge cases
-        assertTrue(dataStore.isSystemField(""));
-        assertTrue(dataStore.isSystemField(null));
     }
 
     @Test

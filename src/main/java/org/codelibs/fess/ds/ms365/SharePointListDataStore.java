@@ -32,7 +32,6 @@ import org.codelibs.fess.Constants;
 import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
-import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
@@ -120,9 +119,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     protected static final String SITE_NAME = "name";
     /** The field name for site URL. */
     protected static final String SITE_URL = "url";
-
-    /** The name of the extractor for SharePoint lists. */
-    protected String extractorName = "sharePointListExtractor";
 
     /**
      * Creates a new SharePointListDataStore instance.
@@ -592,47 +588,6 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         return null;
     }
 
-    /**
-     * Build content string from all fields for indexing.
-     *
-     * @param fields the map of field values
-     * @return the concatenated content string
-     */
-    protected String buildContentFromFields(final Map<String, Object> fields) {
-        if (fields == null || fields.isEmpty()) {
-            return "";
-        }
-
-        final StringBuilder content = new StringBuilder();
-        for (final Map.Entry<String, Object> entry : fields.entrySet()) {
-            if (entry.getValue() != null && !isSystemField(entry.getKey())) {
-                final String value = entry.getValue().toString().trim();
-                if (StringUtil.isNotBlank(value) && !value.equals("null")) {
-                    if (content.length() > 0) {
-                        content.append(" ");
-                    }
-                    content.append(value);
-                }
-            }
-        }
-        return content.toString();
-    }
-
-    /**
-     * Check if a field is a system field that should not be included in content.
-     *
-     * @param fieldName the name of the field to check
-     * @return true if the field is a system field, false otherwise
-     */
-    protected boolean isSystemField(final String fieldName) {
-        if (StringUtil.isBlank(fieldName)) {
-            return true;
-        }
-        final String lowerField = fieldName.toLowerCase();
-        return lowerField.startsWith("_") || lowerField.startsWith("ows") || lowerField.equals("id") || lowerField.equals("contenttype")
-                || lowerField.equals("version") || lowerField.equals("attachments");
-    }
-
     // Configuration helper methods
     /**
      * Gets the site ID from the parameter map.
@@ -808,37 +763,5 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         }
 
         return true;
-    }
-
-    /**
-     * Gets the URL filter for crawling.
-     *
-     * @param paramMap the data store parameters
-     * @return the configured URL filter
-     */
-    protected UrlFilter getUrlFilter(final DataStoreParams paramMap) {
-        final UrlFilter urlFilter = ComponentUtil.getComponent(UrlFilter.class);
-        final String include = paramMap.getAsString(INCLUDE_PATTERN);
-        if (StringUtil.isNotBlank(include)) {
-            urlFilter.addInclude(include);
-        }
-        final String exclude = paramMap.getAsString(EXCLUDE_PATTERN);
-        if (StringUtil.isNotBlank(exclude)) {
-            urlFilter.addExclude(exclude);
-        }
-        urlFilter.init(paramMap.getAsString(Constants.CRAWLING_INFO_ID));
-        if (logger.isDebugEnabled()) {
-            logger.debug("urlFilter: {}", urlFilter);
-        }
-        return urlFilter;
-    }
-
-    /**
-     * Sets the extractor name for SharePoint lists.
-     *
-     * @param extractorName the extractor name to set
-     */
-    public void setExtractorName(final String extractorName) {
-        this.extractorName = extractorName;
     }
 }

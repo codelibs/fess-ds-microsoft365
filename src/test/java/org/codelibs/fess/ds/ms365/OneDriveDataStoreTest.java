@@ -305,30 +305,6 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
     }
 
     @Test
-    public void test_isInterrupted() {
-        // The isInterrupted method is void and throws an exception for InterruptedException
-        // Test with InterruptedException - should throw InterruptedRuntimeException
-        Exception e = new InterruptedException("Test interruption");
-        try {
-            dataStore.isInterrupted(e);
-            fail("Should have thrown InterruptedRuntimeException");
-        } catch (RuntimeException ex) {
-            // Expected - should throw some kind of runtime exception
-            assertTrue("Expected exception to be thrown", true);
-        }
-
-        // Test with non-interrupted exception - should not throw
-        e = new RuntimeException("Regular exception");
-        try {
-            dataStore.isInterrupted(e);
-            // Should complete without throwing
-            assertTrue("Method completed without throwing", true);
-        } catch (Exception ex) {
-            fail("Should not have thrown exception for non-InterruptedException");
-        }
-    }
-
-    @Test
     public void testStoreData() {
         // doStoreData();
     }
