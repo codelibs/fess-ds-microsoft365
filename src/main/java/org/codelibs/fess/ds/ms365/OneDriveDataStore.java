@@ -186,6 +186,12 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected void storeData(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap) {
 
+        // UrlFilterImpl.addInclude/addExclude drop a pattern that does not compile after one WARN,
+        // which leaves the crawl running with no filter at all -- so a mistyped exclude_pattern
+        // would index exactly what it was meant to keep out. Fail here instead, before the filter
+        // is built.
+        validatePatterns(paramMap);
+
         final Map<String, Object> configMap = new HashMap<>();
         configMap.put(MAX_CONTENT_LENGTH, getMaxSize(paramMap));
         configMap.put(IGNORE_FOLDER, isIgnoreFolder(paramMap));
@@ -358,6 +364,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         try {
             return StringUtil.isNotBlank(value) ? Long.parseLong(value) : DEFAULT_MAX_SIZE;
         } catch (final NumberFormatException e) {
+            logger.warn("Failed to parse {}={}. Using {}.", MAX_CONTENT_LENGTH, value, DEFAULT_MAX_SIZE, e);
             return DEFAULT_MAX_SIZE;
         }
     }

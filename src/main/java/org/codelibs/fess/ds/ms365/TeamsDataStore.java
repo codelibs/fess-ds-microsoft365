@@ -17,8 +17,12 @@ package org.codelibs.fess.ds.ms365;
 
 import java.io.IOException;
 import java.io.StringReader;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -103,6 +107,10 @@ public class TeamsDataStore extends Microsoft365DataStore {
     private static final String TITLE_DATEFORMAT = "title_dateformat";
     /** Parameter name for the title timezone offset. */
     private static final String TITLE_TIMEZONE = "title_timezone_offset";
+    /** Parameter name for the inclusive lower bound on a message's timestamp. */
+    private static final String START_DATE = "start_date";
+    /** Parameter name for the inclusive upper bound on a message's timestamp. */
+    private static final String END_DATE = "end_date";
 
     // scripts
     /** Key for the message object in the script map. */
@@ -175,12 +183,17 @@ public class TeamsDataStore extends Microsoft365DataStore {
         configMap.put(TITLE_DATEFORMAT, getTitleDateformat(paramMap));
         configMap.put(TITLE_TIMEZONE, getTitleTimezone(paramMap));
         configMap.put(IGNORE_SYSTEM_EVENTS, isIgnoreSystemEvents(paramMap));
+        configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
+        // Parsed exactly here, once per crawl, so a bad range produces exactly one warning rather
+        // than one per message.
+        putDateRange(configMap, paramMap);
 
         if (logger.isDebugEnabled()) {
             logger.debug(
-                    "Teams crawling started - Configuration: TeamID={}, ChannelID={}, ChatID={}, IgnoreReplies={}, AppendAttachment={}, Threads={}",
+                    "Teams crawling started - Configuration: TeamID={}, ChannelID={}, ChatID={}, IgnoreReplies={}, AppendAttachment={}, IgnoreError={}, StartDate={}, EndDate={}, Threads={}",
                     configMap.get(TEAM_ID), configMap.get(CHANNEL_ID), configMap.get(CHAT_ID), configMap.get(IGNORE_REPLIES),
-                    configMap.get(APPEND_ATTACHMENT), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
+                    configMap.get(APPEND_ATTACHMENT), configMap.get(IGNORE_ERROR), configMap.get(START_DATE), configMap.get(END_DATE),
+                    paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
         final ReportingExecutor executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
@@ -207,6 +220,27 @@ public class TeamsDataStore extends Microsoft365DataStore {
     /**
      * Processes chat messages.
      *
+     * <p>A chat is consolidated into a single document, so {@code start_date}/{@code end_date} are
+     * evaluated once for the whole conversation by {@link #isTargetChatDate}: the chat is kept when
+     * <em>any</em> of its messages falls inside the range. The consolidated document's own
+     * timestamp cannot be used for that decision -- {@link #createChatMessage} inherits it from
+     * {@code msgList.get(0)}, and {@link Microsoft365Client#getChatMessages} sets no
+     * {@code $orderby} and does not sort, so which message that is depends entirely on Graph's
+     * default ordering. Deciding across the whole list needs no assumption about that ordering and
+     * cannot drop a conversation the operator asked for.</p>
+     *
+     * <p>The consolidated document is therefore processed with the bounds removed from its
+     * configuration: the range decision has already been made, with the whole conversation in view,
+     * and re-applying it to a single synthetic timestamp would only undo it.</p>
+     *
+     * <p>A failure listing the chat's messages or resolving its roles aborted the whole crawl even
+     * with {@code ignore_error=true}, because nothing here caught it and {@code storeData}'s
+     * try-with-resources has no {@code catch}. It is gated the same way the four team and channel
+     * sites are: the default is unchanged - the failure still aborts - and {@code ignore_error=true}
+     * now downgrades it to a WARN, as an operator who sets the flag to survive a stale ID expects.
+     * Only paths that already threw are gated; gating one that already logged and continued would
+     * turn it into an abort for configurations that never set the parameter.</p>
+     *
      * @param dataConfig The data configuration.
      * @param callback The index update callback.
      * @param paramMap The data store parameters.
@@ -226,37 +260,54 @@ public class TeamsDataStore extends Microsoft365DataStore {
                 logger.debug("Processing messages for specific chat: {}", chatId);
             }
 
-            final List<ChatMessage> msgList = new ArrayList<>();
+            try {
+                final List<ChatMessage> msgList = new ArrayList<>();
 
-            client.getChatMessages(Collections.emptyList(), m -> {
-                msgList.add(m);
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Retrieved chat: {}", chatId);
-                }
-            }, chatId);
-
-            if (!msgList.isEmpty()) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Creating consolidated chat message from {} individual messages for chat: {}", msgList.size(), chatId);
-                }
-
-                final List<ChatMessage> messagesSnapshot = Collections.unmodifiableList(new ArrayList<>(msgList));
-                final ChatMessage consolidatedMessage = createChatMessage(messagesSnapshot, client);
-                final List<String> chatRoles = getGroupRoles(client, chatId);
-                executorService.execute(() -> {
+                client.getChatMessages(Collections.emptyList(), m -> {
+                    msgList.add(m);
                     if (logger.isDebugEnabled()) {
-                        logger.debug("Submitting consolidated chat processing task for chat: {}", chatId);
+                        logger.debug("Retrieved chat: {}", chatId);
                     }
-                    processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, chatRoles, consolidatedMessage,
-                            map -> map.put("messages", messagesSnapshot), client);
-                });
+                }, chatId);
 
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Submitted consolidated chat processing task for chat: {} with {} individual messages", chatId,
-                            msgList.size());
+                if (!msgList.isEmpty()) {
+                    final List<ChatMessage> messagesSnapshot = Collections.unmodifiableList(new ArrayList<>(msgList));
+
+                    if (!isTargetChatDate(configMap, messagesSnapshot)) {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Skipping chat outside the configured date range: {} ({} messages, none in range)", chatId,
+                                    messagesSnapshot.size());
+                        }
+                        return;
+                    }
+
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Creating consolidated chat message from {} individual messages for chat: {}", msgList.size(), chatId);
+                    }
+
+                    final ChatMessage consolidatedMessage = createChatMessage(messagesSnapshot, client);
+                    final List<String> chatRoles = getGroupRoles(client, chatId);
+                    final Map<String, Object> chatConfigMap = withoutDateRange(configMap);
+                    executorService.execute(() -> {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Submitting consolidated chat processing task for chat: {}", chatId);
+                        }
+                        processChatMessage(dataConfig, callback, chatConfigMap, paramMap, scriptMap, defaultDataMap, chatRoles,
+                                consolidatedMessage, map -> map.put("messages", messagesSnapshot), client);
+                    });
+
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Submitted consolidated chat processing task for chat: {} with {} individual messages", chatId,
+                                msgList.size());
+                    }
+                } else if (logger.isDebugEnabled()) {
+                    logger.debug("No messages found for chat: {}", chatId);
                 }
-            } else if (logger.isDebugEnabled()) {
-                logger.debug("No messages found for chat: {}", chatId);
+            } catch (final RuntimeException e) {
+                if (!Boolean.TRUE.equals(configMap.get(IGNORE_ERROR))) {
+                    throw new DataStoreException("Failed to process chat: " + chatId, e);
+                }
+                logger.warn("Failed to process chat: {}. Skipping it because {} is enabled.", chatId, IGNORE_ERROR, e);
             }
         } else if (logger.isDebugEnabled()) {
             logger.debug("No specific chat ID configured - skipping chat message processing");
@@ -310,6 +361,12 @@ public class TeamsDataStore extends Microsoft365DataStore {
     /**
      * Processes team messages.
      *
+     * <p>{@code ignore_error} is honoured only on the paths that abort the crawl today: an
+     * unresolvable {@code team_id}, an unresolvable {@code channel_id}, and a failure listing an
+     * explicitly configured team's channels. The all-teams branch below already logs and continues,
+     * so wiring the flag into it would have turned a tolerated failure into a crawl abort for every
+     * configuration that leaves {@code ignore_error} at its default of {@code false}.</p>
+     *
      * @param dataConfig The data configuration.
      * @param callback The index update callback.
      * @param paramMap The data store parameters.
@@ -331,7 +388,11 @@ public class TeamsDataStore extends Microsoft365DataStore {
 
             final Group g = client.getGroupById(teamId);
             if (g == null) {
-                throw new DataStoreException("Could not find a team: " + teamId);
+                if (!Boolean.TRUE.equals(configMap.get(IGNORE_ERROR))) {
+                    throw new DataStoreException("Could not find a team: " + teamId);
+                }
+                logger.warn("Could not find a team: {}. Skipping it because {} is enabled.", teamId, IGNORE_ERROR);
+                return;
             }
 
             if (logger.isDebugEnabled()) {
@@ -354,7 +415,12 @@ public class TeamsDataStore extends Microsoft365DataStore {
 
                 final Channel c = client.getChannelById(teamId, channelId);
                 if (c == null) {
-                    throw new DataStoreException("Could not find a channel: " + channelId);
+                    if (!Boolean.TRUE.equals(configMap.get(IGNORE_ERROR))) {
+                        throw new DataStoreException("Could not find a channel: " + channelId);
+                    }
+                    logger.warn("Could not find a channel: {} in team: {}. Skipping it because {} is enabled.", channelId, teamId,
+                            IGNORE_ERROR);
+                    return;
                 }
 
                 if (logger.isDebugEnabled()) {
@@ -371,11 +437,19 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     client.getChannels(Collections.emptyList(), c -> submitChannelMessages(dataConfig, callback, paramMap, scriptMap,
                             defaultDataMap, configMap, executorService, client, g, c), teamId);
                 } catch (final Exception e) {
-                    throw new DataStoreException("Failed to access channels for team: " + teamId + " (Display Name: " + g.getDisplayName()
-                            + "). Team may be archived or inaccessible.", e);
+                    if (!Boolean.TRUE.equals(configMap.get(IGNORE_ERROR))) {
+                        throw new DataStoreException("Failed to access channels for team: " + teamId + " (Display Name: "
+                                + g.getDisplayName() + "). Team may be archived or inaccessible.", e);
+                    }
+                    logger.warn("Failed to access channels for team: {} (Display Name: {}). Skipping it because {} is enabled.", teamId,
+                            g.getDisplayName(), IGNORE_ERROR, e);
                 }
             }
-        } else if (teamId == null) {
+        } else {
+            // teamId is null (absent) or blank (present but empty, e.g. team_id=): both mean "no
+            // specific team was requested", so both fall through to the all-teams path. Gating this
+            // on `teamId == null` alone left team_id="" matching neither branch above nor here,
+            // crawling zero teams while still reporting success.
             if (logger.isDebugEnabled()) {
                 logger.debug("Processing messages for all teams with visibility and exclusion filters");
             }
@@ -450,6 +524,15 @@ public class TeamsDataStore extends Microsoft365DataStore {
     /**
      * Processes all messages for a given channel including replies when enabled.
      *
+     * <p>Replies are fetched only for a root message that {@code processChatMessage} actually
+     * indexed. With {@code start_date}/{@code end_date} set, a root outside the window therefore
+     * also excludes its replies. That is deliberate: it keeps a reply from ever being indexed with
+     * a {@code parent} that was never processed, and it is the one place the range saves Graph
+     * traffic -- the reply listing for an out-of-range root is never issued. A reply is always at
+     * or after its root, so an {@code end_date} that excludes a root correctly excludes its
+     * replies; only {@code start_date} can drop an in-window reply, and only of a conversation
+     * whose opening message the operator asked not to index.</p>
+     *
      * @param dataConfig The data configuration.
      * @param callback The index update callback.
      * @param paramMap The data store parameters.
@@ -498,7 +581,9 @@ public class TeamsDataStore extends Microsoft365DataStore {
         } catch (final Exception e) {
             logger.warn("Failed to process channel: {} (Display Name: {}) in team: {}", channel.getId(), channel.getDisplayName(),
                     group.getDisplayName(), e);
-            throw new DataStoreException("Failed to process channel: " + channel.getId(), e);
+            if (!Boolean.TRUE.equals(configMap.get(IGNORE_ERROR))) {
+                throw new DataStoreException("Failed to process channel: " + channel.getId(), e);
+            }
         }
     }
 
@@ -530,6 +615,11 @@ public class TeamsDataStore extends Microsoft365DataStore {
 
     /**
      * Gets the set of excluded group IDs based on configured exclude team IDs.
+     *
+     * <p>Deliberately not gated by {@code ignore_error}: this lookup resolves
+     * {@code exclude_team_ids}, so skipping a failure here would leave a team the operator asked to
+     * exclude out of the exclusion set and crawl it. {@code ignore_error} may make the crawl more
+     * forgiving, never wider.</p>
      *
      * @param configMap The configuration map containing exclude team ID settings.
      * @param client The Microsoft365Client for group lookups.
@@ -597,6 +687,166 @@ public class TeamsDataStore extends Microsoft365DataStore {
      */
     protected Object isIgnoreSystemEvents(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_EVENTS, Constants.TRUE));
+    }
+
+    /**
+     * Parses both date bounds and puts them into the configuration, once per crawl.
+     *
+     * <p>An inverted range -- {@code start_date} later than {@code end_date}, which matches no
+     * message at all -- is reported with one {@code WARN} and then <em>ignored on both sides</em>
+     * rather than applied. Applying it would index nothing while reporting a successful crawl,
+     * leaving one {@code DEBUG} line per skipped message as the only trace: the silent empty index
+     * this feature is documented never to produce. Ignoring it instead falls back to the
+     * unfiltered crawl that existed before the parameters, which is the same warn-and-fall-back
+     * treatment a malformed bound already gets -- an inverted range is a swapped pair of values,
+     * never something an operator asks for on purpose.</p>
+     *
+     * @param configMap The configuration map to populate.
+     * @param paramMap The data store parameters.
+     */
+    protected void putDateRange(final Map<String, Object> configMap, final DataStoreParams paramMap) {
+        OffsetDateTime startDate = getStartDate(paramMap);
+        OffsetDateTime endDate = getEndDate(paramMap);
+        if (startDate != null && endDate != null && startDate.isAfter(endDate)) {
+            logger.warn("Ignoring {}={} and {}={}: the range is inverted and would match no message. Crawling without a date range.",
+                    START_DATE, startDate, END_DATE, endDate);
+            startDate = null;
+            endDate = null;
+        }
+        configMap.put(START_DATE, startDate);
+        configMap.put(END_DATE, endDate);
+    }
+
+    /**
+     * Gets the inclusive lower bound on a message's timestamp.
+     *
+     * @param paramMap The data store parameters.
+     * @return the lower bound, or null when unset or unparseable (i.e. no lower bound).
+     */
+    protected OffsetDateTime getStartDate(final DataStoreParams paramMap) {
+        return parseDateBound(paramMap.getAsString(START_DATE), START_DATE, false);
+    }
+
+    /**
+     * Gets the inclusive upper bound on a message's timestamp.
+     *
+     * @param paramMap The data store parameters.
+     * @return the upper bound, or null when unset or unparseable (i.e. no upper bound).
+     */
+    protected OffsetDateTime getEndDate(final DataStoreParams paramMap) {
+        return parseDateBound(paramMap.getAsString(END_DATE), END_DATE, true);
+    }
+
+    /**
+     * Parses a date-range bound.
+     *
+     * <p>Accepts a full ISO-8601 offset date-time (used verbatim) or a date-only ISO-8601 value,
+     * which is interpreted in UTC: the start of that day for a lower bound, the last instant of
+     * that day for an upper bound. An unparseable value is logged once and treated as absent, so
+     * a typo never aborts a crawl -- and, just as importantly, never narrows one: the operator
+     * gets the unfiltered crawl they had before the parameter existed, not an empty index. This is
+     * the same warn-and-fall-back treatment a malformed {@code include_pattern} and a malformed
+     * {@code max_content_length} already get in this plugin.</p>
+     *
+     * @param value The raw parameter value, may be null or blank.
+     * @param key The parameter name, for the warning message.
+     * @param endOfDay Whether a date-only value means the end of that day rather than its start.
+     * @return the parsed bound, or null.
+     */
+    protected OffsetDateTime parseDateBound(final String value, final String key, final boolean endOfDay) {
+        if (StringUtil.isBlank(value)) {
+            return null;
+        }
+        final String trimmed = value.trim();
+        try {
+            return OffsetDateTime.parse(trimmed, DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+        } catch (final DateTimeParseException e) {
+            // Not an offset date-time; try the date-only form below.
+        }
+        try {
+            final LocalDate date = LocalDate.parse(trimmed, DateTimeFormatter.ISO_LOCAL_DATE);
+            return (endOfDay ? date.atTime(LocalTime.MAX) : date.atStartOfDay()).atOffset(ZoneOffset.UTC);
+        } catch (final DateTimeParseException e) {
+            logger.warn("Ignoring {}={}: expected an ISO-8601 date (yyyy-MM-dd) or offset date-time (yyyy-MM-dd'T'HH:mm:ssXXX).", key,
+                    trimmed);
+            return null;
+        }
+    }
+
+    /**
+     * Checks whether a message's timestamp falls inside the configured date range.
+     *
+     * <p>Both bounds are inclusive. {@code createdDateTime} is compared, falling back to
+     * {@code lastModifiedDateTime} when it is null; a message with neither is kept, so a missing
+     * timestamp never silently removes content from the index. A timestamp the Graph SDK cannot
+     * parse never reaches this method at all -- it throws inside the client's deserializer, where
+     * {@code ignore_error} decides whether the channel is skipped or the crawl aborts.</p>
+     *
+     * @param configMap The configuration map holding the parsed bounds.
+     * @param message The chat message.
+     * @return true if the message should be indexed, false otherwise.
+     */
+    protected boolean isTargetMessageDate(final Map<String, Object> configMap, final ChatMessage message) {
+        final OffsetDateTime startDate = (OffsetDateTime) configMap.get(START_DATE);
+        final OffsetDateTime endDate = (OffsetDateTime) configMap.get(END_DATE);
+        if (startDate == null && endDate == null) {
+            return true;
+        }
+        OffsetDateTime timestamp = message.getCreatedDateTime();
+        if (timestamp == null) {
+            timestamp = message.getLastModifiedDateTime();
+        }
+        if (timestamp == null) {
+            return true;
+        }
+        if (startDate != null && timestamp.isBefore(startDate)) {
+            return false;
+        }
+        return endDate == null || !timestamp.isAfter(endDate);
+    }
+
+    /**
+     * Checks whether a chat, which is indexed as one consolidated document, falls inside the
+     * configured date range.
+     *
+     * <p>The chat is kept when <em>any</em> of its messages is in range. Judging the chat by the
+     * consolidated document's own timestamp would judge it by whichever message
+     * {@link Microsoft365Client#getChatMessages} happened to yield first -- that call sets no
+     * {@code $orderby} and does no client-side sort, so the order is Graph's default and not
+     * something this code controls. A chat spanning years would then be dropped whole on the
+     * strength of one message's timestamp, taking every in-range message with it.</p>
+     *
+     * <p>The consequence of the all-or-nothing shape is that the indexed body is still the whole
+     * conversation, including its out-of-range messages: consolidating a chat into one document
+     * leaves no way to index part of it.</p>
+     *
+     * @param configMap The configuration map holding the parsed bounds.
+     * @param messages The chat's messages.
+     * @return true if the chat should be indexed, false otherwise.
+     */
+    protected boolean isTargetChatDate(final Map<String, Object> configMap, final List<ChatMessage> messages) {
+        if (configMap.get(START_DATE) == null && configMap.get(END_DATE) == null) {
+            return true;
+        }
+        return messages.stream().anyMatch(message -> isTargetMessageDate(configMap, message));
+    }
+
+    /**
+     * Returns a copy of the configuration with both date bounds cleared.
+     *
+     * <p>Used for the consolidated chat document, whose range decision {@link #isTargetChatDate}
+     * has already made across the whole conversation. Leaving the bounds in place would let the
+     * per-message guard in {@link #processChatMessage} re-decide it from the single synthetic
+     * timestamp the consolidated document carries, and overturn it.</p>
+     *
+     * @param configMap The configuration map.
+     * @return a new map with the same entries except the two date bounds.
+     */
+    protected Map<String, Object> withoutDateRange(final Map<String, Object> configMap) {
+        final Map<String, Object> copy = new HashMap<>(configMap);
+        copy.remove(START_DATE);
+        copy.remove(END_DATE);
+        return copy;
     }
 
     /**
@@ -818,6 +1068,14 @@ public class TeamsDataStore extends Microsoft365DataStore {
         if (isSystemEvent(configMap, message)) {
             if (logger.isDebugEnabled()) {
                 logger.debug("Skipping system event message: {} (ID: {})", message.getWebUrl(), message.getId());
+            }
+            return null;
+        }
+
+        if (!isTargetMessageDate(configMap, message)) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping message outside the configured date range: {} (ID: {}, Created: {})", message.getWebUrl(),
+                        message.getId(), message.getCreatedDateTime());
             }
             return null;
         }

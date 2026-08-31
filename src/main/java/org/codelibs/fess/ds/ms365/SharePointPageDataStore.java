@@ -44,12 +44,15 @@ import com.microsoft.graph.models.BaseSitePage;
 import com.microsoft.graph.models.CanvasLayout;
 import com.microsoft.graph.models.HorizontalSection;
 import com.microsoft.graph.models.HorizontalSectionColumn;
+import com.microsoft.graph.models.MetaDataKeyStringPair;
+import com.microsoft.graph.models.ServerProcessedContent;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.models.SitePage;
 import com.microsoft.graph.models.StandardWebPart;
 import com.microsoft.graph.models.TextWebPart;
 import com.microsoft.graph.models.VerticalSection;
 import com.microsoft.graph.models.WebPart;
+import com.microsoft.graph.models.WebPartData;
 
 /**
  * SharePointPageDataStore crawls SharePoint pages (including news, wiki, and article pages).
@@ -117,6 +120,11 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         final Map<String, Object> configMap = new LinkedHashMap<>();
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
         configMap.put(IGNORE_SYSTEM_PAGES, isIgnoreSystemPages(paramMap));
+
+        // Compile include_pattern/exclude_pattern once, before any site is contacted, so a
+        // malformed one fails the crawl here instead of being reported once per site -- or, worse,
+        // dropping the filter and indexing the pages an exclude_pattern was meant to keep out.
+        validatePatterns(paramMap);
 
         if (logger.isDebugEnabled()) {
             logger.debug("SharePoint Pages crawling started - Configuration: IgnoreError={}, IgnoreSystemPages={}, Threads={}",
@@ -505,9 +513,21 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                 }
             }
         } else if (webpart instanceof final StandardWebPart stdPart) {
-            if (stdPart.getData() != null) {
+            final WebPartData data = stdPart.getData();
+            if (data != null) {
                 final int beforeLength = content.length();
-                extractDataFromObject(stdPart.getData(), content);
+                appendWebPartText(content, data.getTitle());
+                appendWebPartText(content, data.getDescription());
+                final ServerProcessedContent processedContent = data.getServerProcessedContent();
+                if (processedContent != null) {
+                    appendMetaDataPairs(content, processedContent.getSearchablePlainTexts());
+                    appendMetaDataPairs(content, processedContent.getHtmlStrings());
+                    appendMetaDataPairs(content, processedContent.getLinks());
+                }
+                // getAdditionalData() is a Map<String, Object>, the one shape extractDataFromObject
+                // can walk. getProperties() is deliberately not read: it is a Kiota UntypedNode with
+                // no typed model, and its runtime shape cannot be validated without a live tenant.
+                extractDataFromObject(data.getAdditionalData(), content);
                 if (logger.isDebugEnabled()) {
                     logger.debug("Extracted from StandardWebPart: {} characters", content.length() - beforeLength);
                 }
@@ -515,6 +535,68 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         } else if (logger.isDebugEnabled()) {
             logger.debug("Unsupported web part type: {}", webpart.getClass().getSimpleName());
         }
+    }
+
+    /**
+     * Appends a typed web-part string to the extracted content after stripping markup.
+     *
+     * <p>Unlike {@link #extractDataFromObject(Object, StringBuilder)}, no length or
+     * {@link #isGuidOrId(String)} heuristic is applied: these values come from explicitly named,
+     * typed fields, so a short value such as a three-letter web-part title is real content.</p>
+     *
+     * @param content StringBuilder to append extracted content to
+     * @param value the raw value, may be null or blank
+     */
+    protected void appendWebPartText(final StringBuilder content, final String value) {
+        if (StringUtil.isBlank(value)) {
+            return;
+        }
+        final String text = stripWebPartMarkup(value);
+        if (!text.isEmpty()) {
+            content.append(text).append(' ');
+        }
+    }
+
+    /**
+     * Appends the values of a serverProcessedContent key/value list to the extracted content.
+     *
+     * @param content StringBuilder to append extracted content to
+     * @param pairs the key/value pairs, may be null
+     */
+    protected void appendMetaDataPairs(final StringBuilder content, final List<MetaDataKeyStringPair> pairs) {
+        if (pairs == null) {
+            return;
+        }
+        for (final MetaDataKeyStringPair pair : pairs) {
+            if (pair != null) {
+                appendWebPartText(content, pair.getValue());
+            }
+        }
+    }
+
+    /**
+     * Strips HTML tags, decodes HTML entities and normalizes whitespace.
+     *
+     * <p>Tags are stripped <em>before</em> entities are decoded. Decoding first would turn a
+     * decoded {@code &lt;} into a literal {@code <}, which the tag-stripping regex would then
+     * treat as the start of a new tag and consume everything up to the next {@code >} - silently
+     * deleting real text (e.g. {@code 5 &lt; 10 and a &gt; b} would collapse to {@code 5 b}).
+     * This is the single implementation of that cleanup; {@link #extractDataFromObject(Object,
+     * StringBuilder)} calls it too instead of duplicating it.</p>
+     *
+     * @param value the raw value, must not be null
+     * @return the cleaned text
+     */
+    protected String stripWebPartMarkup(final String value) {
+        return value.replaceAll("<[^>]+>", " ")
+                .replace("&nbsp;", " ")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("&amp;", "&")
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     /**
@@ -541,16 +623,7 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                     final String text = ((String) value).trim();
                     // Filter based on key names to avoid extracting IDs, GUIDs, or metadata
                     if (!text.isEmpty() && text.length() > 5 && !isGuidOrId(text)) {
-
-                        // Clean up HTML entities and tags if present
-                        final String cleanText = text.replace("&nbsp;", " ")
-                                .replace("&lt;", "<")
-                                .replace("&gt;", ">")
-                                .replace("&amp;", "&")
-                                .replaceAll("<[^>]+>", " ")
-                                .replaceAll("\\s+", " ")
-                                .trim();
-
+                        final String cleanText = stripWebPartMarkup(text);
                         if (cleanText.length() > 5) {
                             content.append(cleanText).append(" ");
                         }
@@ -567,14 +640,7 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         } else if (data instanceof String) {
             final String text = ((String) data).trim();
             if (!text.isEmpty() && text.length() > 5 && !isGuidOrId(text)) {
-                final String cleanText = text.replace("&nbsp;", " ")
-                        .replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&amp;", "&")
-                        .replaceAll("<[^>]+>", " ")
-                        .replaceAll("\\s+", " ")
-                        .trim();
-
+                final String cleanText = stripWebPartMarkup(text);
                 if (cleanText.length() > 5) {
                     content.append(cleanText).append(" ");
                 }
@@ -735,24 +801,5 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
      */
     protected boolean isIgnoreSystemPages(final DataStoreParams paramMap) {
         return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_SYSTEM_PAGES, Constants.TRUE));
-    }
-
-    /**
-     * Gets a compiled regex pattern from parameters.
-     *
-     * @param paramMap data store parameters
-     * @param key the parameter key for the pattern
-     * @return compiled Pattern or null if pattern is blank or invalid
-     */
-    protected Pattern getPattern(final DataStoreParams paramMap, final String key) {
-        final String pattern = paramMap.getAsString(key);
-        if (StringUtil.isNotBlank(pattern)) {
-            try {
-                return Pattern.compile(pattern);
-            } catch (final Exception e) {
-                logger.warn("Invalid regex pattern for {}: {}", key, pattern, e);
-            }
-        }
-        return null;
     }
 }

@@ -21,7 +21,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
@@ -98,13 +100,26 @@ public class OneNoteDataStore extends Microsoft365DataStore {
                     isGroupNoteCrawler(paramMap));
         }
 
+        // Compile include_pattern/exclude_pattern once, before any notebook is listed. The three
+        // scope methods below each ask for them, so a malformed one reported from there would be
+        // reported three times -- and a malformed exclude_pattern that merely warned would index
+        // every notebook the operator asked to keep out.
+        validatePatterns(paramMap);
+
+        // A mistyped include_pattern/exclude_pattern can silently exclude every notebook: the
+        // crawl still finishes without error, it just indexes nothing. filterStats counts seen
+        // vs. admitted notebooks across all three scopes so that case gets exactly one WARN
+        // below, not silence and not one WARN per skipped notebook.
+        final String configuredPatterns = configuredPatternNames(paramMap);
+        final NotebookFilterStats filterStats = new NotebookFilterStats();
+
         final ReportingExecutor executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
         try (final Microsoft365Client client = createClient(paramMap)) {
             if (isSiteNoteCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Starting site notebooks crawling");
                 }
-                storeSiteNotes(dataConfig, callback, paramMap, scriptMap, defaultDataMap, executorService, client);
+                storeSiteNotes(dataConfig, callback, paramMap, scriptMap, defaultDataMap, executorService, client, filterStats);
                 if (logger.isDebugEnabled()) {
                     logger.debug("Completed site notebooks crawling");
                 }
@@ -113,7 +128,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Starting user notebooks crawling");
                 }
-                storeUsersNotes(dataConfig, callback, paramMap, scriptMap, defaultDataMap, executorService, client);
+                storeUsersNotes(dataConfig, callback, paramMap, scriptMap, defaultDataMap, executorService, client, filterStats);
                 if (logger.isDebugEnabled()) {
                     logger.debug("Completed user notebooks crawling");
                 }
@@ -122,10 +137,16 @@ public class OneNoteDataStore extends Microsoft365DataStore {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Starting group notebooks crawling");
                 }
-                storeGroupsNotes(dataConfig, callback, paramMap, scriptMap, defaultDataMap, executorService, client);
+                storeGroupsNotes(dataConfig, callback, paramMap, scriptMap, defaultDataMap, executorService, client, filterStats);
                 if (logger.isDebugEnabled()) {
                     logger.debug("Completed group notebooks crawling");
                 }
+            }
+            if (configuredPatterns != null && filterStats.matchedNothing()) {
+                logger.warn(
+                        "{} matched none of the {} notebook(s) seen in this crawl (site/user/group scopes combined); "
+                                + "the crawl succeeded but indexed nothing. Check the pattern against the notebooks' display names.",
+                        configuredPatterns, filterStats.seenCount());
             }
             if (logger.isDebugEnabled()) {
                 logger.debug("OneNote crawling completed - shutting down thread executor");
@@ -176,10 +197,11 @@ public class OneNoteDataStore extends Microsoft365DataStore {
      * @param defaultDataMap The default data map.
      * @param executorService The executor service.
      * @param client The Microsoft365Client.
+     * @param filterStats The crawl's notebook include/exclude counters.
      */
     protected void storeSiteNotes(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
-            final Microsoft365Client client) {
+            final Microsoft365Client client, final NotebookFilterStats filterStats) {
         final Site root;
         try {
             root = client.getSite("root");
@@ -197,8 +219,15 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         // so site notebooks carry no owner-derived roles. default_permissions is their only role
         // source.
         final List<String> roles = getDefaultPermissions(paramMap);
-        getNotebooks(client, NotebookScope.SITE, root.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig,
-                callback, paramMap, scriptMap, defaultDataMap, client, NotebookScope.SITE, root.getId(), notebook, roles)));
+        final Pattern includePattern = getPattern(paramMap, INCLUDE_PATTERN);
+        final Pattern excludePattern = getPattern(paramMap, EXCLUDE_PATTERN);
+        getNotebooks(client, NotebookScope.SITE, root.getId(), notebook -> {
+            if (!isTargetNotebookTracked(filterStats, includePattern, excludePattern, notebook)) {
+                return;
+            }
+            executorService.execute(() -> processNotebook(dataConfig, callback, paramMap, scriptMap, defaultDataMap, client,
+                    NotebookScope.SITE, root.getId(), notebook, roles));
+        });
     }
 
     /**
@@ -211,15 +240,18 @@ public class OneNoteDataStore extends Microsoft365DataStore {
      * @param defaultDataMap The default data map.
      * @param executorService The executor service.
      * @param client The Microsoft365Client.
+     * @param filterStats The crawl's notebook include/exclude counters.
      */
     protected void storeUsersNotes(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
-            final Microsoft365Client client) {
+            final Microsoft365Client client, final NotebookFilterStats filterStats) {
 
         if (logger.isDebugEnabled()) {
             logger.debug("Starting user notebooks processing - retrieving licensed users");
         }
 
+        final Pattern includePattern = getPattern(paramMap, INCLUDE_PATTERN);
+        final Pattern excludePattern = getPattern(paramMap, EXCLUDE_PATTERN);
         getLicensedUsers(client, user -> {
             // A user notebook already derives roles from its owner; default_permissions adds to
             // that list, it does not replace it. getUserRoles returns an immutable singleton
@@ -233,6 +265,9 @@ public class OneNoteDataStore extends Microsoft365DataStore {
 
             try {
                 getNotebooks(client, NotebookScope.USER, user.getId(), notebook -> {
+                    if (!isTargetNotebookTracked(filterStats, includePattern, excludePattern, notebook)) {
+                        return;
+                    }
                     if (logger.isDebugEnabled()) {
                         logger.debug("Processing notebook: {} for user: {}", notebook.getDisplayName(), user.getDisplayName());
                     }
@@ -255,15 +290,18 @@ public class OneNoteDataStore extends Microsoft365DataStore {
      * @param defaultDataMap The default data map.
      * @param executorService The executor service.
      * @param client The Microsoft365Client.
+     * @param filterStats The crawl's notebook include/exclude counters.
      */
     protected void storeGroupsNotes(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
-            final Microsoft365Client client) {
+            final Microsoft365Client client, final NotebookFilterStats filterStats) {
 
         if (logger.isDebugEnabled()) {
             logger.debug("Starting group notebooks processing - retrieving Microsoft 365 groups");
         }
 
+        final Pattern includePattern = getPattern(paramMap, INCLUDE_PATTERN);
+        final Pattern excludePattern = getPattern(paramMap, EXCLUDE_PATTERN);
         getMicrosoft365Groups(client, group -> {
             // A group notebook already derives roles from its owner; default_permissions adds to
             // that list, it does not replace it. getGroupRoles returns an immutable singleton
@@ -277,6 +315,9 @@ public class OneNoteDataStore extends Microsoft365DataStore {
 
             try {
                 getNotebooks(client, NotebookScope.GROUP, group.getId(), notebook -> {
+                    if (!isTargetNotebookTracked(filterStats, includePattern, excludePattern, notebook)) {
+                        return;
+                    }
                     if (logger.isDebugEnabled()) {
                         logger.debug("Processing notebook: {} for group: {}", notebook.getDisplayName(), group.getDisplayName());
                     }
@@ -474,6 +515,143 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             } else {
                 logger.warn("Failed to retrieve notebooks for {} {}.", scope, ownerId, e);
             }
+        }
+    }
+
+    /**
+     * Checks whether a notebook passes the configured include/exclude filters.
+     *
+     * <p>Both patterns are matched against the notebook's display name as a <em>full</em> match
+     * ({@link java.util.regex.Matcher#matches()}), the same semantics
+     * {@link SharePointListDataStore} applies to a list item's title. A notebook with no display
+     * name is matched as the empty string rather than bypassing the filters: an operator who set
+     * {@code include_pattern} has said what they want indexed, and an unnamed notebook is not it,
+     * so such a notebook is excluded by any {@code include_pattern} that does not match {@code ""}
+     * and kept under an {@code exclude_pattern} that does not match {@code ""}. A whitespace-only
+     * name is treated the same as a missing one: {@code null}, {@code ""} and {@code "   "} are
+     * three spellings of the same thing, and a pattern such as {@code .+} must not admit one and
+     * reject another. A name with any other character is matched verbatim.</p>
+     *
+     * @param includePattern the include pattern, or null for no include filtering
+     * @param excludePattern the exclude pattern, or null for no exclude filtering
+     * @param notebook the notebook to check
+     * @return true if the notebook should be crawled, false otherwise
+     */
+    protected boolean isTargetNotebook(final Pattern includePattern, final Pattern excludePattern, final Notebook notebook) {
+        if (includePattern == null && excludePattern == null) {
+            return true;
+        }
+        // A missing name is matched as "" rather than special-cased into an unconditional pass:
+        // the configured patterns decide, with the same full-match semantics as every other name.
+        // Whitespace-only counts as missing, so that null, "" and "   " -- three spellings of "this
+        // notebook has no usable name" -- cannot be told apart by a pattern such as ".+". A name
+        // that has other characters is used verbatim, surrounding whitespace included, so no
+        // existing pattern changes meaning.
+        final String displayName = StringUtil.isBlank(notebook.getDisplayName()) ? StringUtil.EMPTY : notebook.getDisplayName();
+        if (includePattern != null && !includePattern.matcher(displayName).matches()) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping notebook {}: does not match {}", displayName, INCLUDE_PATTERN);
+            }
+            return false;
+        }
+        if (excludePattern != null && excludePattern.matcher(displayName).matches()) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping notebook {}: matches {}", displayName, EXCLUDE_PATTERN);
+            }
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * As {@link #isTargetNotebook}, but also records the decision into the crawl's {@link
+     * NotebookFilterStats}, so a crawl where a configured pattern matched no notebooks at all can
+     * be reported once instead of not at all.
+     *
+     * <p>Called from all three scope consumers ({@code storeSiteNotes}, {@code storeUsersNotes},
+     * {@code storeGroupsNotes}) instead of {@link #isTargetNotebook} directly. The counters are
+     * passed down the call chain rather than stashed in {@code paramMap}: {@code processNotebook}
+     * copies {@code paramMap} wholesale into every notebook's script bindings, so anything left
+     * there becomes an operator-visible script variable, and these counters are internal
+     * bookkeeping.</p>
+     *
+     * @param filterStats the crawl's notebook include/exclude counters
+     * @param includePattern the include pattern, or null for no include filtering
+     * @param excludePattern the exclude pattern, or null for no exclude filtering
+     * @param notebook the notebook to check
+     * @return true if the notebook should be crawled, false otherwise
+     */
+    protected boolean isTargetNotebookTracked(final NotebookFilterStats filterStats, final Pattern includePattern,
+            final Pattern excludePattern, final Notebook notebook) {
+        filterStats.recordSeen();
+        final boolean target = isTargetNotebook(includePattern, excludePattern, notebook);
+        if (target) {
+            filterStats.recordAdmitted();
+        }
+        return target;
+    }
+
+    /**
+     * Names the notebook filter parameters this configuration actually sets, for the
+     * "matched none" warning.
+     *
+     * <p>Naming both unconditionally would tell an operator who set only {@code exclude_pattern}
+     * to go and check an {@code include_pattern} that is not in their configuration.</p>
+     *
+     * @param paramMap the data store parameters
+     * @return {@code "include_pattern"}, {@code "exclude_pattern"} or {@code
+     *         "include_pattern/exclude_pattern"}, or null when neither is set
+     */
+    protected String configuredPatternNames(final DataStoreParams paramMap) {
+        final boolean include = StringUtil.isNotBlank(paramMap.getAsString(INCLUDE_PATTERN));
+        final boolean exclude = StringUtil.isNotBlank(paramMap.getAsString(EXCLUDE_PATTERN));
+        if (include && exclude) {
+            return INCLUDE_PATTERN + "/" + EXCLUDE_PATTERN;
+        }
+        if (include) {
+            return INCLUDE_PATTERN;
+        }
+        if (exclude) {
+            return EXCLUDE_PATTERN;
+        }
+        return null;
+    }
+
+    /**
+     * Per-crawl notebook include/exclude filter counters, shared across the SITE, USER and GROUP
+     * scopes of a single {@link #storeData} call so it can warn exactly once if a configured
+     * pattern matched no notebooks anywhere, instead of once per skipped notebook.
+     */
+    protected static final class NotebookFilterStats {
+        private final AtomicInteger seen = new AtomicInteger();
+        private final AtomicInteger admitted = new AtomicInteger();
+
+        /**
+         * Default constructor.
+         */
+        NotebookFilterStats() {
+        }
+
+        private void recordSeen() {
+            seen.incrementAndGet();
+        }
+
+        private void recordAdmitted() {
+            admitted.incrementAndGet();
+        }
+
+        /**
+         * @return the number of notebooks seen (checked against the filter), across every scope
+         */
+        int seenCount() {
+            return seen.get();
+        }
+
+        /**
+         * @return true if at least one notebook was seen and none of them were admitted
+         */
+        boolean matchedNothing() {
+            return seen.get() > 0 && admitted.get() == 0;
         }
     }
 

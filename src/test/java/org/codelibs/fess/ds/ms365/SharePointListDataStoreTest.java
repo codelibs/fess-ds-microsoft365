@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
@@ -35,6 +37,7 @@ import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.GraphMockServer;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -987,6 +990,72 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         void useSystemHelper(final org.codelibs.fess.helper.SystemHelper systemHelper) {
             this.systemHelper = systemHelper;
         }
+    }
+
+    /**
+     * A malformed {@code exclude_pattern} used to be swallowed by {@code getPattern}, which
+     * returned null; {@code isTargetItem} reads null as "no filtering", so every item the
+     * operator asked to exclude was indexed and the job still reported success. Pins that the
+     * crawl fails instead, once, before the first Graph call - not once per list item.
+     */
+    @Test
+    public void test_storeData_malformedExcludePatternFailsBeforeAnyGraphCall() {
+        final AtomicInteger clientsCreated = new AtomicInteger();
+        final SharePointListDataStore testDataStore = new SharePointListDataStore() {
+            @Override
+            protected Microsoft365Client createClient(final DataStoreParams paramMap) {
+                clientsCreated.incrementAndGet();
+                throw new AssertionError("storeData must fail on the malformed pattern before creating a client");
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("exclude_pattern", ".*CONFIDENTIAL.*[");
+
+        final DataStoreException e = assertThrows(DataStoreException.class,
+                () -> testDataStore.storeData(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>()));
+        assertTrue("the failure must name the parameter, got: " + e.getMessage(), e.getMessage().contains("exclude_pattern"));
+        assertTrue("the failure must carry the regex syntax error, got: " + e.getMessage(),
+                e.getMessage().contains("Unclosed character class"));
+        assertEquals("no Graph client may be created for a crawl that cannot honour its own filter", 0, clientsCreated.get());
+    }
+
+    /**
+     * The half of the same defect that matters most: an item whose title the operator's
+     * {@code exclude_pattern} was meant to keep out must never be admitted because the pattern
+     * failed to compile.
+     */
+    @Test
+    public void test_isTargetItem_malformedExcludePatternDoesNotFailOpen() {
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("exclude_pattern", ".*CONFIDENTIAL.*[");
+
+        final ListItem item = new ListItem();
+        item.setId("item-1");
+        final FieldValueSet fields = new FieldValueSet();
+        final Map<String, Object> additionalData = new HashMap<>();
+        additionalData.put("Title", "Board Minutes 2026 CONFIDENTIAL");
+        fields.setAdditionalData(additionalData);
+        item.setFields(fields);
+
+        assertThrows(DataStoreException.class, () -> dataStore.isTargetItem(paramMap, item));
+    }
+
+    /**
+     * The counterpart: a well-formed pattern must still filter, and storeData must not reject a
+     * configuration that sets neither pattern.
+     */
+    @Test
+    public void test_validatePatterns_acceptsWellFormedAndAbsentPatterns() {
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+
+        dataStore.validatePatterns(new DataStoreParams());
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("include_pattern", ".*Report.*");
+        paramMap.put("exclude_pattern", ".*Draft.*");
+        dataStore.validatePatterns(paramMap);
     }
 
     private static com.microsoft.graph.models.List listWithTemplate(final String template) {
