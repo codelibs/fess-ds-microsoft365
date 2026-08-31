@@ -353,7 +353,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         final Map<String, Object> resultMap = new LinkedHashMap<>(paramMap.asMap());
         final Map<String, Object> notebooksMap = new HashMap<>();
         final StatsKeyObject statsKey = new StatsKeyObject(notebook.getId());
-        paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
+        final DataStoreParams localParams = newStatsParams(paramMap, statsKey);
 
         if (logger.isDebugEnabled()) {
             logger.debug("Processing notebook: {} (ID: {}) for {} {} - Roles: {}", notebook.getDisplayName(), notebook.getId(), scope,
@@ -423,7 +423,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
                 statsKey.setUrl(statsUrl);
             }
 
-            callback.store(paramMap, dataMap);
+            callback.store(localParams, dataMap);
             crawlerStatsHelper.record(statsKey, StatsAction.FINISHED);
 
             if (logger.isDebugEnabled()) {

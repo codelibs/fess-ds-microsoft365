@@ -27,7 +27,6 @@ import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.lang.StringUtil;
-import org.codelibs.fess.Constants;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
@@ -358,7 +357,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
 
         final StatsKeyObject statsKey = new StatsKeyObject(itemUrl);
-        paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
+        final DataStoreParams localParams = newStatsParams(paramMap, statsKey);
 
         try {
             crawlerStatsHelper.begin(statsKey);
@@ -505,7 +504,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                 statsKey.setUrl(statsUrl);
             }
 
-            callback.store(paramMap, dataMap);
+            callback.store(localParams, dataMap);
             crawlerStatsHelper.record(statsKey, StatsAction.FINISHED);
 
             if (logger.isDebugEnabled()) {
