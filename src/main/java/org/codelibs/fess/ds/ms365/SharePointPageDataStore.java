@@ -29,9 +29,7 @@ import org.apache.logging.log4j.Logger;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
-import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
-import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
@@ -39,8 +37,6 @@ import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
-import org.codelibs.fess.helper.PermissionHelper;
-import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -66,20 +62,8 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     private static final Logger logger = LogManager.getLogger(SharePointPageDataStore.class);
 
     // Configuration parameters
-    /** Site ID parameter name for specifying which SharePoint site to crawl */
-    protected static final String SITE_ID = "site_id";
-    /** Comma-separated list of site IDs to exclude from crawling */
-    protected static final String EXCLUDE_SITE_ID = "exclude_site_id";
     /** Flag to ignore system pages */
     protected static final String IGNORE_SYSTEM_PAGES = "ignore_system_pages";
-    /** Number of concurrent threads for processing */
-    protected static final String NUMBER_OF_THREADS = "number_of_threads";
-    /** Flag to continue crawling on errors */
-    protected static final String IGNORE_ERROR = "ignore_error";
-    /** Regular expression pattern for pages to include */
-    protected static final String INCLUDE_PATTERN = "include_pattern";
-    /** Regular expression pattern for pages to exclude */
-    protected static final String EXCLUDE_PATTERN = "exclude_pattern";
     /** Page type filter (news, wiki, article) */
     protected static final String PAGE_TYPE_FILTER = "page_type_filter";
 
@@ -114,9 +98,6 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     protected static final String PAGE_CANONICAL_URL = "url";
     /** Field mapping for page promotion state */
     protected static final String PAGE_PROMOTION_STATE = "promotion_state";
-
-    /** Name of the extractor to use for page content extraction */
-    protected String extractorName = "sharePointPageExtractor";
 
     /**
      * Default constructor for SharePointPageDataStore.
@@ -269,7 +250,6 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         }
 
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
-        final FessConfig fessConfig = ComponentUtil.getFessConfig();
         final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
 
         final StatsKeyObject statsKey = new StatsKeyObject(pageUrl);
@@ -339,14 +319,10 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
             // site-derived roles. default_permissions below is its only role source.
             final List<String> permissions = new ArrayList<>();
 
-            final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
-            StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(permissions::add));
-            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
-                roleTypeList.stream().map(s -> (String) s).forEach(permissions::add);
-            }
+            permissions.addAll(getDefaultPermissions(paramMap));
 
-            final List<String> finalPermissions = permissions.stream().distinct().collect(Collectors.toList());
+            final List<String> finalPermissions =
+                    mergeDefaultRoles(permissions, defaultDataMap).stream().distinct().collect(Collectors.toList());
             if (logger.isDebugEnabled()) {
                 logger.debug("Final permissions for page {} - Count: {}, Permissions: {}", fullPage.getId(), finalPermissions.size(),
                         finalPermissions);
@@ -391,32 +367,11 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         } catch (final CrawlingAccessException e) {
             logger.warn("Crawling Access Exception for page: {} (ID: {}) in site: {} - Data: {}", pageUrl, page.getId(),
                     site.getDisplayName(), dataMap, e);
-
-            Throwable target = e;
-            if (target instanceof final MultipleCrawlingAccessException ex) {
-                final Throwable[] causes = ex.getCauses();
-                if (causes.length > 0) {
-                    target = causes[causes.length - 1];
-                }
-            }
-
-            String errorName;
-            final Throwable cause = target.getCause();
-            if (cause != null) {
-                errorName = cause.getClass().getCanonicalName();
-            } else {
-                errorName = target.getClass().getCanonicalName();
-            }
-
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, errorName, pageUrl, target);
-            crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
+            handleCrawlingException(dataConfig, crawlerStatsHelper, statsKey, pageUrl, e);
         } catch (final Throwable t) {
             logger.warn("Processing exception for page: {} (ID: {}) in site: {} - Data: {}", pageUrl, page.getId(), site.getDisplayName(),
                     dataMap, t);
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), pageUrl, t);
-            crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
+            handleCrawlingThrowable(dataConfig, crawlerStatsHelper, statsKey, pageUrl, t);
         } finally {
             crawlerStatsHelper.done(statsKey);
         }
@@ -783,17 +738,6 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Checks if errors should be ignored during crawling.
-     *
-     * @param paramMap data store parameters
-     * @return true if errors should be ignored, false otherwise
-     */
-    @Override
-    protected boolean isIgnoreError(final DataStoreParams paramMap) {
-        return Constants.TRUE.equalsIgnoreCase(paramMap.getAsString(IGNORE_ERROR, Constants.FALSE));
-    }
-
-    /**
      * Gets a compiled regex pattern from parameters.
      *
      * @param paramMap data store parameters
@@ -810,37 +754,5 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
             }
         }
         return null;
-    }
-
-    /**
-     * Gets the field name with proper mapping.
-     *
-     * @param paramMap data store parameters
-     * @param prefix the prefix for the field
-     * @param field the field name
-     * @return the mapped field name
-     */
-    protected String getFieldName(final DataStoreParams paramMap, final String prefix, final String field) {
-        final String key = prefix + "." + field;
-        return paramMap.getAsString(key, prefix + "_" + field);
-    }
-
-    /**
-     * Gets crawler stats key for the site.
-     *
-     * @param siteName the name of the SharePoint site
-     * @return statistics key object for tracking crawl metrics
-     */
-    protected StatsKeyObject getCrawlerStats(final String siteName) {
-        return new StatsKeyObject("SharePointPage#" + siteName);
-    }
-
-    /**
-     * Sets the extractor name for content extraction.
-     *
-     * @param extractorName the name of the extractor to use
-     */
-    public void setExtractorName(final String extractorName) {
-        this.extractorName = extractorName;
     }
 }

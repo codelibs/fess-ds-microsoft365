@@ -18,14 +18,27 @@ package org.codelibs.fess.ds.ms365;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
+import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.CrawlerStatsHelper;
+import org.codelibs.fess.helper.SystemHelper;
+import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.Drive;
@@ -305,30 +318,6 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
     }
 
     @Test
-    public void test_isInterrupted() {
-        // The isInterrupted method is void and throws an exception for InterruptedException
-        // Test with InterruptedException - should throw InterruptedRuntimeException
-        Exception e = new InterruptedException("Test interruption");
-        try {
-            dataStore.isInterrupted(e);
-            fail("Should have thrown InterruptedRuntimeException");
-        } catch (RuntimeException ex) {
-            // Expected - should throw some kind of runtime exception
-            assertTrue("Expected exception to be thrown", true);
-        }
-
-        // Test with non-interrupted exception - should not throw
-        e = new RuntimeException("Regular exception");
-        try {
-            dataStore.isInterrupted(e);
-            // Should complete without throwing
-            assertTrue("Method completed without throwing", true);
-        } catch (Exception ex) {
-            fail("Should not have thrown exception for non-InterruptedException");
-        }
-    }
-
-    @Test
     public void testStoreData() {
         // doStoreData();
     }
@@ -401,6 +390,213 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         }, paramMap, scriptMap, defaultDataMap);
     }
     */
+
+    /**
+     * {@code processDriveItem} logged "Crawling Access Exception at : {}" from BOTH catch arms,
+     * which made OneDrive the only one of the six data stores whose two failure paths could not be
+     * told apart in the crawler log. Pins that the texts differ and that the {@code Throwable} arm
+     * names what it actually caught.
+     *
+     * <p>Both stay at {@code WARN} on purpose: {@code ERROR} from {@code org.codelibs} is wired to
+     * operator notification in this project, and a single item failing is not one.</p>
+     */
+    @Test
+    public void test_processDriveItem_theTwoCatchArmsAreDistinguishableInTheLog() {
+        registerDriveItemProcessingComponents();
+
+        final List<LogEvent> accessArm = captureDataStoreWarnings(() -> processFailingDriveItem(new CrawlingAccessException("denied")));
+        final List<LogEvent> throwableArm = captureDataStoreWarnings(() -> processFailingDriveItem(new IllegalStateException("boom")));
+
+        assertEquals("the CrawlingAccessException arm must report once, got " + messagesOf(accessArm), 1, accessArm.size());
+        assertEquals("the Throwable arm must report once, got " + messagesOf(throwableArm), 1, throwableArm.size());
+
+        final String accessMessage = accessArm.get(0).getMessage().getFormattedMessage();
+        final String throwableMessage = throwableArm.get(0).getMessage().getFormattedMessage();
+        assertFalse("the two arms must not be indistinguishable in the log, both said: " + accessMessage,
+                accessMessage.equals(throwableMessage));
+        assertTrue(accessMessage, accessMessage.startsWith("Crawling Access Exception at : "));
+        assertTrue(throwableMessage, throwableMessage.startsWith("Processing exception at : "));
+
+        assertEquals("a per-item failure must not become an operator notification", Level.WARN, accessArm.get(0).getLevel());
+        assertEquals("a per-item failure must not become an operator notification", Level.WARN, throwableArm.get(0).getLevel());
+    }
+
+    /**
+     * A OneDrive item's ACL is assembled from three sources in one place: the item's own Graph
+     * permissions, the roles its drive contributed, and the operator-configured
+     * {@code default_permissions}; the data config's own Permissions field (seeded into
+     * {@code defaultDataMap} under the role index field) is then folded on top.
+     *
+     * <p>Nothing asserted the roles a OneDrive item is actually indexed with --
+     * {@code test_defaultPermissions} above only round-trips a {@link DataStoreParams} entry and
+     * never reaches the data store -- so dropping either half left every OneDrive document with a
+     * narrower ACL and the suite green. Pins all four contributions and their order.</p>
+     */
+    @Test
+    public void test_processDriveItem_assemblesRolesFromAllFourSources() {
+        registerDriveItemProcessingComponents();
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(ComponentUtil.getSystemHelper());
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+
+        // convertValue's real path goes through ComponentUtil.getScriptEngineFactory(), which this
+        // unit test has no business standing up -- see OneNoteDataStoreTest's identical seam.
+        // "files.roles" is the only template used here, so it is resolved with a direct nested map
+        // lookup instead; processDriveItem itself, including the role assembly under test, runs
+        // completely unmodified. getDriveItemPermissions and getDriveItemContents are stubbed
+        // because they are the only two members that would reach Graph.
+        final OneDriveDataStore roleAwareDataStore = new OneDriveDataStore() {
+            @Override
+            protected List<String> getDriveItemPermissions(final Microsoft365Client client, final String driveId, final DriveItem item,
+                    final DataStoreParams paramMap) {
+                return new ArrayList<>(List.of("1item-permission"));
+            }
+
+            @Override
+            protected String getDriveItemContents(final Microsoft365Client client, final String driveId, final DriveItem item,
+                    final long maxContentLength, final boolean ignoreError) {
+                return "content";
+            }
+
+            @Override
+            protected Object convertValue(final String scriptType, final String template, final Map<String, Object> resultMap) {
+                if ("files.roles".equals(template) && resultMap.get(FILE) instanceof final Map<?, ?> filesMap) {
+                    return filesMap.get(FILE_ROLES);
+                }
+                return super.convertValue(scriptType, template, resultMap);
+            }
+        };
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.IGNORE_FOLDER, Boolean.FALSE);
+        configMap.put(OneDriveDataStore.IGNORE_ERROR, Boolean.FALSE);
+        configMap.put(OneDriveDataStore.SUPPORTED_MIMETYPES, new String[] { ".*" });
+        configMap.put(OneDriveDataStore.MAX_CONTENT_LENGTH, Long.valueOf(1000000L));
+
+        final DriveItem item = new DriveItem();
+        item.setId("item-1");
+        item.setName("item-1.txt");
+        item.setWebUrl("https://example.com/item-1");
+
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+        final Map<String, Object> defaultDataMap = new HashMap<>();
+        defaultDataMap.put(roleField, List.of("1config-role"));
+
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put(roleField, "files.roles");
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.DEFAULT_PERMISSIONS, "{role}admin,{group}sales");
+
+        final List<Map<String, Object>> captured = new ArrayList<>();
+        final TestCallback callback = new TestCallback() {
+            @Override
+            void test(final DataStoreParams params, final Map<String, Object> dataMap) {
+                captured.add(dataMap);
+            }
+        };
+
+        roleAwareDataStore.processDriveItem(new DataConfig(), callback, configMap, paramMap, scriptMap, defaultDataMap, null, "drive-1",
+                item, List.of("1drive-role"));
+
+        assertEquals("processDriveItem must have indexed the item exactly once", 1, captured.size());
+
+        @SuppressWarnings("unchecked")
+        final List<String> roles = (List<String>) captured.get(0).get(roleField);
+        assertEquals("the item's ACL must hold, in order: item permissions, drive roles, default_permissions, then the config's own roles",
+                List.of("1item-permission", "1drive-role", permissionHelper.encode("{role}admin"), permissionHelper.encode("{group}sales"),
+                        "1config-role"),
+                roles);
+    }
+
+    /**
+     * {@code PermissionHelper#systemHelper} is {@code @Resource}-injected, which plain
+     * {@code ComponentUtil.register(...)} does not perform in this minimal test container; this
+     * subclass exposes a same-package-crossing setter so the field can be wired by hand.
+     */
+    private static final class TestablePermissionHelper extends org.codelibs.fess.helper.PermissionHelper {
+        void useSystemHelper(final SystemHelper systemHelper) {
+            this.systemHelper = systemHelper;
+        }
+    }
+
+    /**
+     * {@code processDriveItem} resolves the stats helper from the container, which in turn needs
+     * the system helper; the failure paths resolve {@code FailureUrlService}, which
+     * {@code test_app.xml} answers with {@link CapturingFailureUrlService}.
+     */
+    private static void registerDriveItemProcessingComponents() {
+        CapturingFailureUrlService.empty();
+        ComponentUtil.register(new SystemHelper(), "systemHelper");
+        final CrawlerStatsHelper crawlerStatsHelper = new CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+    }
+
+    /**
+     * Runs one drive item through {@code processDriveItem} with {@code getUrl} rigged to fail, so
+     * both catch arms are entered at exactly the same point.
+     *
+     * @param failure the failure {@code getUrl} raises.
+     */
+    private void processFailingDriveItem(final RuntimeException failure) {
+        final OneDriveDataStore failingDataStore = new OneDriveDataStore() {
+            @Override
+            protected String getUrl(final Map<String, Object> configMap, final DataStoreParams paramMap, final DriveItem item) {
+                throw failure;
+            }
+        };
+
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.IGNORE_FOLDER, Boolean.FALSE);
+        configMap.put(OneDriveDataStore.SUPPORTED_MIMETYPES, new String[] { ".*" });
+
+        final DriveItem item = new DriveItem();
+        item.setId("item-1");
+        item.setName("item-1.txt");
+        item.setWebUrl("https://example.com/item-1");
+
+        failingDataStore.processDriveItem(new DataConfig(), null, configMap, new DataStoreParams(), Collections.emptyMap(), new HashMap<>(),
+                null, "drive-1", item, Collections.emptyList());
+    }
+
+    /**
+     * Runs {@code action}, returning every record {@link OneDriveDataStore} logged at {@code WARN}
+     * or worse while it ran, in order.
+     *
+     * @param action the code whose logging should be captured.
+     * @return the captured records.
+     */
+    private static List<LogEvent> captureDataStoreWarnings(final Runnable action) {
+        final List<LogEvent> events = Collections.synchronizedList(new ArrayList<>());
+        final org.apache.logging.log4j.core.Logger coreLogger =
+                (org.apache.logging.log4j.core.Logger) LogManager.getLogger(OneDriveDataStore.class);
+        final AbstractAppender appender = new AbstractAppender("test-ms365-onedrive-capture", null, null, false, Property.EMPTY_ARRAY) {
+            @Override
+            public void append(final LogEvent event) {
+                if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                    events.add(event.toImmutable());
+                }
+            }
+        };
+        appender.start();
+        coreLogger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            coreLogger.removeAppender(appender);
+            appender.stop();
+        }
+        return events;
+    }
+
+    /**
+     * @param events the captured records.
+     * @return their formatted messages, for an assertion failure that can be read.
+     */
+    private static List<String> messagesOf(final List<LogEvent> events) {
+        return events.stream().map(event -> event.getMessage().getFormattedMessage()).collect(Collectors.toList());
+    }
 
     static abstract class TestCallback implements IndexUpdateCallback {
         private long documentSize = 0;

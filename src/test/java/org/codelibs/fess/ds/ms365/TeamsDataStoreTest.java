@@ -638,8 +638,8 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
 
         final List<String> channelRoles = new ArrayList<>(List.of("1alice"));
 
-        final List<String> first = dataStore.buildMessageRoles(paramMap, channelRoles);
-        final List<String> second = dataStore.buildMessageRoles(paramMap, channelRoles);
+        final List<String> first = dataStore.buildMessageRoles(paramMap, new HashMap<>(), channelRoles);
+        final List<String> second = dataStore.buildMessageRoles(paramMap, new HashMap<>(), channelRoles);
 
         assertEquals("the caller's list must be untouched", 1, channelRoles.size());
         assertEquals(first, second);
@@ -652,7 +652,7 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("default_permissions", "{role}admin,{group}everyone");
 
-        final List<String> roles = dataStore.buildMessageRoles(paramMap, List.of("1alice"));
+        final List<String> roles = dataStore.buildMessageRoles(paramMap, new HashMap<>(), List.of("1alice"));
 
         final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
         assertEquals(List.of("1alice", permissionHelper.encode("{role}admin"), permissionHelper.encode("{group}everyone")), roles);
@@ -665,9 +665,52 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         paramMap.put("default_permissions", "{role}admin");
 
         final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
-        final List<String> roles = dataStore.buildMessageRoles(paramMap, List.of(permissionHelper.encode("{role}admin")));
+        final List<String> roles = dataStore.buildMessageRoles(paramMap, new HashMap<>(), List.of(permissionHelper.encode("{role}admin")));
 
         assertEquals(1, roles.size());
+    }
+
+    /**
+     * TeamsDataStore was the only one of the six data stores that never folded the data config's
+     * own Permissions field -- seeded into {@code defaultDataMap} under the role index field --
+     * into a message's ACL, so those roles were silently dropped for Teams documents only. This is
+     * a behaviour change: Teams messages gain roles they did not carry before.
+     */
+    @Test
+    public void test_buildMessageRoles_mergesDefaultDataMapRoles() {
+        registerPermissionHelper();
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin");
+
+        final Map<String, Object> defaultDataMap = new HashMap<>();
+        defaultDataMap.put(ComponentUtil.getFessConfig().getIndexFieldRole(), List.of("1cfgRole"));
+
+        final List<String> roles = dataStore.buildMessageRoles(paramMap, defaultDataMap, new ArrayList<>(List.of("1member")));
+
+        assertTrue("the data config's Permissions roles must reach the message ACL", roles.contains("1cfgRole"));
+        assertTrue("membership-derived roles must be kept", roles.contains("1member"));
+        assertTrue("default_permissions must still be applied", roles.contains(ComponentUtil.getPermissionHelper().encode("{role}admin")));
+    }
+
+    /**
+     * The order the six data stores agreed on in Task 5: membership-derived roles, then
+     * {@code default_permissions}, then the data config's Permissions field, with {@code distinct()}
+     * strictly last.
+     */
+    @Test
+    public void test_buildMessageRoles_ordersDefaultDataMapRolesLast() {
+        registerPermissionHelper();
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin");
+
+        final Map<String, Object> defaultDataMap = new HashMap<>();
+        defaultDataMap.put(ComponentUtil.getFessConfig().getIndexFieldRole(), List.of("1cfgRole", "1member"));
+
+        final List<String> roles = dataStore.buildMessageRoles(paramMap, defaultDataMap, new ArrayList<>(List.of("1member")));
+
+        assertEquals(List.of("1member", ComponentUtil.getPermissionHelper().encode("{role}admin"), "1cfgRole"), roles);
     }
 
     /**

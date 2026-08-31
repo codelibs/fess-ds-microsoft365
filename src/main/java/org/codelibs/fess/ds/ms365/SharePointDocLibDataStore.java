@@ -27,11 +27,8 @@ import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.lang.StringUtil;
-import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
-import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
-import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
@@ -40,8 +37,6 @@ import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
-import org.codelibs.fess.helper.PermissionHelper;
-import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -57,22 +52,6 @@ import com.microsoft.graph.models.Site;
 public class SharePointDocLibDataStore extends Microsoft365DataStore {
 
     private static final Logger logger = LogManager.getLogger(SharePointDocLibDataStore.class);
-
-    // Configuration parameters
-    /** Site ID parameter name for specifying which SharePoint site to crawl */
-    protected static final String SITE_ID = "site_id";
-    /** Comma-separated list of site IDs to exclude from crawling */
-    protected static final String EXCLUDE_SITE_ID = "exclude_site_id";
-    /** Number of concurrent threads for processing */
-    protected static final String NUMBER_OF_THREADS = "number_of_threads";
-    /** Flag to continue crawling on errors */
-    protected static final String IGNORE_ERROR = "ignore_error";
-    /** Regular expression pattern for files to include */
-    protected static final String INCLUDE_PATTERN = "include_pattern";
-    /** Regular expression pattern for files to exclude */
-    protected static final String EXCLUDE_PATTERN = "exclude_pattern";
-    /** Key used to stash the {@link UrlFilter} built from {@link #INCLUDE_PATTERN}/{@link #EXCLUDE_PATTERN} in the config map */
-    protected static final String URL_FILTER = "url_filter";
 
     // Field mappings for document libraries
     /** Document library prefix for field mappings */
@@ -101,9 +80,6 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     protected static final String DOCLIB_SITE_URL = "site_url";
     /** Field mapping for canonical URL */
     protected static final String DOCLIB_CANONICAL_URL = "url";
-
-    /** Name of the extractor to use for file content extraction */
-    protected String extractorName = "sharePointDocLibExtractor";
 
     /**
      * Default constructor for SharePointDocLibDataStore.
@@ -356,15 +332,9 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             }
 
             // Add default permissions
-            final FessConfig fessConfig = ComponentUtil.getFessConfig();
-            final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
-            StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
-            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
-                roleTypeList.stream().map(s -> (String) s).forEach(roles::add);
-            }
+            roles.addAll(getDefaultPermissions(paramMap));
 
-            final List<String> finalRoles = roles.stream().distinct().collect(Collectors.toList());
+            final List<String> finalRoles = mergeDefaultRoles(roles, defaultDataMap).stream().distinct().collect(Collectors.toList());
             docLibMap.put(DOCLIB_ROLES, finalRoles);
 
             if (logger.isDebugEnabled()) {
@@ -399,32 +369,11 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
         } catch (final CrawlingAccessException e) {
             logger.warn("Crawling Access Exception for document library: {} (ID: {}, URL: {}) - Data: {}", drive.getName(), drive.getId(),
                     docLibUrl, dataMap, e);
-
-            Throwable target = e;
-            if (target instanceof final MultipleCrawlingAccessException ex) {
-                final Throwable[] causes = ex.getCauses();
-                if (causes.length > 0) {
-                    target = causes[causes.length - 1];
-                }
-            }
-
-            String errorName;
-            final Throwable cause = target.getCause();
-            if (cause != null) {
-                errorName = cause.getClass().getCanonicalName();
-            } else {
-                errorName = target.getClass().getCanonicalName();
-            }
-
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, errorName, docLibUrl, target);
-            crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
+            handleCrawlingException(dataConfig, crawlerStatsHelper, statsKey, docLibUrl, e);
         } catch (final Throwable t) {
             logger.warn("Processing exception for document library: {} (ID: {}, URL: {}) - Data: {}", drive.getName(), drive.getId(),
                     docLibUrl, dataMap, t);
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), docLibUrl, t);
-            crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
+            handleCrawlingThrowable(dataConfig, crawlerStatsHelper, statsKey, docLibUrl, t);
         } finally {
             crawlerStatsHelper.done(statsKey);
         }
@@ -578,9 +527,5 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             logger.warn("Failed to encode URL component: {}", component, e);
             return component;
         }
-    }
-
-    void setExtractorName(final String extractorName) {
-        this.extractorName = extractorName;
     }
 }

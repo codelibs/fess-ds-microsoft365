@@ -32,14 +32,11 @@ import java.util.stream.Stream;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.CoreLibConstants;
-import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
-import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.exception.MaxLengthExceededException;
-import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.crawler.helper.ContentLengthHelper;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
@@ -49,8 +46,6 @@ import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
-import org.codelibs.fess.helper.PermissionHelper;
-import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -78,11 +73,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     /** Default maximum size of a file to be crawled. */
     protected static final long DEFAULT_MAX_SIZE = -1L;
 
-    /** Cache for the current user's drive ID to avoid repeated expensive API calls */
-    protected volatile String cachedUserDriveId = null;
-    /** Lock object for thread-safe cache initialization */
-    protected final Object driveIdCacheLock = new Object();
-
     /** Key for the current crawler type in the configuration map. */
     protected static final String CURRENT_CRAWLER = "current_crawler";
     /** Crawler type for group drives. */
@@ -101,20 +91,10 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected static final String MAX_CONTENT_LENGTH = "max_content_length";
     /** Parameter name for ignoring folders. */
     protected static final String IGNORE_FOLDER = "ignore_folder";
-    /** Parameter name for ignoring errors. */
-    protected static final String IGNORE_ERROR = "ignore_error";
     /** Parameter name for supported MIME types. */
     protected static final String SUPPORTED_MIMETYPES = "supported_mimetypes";
-    /** Parameter name for the include pattern for URLs. */
-    protected static final String INCLUDE_PATTERN = "include_pattern";
-    /** Parameter name for the exclude pattern for URLs. */
-    protected static final String EXCLUDE_PATTERN = "exclude_pattern";
-    /** Parameter name for the URL filter. */
-    protected static final String URL_FILTER = "url_filter";
     /** Parameter name for the drive ID. */
     protected static final String DRIVE_ID = "drive_id";
-    /** Parameter name for the number of threads. */
-    protected static final String NUMBER_OF_THREADS = "number_of_threads";
     /** Parameter name for enabling the shared documents drive crawler. */
     protected static final String SHARED_DOCUMENTS_DRIVE_CRAWLER = "shared_documents_drive_crawler";
     /** Parameter name for enabling the user drive crawler. */
@@ -523,17 +503,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Checks if the current thread is interrupted.
-     *
-     * @param e The exception to check.
-     */
-    protected void isInterrupted(final Exception e) {
-        if (e instanceof InterruptedException) {
-            throw new InterruptedRuntimeException((InterruptedException) e);
-        }
-    }
-
-    /**
      * Stores the groups' drives.
      *
      * @param dataConfig The data configuration.
@@ -607,7 +576,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             final Microsoft365Client client, final String driveId, final DriveItem item, final List<String> roles) {
         final boolean isFolder = item.getFolder() != null;
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
-        final FessConfig fessConfig = ComponentUtil.getFessConfig();
         final String mimetype;
         final Hashes hashes;
         final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
@@ -715,13 +683,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
 
             final List<String> fileRoles = getDriveItemPermissions(client, driveId, item, paramMap);
             roles.forEach(fileRoles::add);
-            final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
-            StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(fileRoles::add));
-            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
-                roleTypeList.stream().map(s -> (String) s).forEach(fileRoles::add);
-            }
-            filesMap.put(FILE_ROLES, fileRoles.stream().distinct().collect(Collectors.toList()));
+            fileRoles.addAll(getDefaultPermissions(paramMap));
+            filesMap.put(FILE_ROLES, mergeDefaultRoles(fileRoles, defaultDataMap).stream().distinct().collect(Collectors.toList()));
 
             resultMap.put(FILE, filesMap);
 
@@ -755,31 +718,12 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             crawlerStatsHelper.record(statsKey, StatsAction.FINISHED);
         } catch (final CrawlingAccessException e) {
             logger.warn("Crawling Access Exception at : {}", dataMap, e);
-
-            Throwable target = e;
-            if (target instanceof final MultipleCrawlingAccessException ex) {
-                final Throwable[] causes = ex.getCauses();
-                if (causes.length > 0) {
-                    target = causes[causes.length - 1];
-                }
-            }
-
-            String errorName;
-            final Throwable cause = target.getCause();
-            if (cause != null) {
-                errorName = cause.getClass().getCanonicalName();
-            } else {
-                errorName = target.getClass().getCanonicalName();
-            }
-
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, errorName, item.getWebUrl(), target);
-            crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
+            handleCrawlingException(dataConfig, crawlerStatsHelper, statsKey, item.getWebUrl(), e);
         } catch (final Throwable t) {
-            logger.warn("Crawling Access Exception at : {}", dataMap, t);
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), item.getWebUrl(), t);
-            crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
+            // deliberately not the CrawlingAccessException arm's text: this was the only one of
+            // the six data stores whose two arms could not be told apart in the crawler log.
+            logger.warn("Processing exception at : {}", dataMap, t);
+            handleCrawlingThrowable(dataConfig, crawlerStatsHelper, statsKey, item.getWebUrl(), t);
         } finally {
             crawlerStatsHelper.done(statsKey);
         }
@@ -948,38 +892,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                         item != null ? item.getName() : "root", e.getResponseStatusCode(), e);
             }
         }
-    }
-
-    /**
-     * Gets the current user's drive ID with caching to avoid expensive repeated API calls.
-     * Thread-safe implementation using double-checked locking pattern.
-     *
-     * @param client The Microsoft365Client to use for API calls.
-     * @return The cached user drive ID, or null if unable to retrieve.
-     */
-    protected String getCachedUserDriveId(final Microsoft365Client client) {
-        // Double-checked locking pattern for thread-safe lazy initialization
-        if (cachedUserDriveId == null) {
-            synchronized (driveIdCacheLock) {
-                if (cachedUserDriveId == null) {
-                    try {
-                        // Make the expensive API call only once
-                        cachedUserDriveId = client.getDrive(null).getId();
-                        if (logger.isDebugEnabled()) {
-                            logger.debug("Successfully cached user drive ID: {}", cachedUserDriveId);
-                        }
-                    } catch (final Exception e) {
-                        if (logger.isDebugEnabled()) {
-                            logger.debug("Exception occurred while retrieving user drive ID", e);
-                        } else {
-                            logger.warn("Exception occurred while retrieving user drive ID: {}", e.getMessage());
-                        }
-                        return null;
-                    }
-                }
-            }
-        }
-        return cachedUserDriveId;
     }
 
     /**

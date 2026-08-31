@@ -36,6 +36,7 @@ import java.util.function.Consumer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.extractor.impl.TikaExtractor;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.GraphMockServer;
@@ -868,6 +869,110 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         // site notebook failure.
         org.mockito.Mockito.verify(client).getUsers(any(), any());
         org.mockito.Mockito.verify(client).getMicrosoft365Groups(any());
+    }
+
+    /**
+     * {@code FailureUrlService.store} looks its row up with {@code setUrl_Equal}, so the URL
+     * argument is the row key. {@code processNotebook} used to pass the display name, which is not
+     * unique: two notebooks that share one collapsed into a single failure row and an operator saw
+     * one failure where there were two. Pins that the notebook's own web URL is used instead.
+     */
+    @Test
+    public void test_processNotebook_failuresAreKeyedByTheNotebookWebUrl() {
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
+        registerNotebookProcessingComponents();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.getNotebookContent(any(), any(), any())).thenThrow(new CrawlingAccessException("content unavailable"));
+
+        // same display name, different notebooks
+        processNotebook(client, newNotebook("notebook-1", "Shared Name", "https://example.com/notebook/1"));
+        processNotebook(client, newNotebook("notebook-2", "Shared Name", "https://example.com/notebook/2"));
+
+        assertEquals("each notebook must get its own failure row",
+                List.of("https://example.com/notebook/1", "https://example.com/notebook/2"), storedFailureUrls(failureUrlService));
+    }
+
+    /**
+     * The web URL is read inside the try, so a failure before that point leaves it unset. The id
+     * is the next-best value that is still unique per notebook; the display name is not.
+     */
+    @Test
+    public void test_processNotebook_failureBeforeTheUrlIsReadFallsBackToTheNotebookId() {
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
+        registerNotebookProcessingComponents();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        // no links at all: getLinks() is dereferenced on the first line of the try
+        processNotebook(client, newNotebook("notebook-1", "Shared Name", null));
+        processNotebook(client, newNotebook("notebook-2", "Shared Name", null));
+
+        assertEquals("each notebook must still get its own failure row", List.of("notebook-1", "notebook-2"),
+                storedFailureUrls(failureUrlService));
+    }
+
+    /**
+     * The whole fallback chain, at the seam. The last arm cannot be reached through
+     * {@code processNotebook}: a notebook with no id makes {@code CrawlerStatsHelper.done}
+     * throw from the {@code finally} block (a {@code StatsKeyObject} with a null id has no cache
+     * key), which is pre-existing behaviour unrelated to which value keys the failure row.
+     */
+    @Test
+    public void test_failureUrlOf_prefersTheWebUrlThenTheIdThenTheDisplayName() {
+        final Notebook complete = newNotebook("notebook-1", "Notebook", "https://example.com/notebook/1");
+        assertEquals("https://example.com/notebook/1", OneNoteDataStore.failureUrlOf("https://example.com/notebook/1", complete));
+
+        // the URL is read inside the try, so a failure before that point leaves it unset
+        assertEquals("notebook-1", OneNoteDataStore.failureUrlOf(null, complete));
+        assertEquals("notebook-1", OneNoteDataStore.failureUrlOf("", complete));
+
+        // last resort: not unique, but never null
+        assertEquals("Only Name", OneNoteDataStore.failureUrlOf(null, newNotebook(null, "Only Name", null)));
+    }
+
+    /**
+     * {@code processNotebook} resolves the stats helper from the container, which in turn needs
+     * the system helper.
+     */
+    private static void registerNotebookProcessingComponents() {
+        ComponentUtil.register(new SystemHelper(), "systemHelper");
+        final org.codelibs.fess.helper.CrawlerStatsHelper crawlerStatsHelper = new org.codelibs.fess.helper.CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+    }
+
+    /**
+     * @param id the notebook id, or {@code null} to leave it unset.
+     * @param displayName the notebook display name.
+     * @param webUrl the OneNote web URL, or {@code null} to leave the notebook without links.
+     * @return the notebook.
+     */
+    private static Notebook newNotebook(final String id, final String displayName, final String webUrl) {
+        final Notebook notebook = new Notebook();
+        notebook.setId(id);
+        notebook.setDisplayName(displayName);
+        if (webUrl != null) {
+            final NotebookLinks links = new NotebookLinks();
+            final ExternalLink oneNoteWebUrl = new ExternalLink();
+            oneNoteWebUrl.setHref(webUrl);
+            links.setOneNoteWebUrl(oneNoteWebUrl);
+            notebook.setLinks(links);
+        }
+        return notebook;
+    }
+
+    private void processNotebook(final Microsoft365Client client, final Notebook notebook) {
+        dataStore.processNotebook(new DataConfig(), null, new DataStoreParams(), Collections.emptyMap(), new HashMap<>(), client,
+                NotebookScope.USER, "user-1", notebook, Collections.emptyList());
+    }
+
+    /**
+     * @param failureUrlService the stub.
+     * @return the URL argument of every recorded failure, in order.
+     */
+    private static List<String> storedFailureUrls(final CapturingFailureUrlService failureUrlService) {
+        return failureUrlService.getStoredFailures().stream().map(CapturingFailureUrlService.StoredFailure::url).toList();
     }
 
     private void doStoreData() {

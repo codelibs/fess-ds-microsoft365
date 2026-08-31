@@ -20,6 +20,7 @@ import static org.codelibs.fess.ds.ms365.Microsoft365Constants.UNKNOWN_TEMPLATE;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -33,11 +34,19 @@ import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
+import org.codelibs.fess.app.service.FailureUrlService;
+import org.codelibs.fess.crawler.exception.CrawlingAccessException;
+import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.AbstractDataStore;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.CrawlerStatsHelper;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
 import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.helper.SystemHelper;
+import org.codelibs.fess.mylasta.direction.FessConfig;
+import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.Drive;
@@ -68,6 +77,18 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     protected static final String PERMISSION_FAILURE_POLICY = "permission_failure_policy";
     /** Parameter name for the roles to add to every document's ACL, regardless of what the source system reports. */
     protected static final String DEFAULT_PERMISSIONS = "default_permissions";
+    /** Parameter name for the number of crawler threads. */
+    protected static final String NUMBER_OF_THREADS = "number_of_threads";
+    /** Parameter name for the SharePoint site ID to crawl. */
+    protected static final String SITE_ID = "site_id";
+    /** Parameter name for the comma-separated list of site IDs to exclude from crawling. */
+    protected static final String EXCLUDE_SITE_ID = "exclude_site_id";
+    /** Parameter name for the regular expression pattern of URLs to include. */
+    protected static final String INCLUDE_PATTERN = "include_pattern";
+    /** Parameter name for the regular expression pattern of URLs to exclude. */
+    protected static final String EXCLUDE_PATTERN = "exclude_pattern";
+    /** Key used to stash the {@link org.codelibs.fess.crawler.filter.UrlFilter} built from {@link #INCLUDE_PATTERN}/{@link #EXCLUDE_PATTERN} in the config map. */
+    protected static final String URL_FILTER = "url_filter";
 
     /** Skip the document and record it as a failed URL. The default. */
     protected static final String POLICY_SKIP = "skip";
@@ -434,6 +455,30 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     }
 
     /**
+     * Folds the data config's own Permissions field -- seeded into {@code defaultDataMap} under
+     * the role index field -- into a document's role list.
+     *
+     * <p>Returns a new list; the argument is never mutated. {@code OneNoteDataStore} shares one
+     * roles list across the concurrent notebook threads of a single owner, so an in-place merge
+     * would corrupt other notebooks' ACLs.</p>
+     *
+     * <p>The result is not de-duplicated: every caller follows with
+     * {@code .stream().distinct().collect(...)}, and that step stays at the call site.</p>
+     *
+     * @param roles the roles collected so far, left unmodified
+     * @param defaultDataMap the data store's default data map
+     * @return a new list holding {@code roles} followed by the configured roles, if any
+     */
+    protected List<String> mergeDefaultRoles(final List<String> roles, final Map<String, Object> defaultDataMap) {
+        final List<String> merged = new ArrayList<>(roles);
+        final FessConfig fessConfig = ComponentUtil.getFessConfig();
+        if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
+            roleTypeList.stream().map(s -> (String) s).forEach(merged::add);
+        }
+        return merged;
+    }
+
+    /**
      * Gets the permissions for a drive item.
      *
      * @param client The Microsoft365Client.
@@ -714,6 +759,84 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     protected String getPermissionFailurePolicy(final DataStoreParams paramMap) {
         final String policy = paramMap.getAsString(PERMISSION_FAILURE_POLICY, POLICY_SKIP);
         return policy == null ? POLICY_SKIP : policy.trim();
+    }
+
+    /**
+     * Unwraps a {@link MultipleCrawlingAccessException} to its last recorded cause.
+     *
+     * <p>Package-private and static on purpose: it is pure, it is not part of the subclassing
+     * surface, and the tests in this package call it directly.</p>
+     *
+     * @param e the caught exception
+     * @return the last cause of a {@link MultipleCrawlingAccessException} that has one, otherwise {@code e} itself
+     */
+    static Throwable unwrapCrawlingAccessException(final CrawlingAccessException e) {
+        Throwable target = e;
+        if (target instanceof final MultipleCrawlingAccessException ex) {
+            final Throwable[] causes = ex.getCauses();
+            if (causes.length > 0) {
+                target = causes[causes.length - 1];
+            }
+        }
+        return target;
+    }
+
+    /**
+     * Derives the error name recorded against a failure URL.
+     *
+     * @param target the unwrapped throwable
+     * @return the canonical class name of {@code target}'s cause, or of {@code target} itself when it has none
+     */
+    static String failureErrorName(final Throwable target) {
+        final Throwable cause = target.getCause();
+        if (cause != null) {
+            return cause.getClass().getCanonicalName();
+        }
+        return target.getClass().getCanonicalName();
+    }
+
+    /**
+     * Records a {@link CrawlingAccessException} raised while processing one item: stores a
+     * failure-URL row and records {@link StatsAction#ACCESS_EXCEPTION}.
+     *
+     * <p>The caller keeps its own {@code logger.warn(...)}: the six data stores use different
+     * message text and argument lists, and operators grep the crawler log for those strings.</p>
+     *
+     * @param dataConfig the data configuration the failure is recorded against
+     * @param crawlerStatsHelper the stats helper for the current crawl
+     * @param statsKey the stats key for the item being processed
+     * @param failureUrl the value recorded as the failure "URL" for this item
+     * @param e the caught exception
+     */
+    protected void handleCrawlingException(final DataConfig dataConfig, final CrawlerStatsHelper crawlerStatsHelper,
+            final StatsKeyObject statsKey, final String failureUrl, final CrawlingAccessException e) {
+        final Throwable target = unwrapCrawlingAccessException(e);
+        final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
+        failureUrlService.store(dataConfig, failureErrorName(target), failureUrl, target);
+        crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
+    }
+
+    /**
+     * Records any other {@link Throwable} raised while processing one item: stores a
+     * failure-URL row under the throwable's own class name and records
+     * {@link StatsAction#EXCEPTION}.
+     *
+     * <p>Named separately from {@link #handleCrawlingException} rather than overloaded:
+     * {@link CrawlingAccessException} is a subtype of {@link Throwable}, so an overload would
+     * resolve on the catch parameter's static type and would silently pick the wrong arm the
+     * first time a catch clause were widened.</p>
+     *
+     * @param dataConfig the data configuration the failure is recorded against
+     * @param crawlerStatsHelper the stats helper for the current crawl
+     * @param statsKey the stats key for the item being processed
+     * @param failureUrl the value recorded as the failure "URL" for this item
+     * @param t the caught throwable
+     */
+    protected void handleCrawlingThrowable(final DataConfig dataConfig, final CrawlerStatsHelper crawlerStatsHelper,
+            final StatsKeyObject statsKey, final String failureUrl, final Throwable t) {
+        final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
+        failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), failureUrl, t);
+        crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
     }
 
     /**

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.TestInfo;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -35,9 +36,14 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
 import org.codelibs.core.exception.InterruptedRuntimeException;
+import org.codelibs.fess.crawler.exception.CrawlingAccessException;
+import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.CrawlerStatsHelper;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
+import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -861,6 +867,215 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
     }
 
     /**
+     * Pins the values of the six parameter constants promoted from the subclasses to the base.
+     * They are operator-visible data config parameter names, so a typo introduced while
+     * re-declaring them here would silently stop the parameter being read at all.
+     */
+    @Test
+    public void test_promotedParameterConstantValues() {
+        assertEquals("number_of_threads", TestDataStore.getNumberOfThreadsConstant());
+        assertEquals("site_id", TestDataStore.getSiteIdConstant());
+        assertEquals("exclude_site_id", TestDataStore.getExcludeSiteIdConstant());
+        assertEquals("include_pattern", TestDataStore.getIncludePatternConstant());
+        assertEquals("exclude_pattern", TestDataStore.getExcludePatternConstant());
+        assertEquals("url_filter", TestDataStore.getUrlFilterConstant());
+    }
+
+    /**
+     * MultipleCrawlingAccessException carries an array of causes; the six data stores all record
+     * the LAST one against the failure URL. Picking the first, or not unwrapping at all, would
+     * put a different exception class in the Failure URL admin screen.
+     */
+    @Test
+    public void test_unwrapCrawlingAccessException_returnsLastCause() {
+        final Throwable first = new IllegalStateException("first");
+        final Throwable last = new IllegalArgumentException("last");
+        final MultipleCrawlingAccessException multiple = new MultipleCrawlingAccessException("multi", new Throwable[] { first, last });
+
+        assertSame(last, Microsoft365DataStore.unwrapCrawlingAccessException(multiple));
+    }
+
+    @Test
+    public void test_unwrapCrawlingAccessException_withNoCausesReturnsTheExceptionItself() {
+        final MultipleCrawlingAccessException empty = new MultipleCrawlingAccessException("multi", new Throwable[0]);
+        assertSame(empty, Microsoft365DataStore.unwrapCrawlingAccessException(empty));
+
+        final CrawlingAccessException plain = new CrawlingAccessException("plain");
+        assertSame(plain, Microsoft365DataStore.unwrapCrawlingAccessException(plain));
+    }
+
+    /**
+     * The recorded errorName is the CAUSE's class name when there is a cause, and the
+     * exception's own class name otherwise. Getting this backwards makes every failure row
+     * read "CrawlingAccessException" and hides the real reason.
+     */
+    @Test
+    public void test_failureErrorName_prefersTheCauseClassName() {
+        final Throwable withCause = new CrawlingAccessException("outer", new java.net.SocketTimeoutException("inner"));
+        assertEquals("java.net.SocketTimeoutException", Microsoft365DataStore.failureErrorName(withCause));
+
+        final Throwable withoutCause = new CrawlingAccessException("outer");
+        assertEquals("org.codelibs.fess.crawler.exception.CrawlingAccessException", Microsoft365DataStore.failureErrorName(withoutCause));
+    }
+
+    /**
+     * The failure-URL row is keyed by the URL argument and stamped with an error name taken from
+     * the UNWRAPPED cause, not from the {@link MultipleCrawlingAccessException} wrapper. Recording
+     * the wrapper would make every row in the Failure URL admin screen read
+     * "MultipleCrawlingAccessException" and hide the real reason.
+     */
+    @Test
+    public void test_handleCrawlingException_storesTheUnwrappedCauseAgainstTheFailureUrl() {
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
+        final RecordingCrawlerStatsHelper crawlerStatsHelper = new RecordingCrawlerStatsHelper();
+        final DataConfig dataConfig = new DataConfig();
+        final StatsKeyObject statsKey = new StatsKeyObject("item-1");
+
+        final Throwable earlierCause = new IllegalStateException("earlier");
+        final Throwable lastCause = new CrawlingAccessException("last", new java.net.SocketTimeoutException("inner"));
+        final MultipleCrawlingAccessException e = new MultipleCrawlingAccessException("multi", new Throwable[] { earlierCause, lastCause });
+
+        dataStore.handleCrawlingException(dataConfig, crawlerStatsHelper, statsKey, "https://example.com/item-1", e);
+
+        final List<CapturingFailureUrlService.StoredFailure> stored = failureUrlService.getStoredFailures();
+        assertEquals("exactly one failure row must be written", 1, stored.size());
+        final CapturingFailureUrlService.StoredFailure failure = stored.get(0);
+        assertSame("the row must be recorded against the crawl's own data config", dataConfig, failure.crawlingConfig());
+        assertEquals("the row key must be the URL argument the caller passed", "https://example.com/item-1", failure.url());
+        assertEquals("the error name must come from the unwrapped cause", "java.net.SocketTimeoutException", failure.errorName());
+        assertSame("the stored throwable must be the unwrapped last cause, not the wrapper", lastCause, failure.throwable());
+
+        assertEquals("the item must be counted as an access exception", List.of(StatsAction.ACCESS_EXCEPTION),
+                crawlerStatsHelper.getRecordedActions());
+        assertEquals("the stats must be recorded against the item's own key", List.of(statsKey), crawlerStatsHelper.getRecordedKeys());
+    }
+
+    /**
+     * The other arm. A throwable that is not a {@link CrawlingAccessException} is recorded under
+     * its OWN class name and counted as {@link StatsAction#EXCEPTION}: swapping the two arms'
+     * rules would be invisible in the crawler log but would relabel every row.
+     */
+    @Test
+    public void test_handleCrawlingThrowable_storesTheThrowableUnderItsOwnClassName() {
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
+        final RecordingCrawlerStatsHelper crawlerStatsHelper = new RecordingCrawlerStatsHelper();
+        final DataConfig dataConfig = new DataConfig();
+        final StatsKeyObject statsKey = new StatsKeyObject("item-2");
+
+        // a cause is present on purpose: the CrawlingAccessException arm would report the cause,
+        // this arm must report the throwable itself.
+        final Throwable t = new IllegalStateException("boom", new java.net.SocketTimeoutException("inner"));
+
+        dataStore.handleCrawlingThrowable(dataConfig, crawlerStatsHelper, statsKey, "https://example.com/item-2", t);
+
+        final List<CapturingFailureUrlService.StoredFailure> stored = failureUrlService.getStoredFailures();
+        assertEquals("exactly one failure row must be written", 1, stored.size());
+        final CapturingFailureUrlService.StoredFailure failure = stored.get(0);
+        assertSame("the row must be recorded against the crawl's own data config", dataConfig, failure.crawlingConfig());
+        assertEquals("the row key must be the URL argument the caller passed", "https://example.com/item-2", failure.url());
+        assertEquals("this arm must record the throwable's own class name, not its cause's", "java.lang.IllegalStateException",
+                failure.errorName());
+        assertSame("the stored throwable must be the throwable that was caught", t, failure.throwable());
+
+        assertEquals("the item must be counted as a plain exception", List.of(StatsAction.EXCEPTION),
+                crawlerStatsHelper.getRecordedActions());
+        assertEquals("the stats must be recorded against the item's own key", List.of(statsKey), crawlerStatsHelper.getRecordedKeys());
+    }
+
+    /**
+     * A {@link CrawlingAccessException} that is not a {@link MultipleCrawlingAccessException} has
+     * nothing to unwrap, so the exception itself is stored.
+     */
+    @Test
+    public void test_handleCrawlingException_withNothingToUnwrapStoresTheExceptionItself() {
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
+        final RecordingCrawlerStatsHelper crawlerStatsHelper = new RecordingCrawlerStatsHelper();
+        final CrawlingAccessException e = new CrawlingAccessException("plain");
+
+        dataStore.handleCrawlingException(new DataConfig(), crawlerStatsHelper, new StatsKeyObject("item-3"), "https://example.com/item-3",
+                e);
+
+        final List<CapturingFailureUrlService.StoredFailure> stored = failureUrlService.getStoredFailures();
+        assertEquals("exactly one failure row must be written", 1, stored.size());
+        assertSame(e, stored.get(0).throwable());
+        assertEquals("org.codelibs.fess.crawler.exception.CrawlingAccessException", stored.get(0).errorName());
+        assertEquals(List.of(StatsAction.ACCESS_EXCEPTION), crawlerStatsHelper.getRecordedActions());
+    }
+
+    /**
+     * The data config's own Permissions field arrives in defaultDataMap under the role index
+     * field. Every data store folds it into the document's ACL. Dropping it would silently
+     * narrow who can find the document.
+     */
+    @Test
+    public void test_mergeDefaultRoles_appendsDefaultDataMapRoles() {
+        final Map<String, Object> defaultDataMap = new HashMap<>();
+        defaultDataMap.put(ComponentUtil.getFessConfig().getIndexFieldRole(), List.of("1cfgA", "1cfgB"));
+
+        final List<String> merged = dataStore.mergeDefaultRoles(List.of("1src"), defaultDataMap);
+
+        assertEquals(List.of("1src", "1cfgA", "1cfgB"), merged);
+    }
+
+    /**
+     * OneNoteDataStore shares one roles list across the concurrent notebook threads of a single
+     * owner, so this helper must never mutate its argument. If it did, notebooks would
+     * accumulate each other's roles.
+     */
+    @Test
+    public void test_mergeDefaultRoles_doesNotMutateTheInputList() {
+        final Map<String, Object> defaultDataMap = new HashMap<>();
+        defaultDataMap.put(ComponentUtil.getFessConfig().getIndexFieldRole(), List.of("1cfg"));
+
+        final List<String> source = new ArrayList<>(List.of("1src"));
+        final List<String> merged = dataStore.mergeDefaultRoles(source, defaultDataMap);
+
+        assertEquals("the input list must be left untouched", List.of("1src"), source);
+        assertEquals(List.of("1src", "1cfg"), merged);
+    }
+
+    /**
+     * An absent or wrongly-typed role entry must yield a plain copy, not an exception and not
+     * the same list instance.
+     */
+    @Test
+    public void test_mergeDefaultRoles_withNoRoleEntryReturnsACopy() {
+        final List<String> source = new ArrayList<>(List.of("1src"));
+
+        final List<String> empty = dataStore.mergeDefaultRoles(source, new HashMap<>());
+        assertEquals(List.of("1src"), empty);
+        assertNotSame(source, empty);
+
+        final Map<String, Object> wrongType = new HashMap<>();
+        wrongType.put(ComponentUtil.getFessConfig().getIndexFieldRole(), "not-a-list");
+        assertEquals(List.of("1src"), dataStore.mergeDefaultRoles(source, wrongType));
+    }
+
+    /**
+     * A {@link CrawlerStatsHelper} that records what it was asked to count instead of counting.
+     */
+    static class RecordingCrawlerStatsHelper extends CrawlerStatsHelper {
+
+        private final List<Object> recordedKeys = Collections.synchronizedList(new ArrayList<>());
+
+        private final List<StatsAction> recordedActions = Collections.synchronizedList(new ArrayList<>());
+
+        @Override
+        public void record(final Object keyObj, final StatsAction action) {
+            recordedKeys.add(keyObj);
+            recordedActions.add(action);
+        }
+
+        List<Object> getRecordedKeys() {
+            return new ArrayList<>(recordedKeys);
+        }
+
+        List<StatsAction> getRecordedActions() {
+            return new ArrayList<>(recordedActions);
+        }
+    }
+
+    /**
      * Test implementation of Microsoft365DataStore for testing purposes.
      * This allows us to test the abstract base class functionality.
      */
@@ -893,6 +1108,11 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
             return super.createClient(paramMap);
         }
 
+        @Override
+        public List<String> mergeDefaultRoles(List<String> roles, Map<String, Object> defaultDataMap) {
+            return super.mergeDefaultRoles(roles, defaultDataMap);
+        }
+
         // Expose constants for testing
         public static String getIgnoreErrorConstant() {
             return IGNORE_ERROR;
@@ -904,6 +1124,30 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
 
         public static String getIgnoreSystemListsConstant() {
             return IGNORE_SYSTEM_LISTS;
+        }
+
+        public static String getNumberOfThreadsConstant() {
+            return NUMBER_OF_THREADS;
+        }
+
+        public static String getSiteIdConstant() {
+            return SITE_ID;
+        }
+
+        public static String getExcludeSiteIdConstant() {
+            return EXCLUDE_SITE_ID;
+        }
+
+        public static String getIncludePatternConstant() {
+            return INCLUDE_PATTERN;
+        }
+
+        public static String getExcludePatternConstant() {
+            return EXCLUDE_PATTERN;
+        }
+
+        public static String getUrlFilterConstant() {
+            return URL_FILTER;
         }
     }
 }

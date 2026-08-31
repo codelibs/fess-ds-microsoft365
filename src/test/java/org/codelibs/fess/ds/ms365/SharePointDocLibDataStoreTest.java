@@ -24,14 +24,21 @@ import static org.mockito.Mockito.when;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.CrawlerStatsHelper;
+import org.codelibs.fess.helper.PermissionHelper;
+import org.codelibs.fess.helper.SystemHelper;
+import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.Drive;
@@ -462,6 +469,92 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         logger.info("Callback count: {}", callback.getCount());
         assertTrue(callback.getCount() > 0);
         */
+    }
+
+    /**
+     * A document library's ACL is assembled from the drive's own Graph permissions, the
+     * operator-configured {@code default_permissions}, and the data config's own Permissions field
+     * (seeded into {@code defaultDataMap} under the role index field).
+     *
+     * <p>Nothing in this class asserted the roles a document library is actually indexed with, so
+     * dropping either the {@code default_permissions} step or the {@code defaultDataMap} fold
+     * narrowed every document library's ACL with the suite green. Pins all three contributions and
+     * their order.</p>
+     */
+    @Test
+    public void test_storeDocumentLibrary_assemblesRolesFromAllThreeSources() {
+        final SystemHelper systemHelper = new SystemHelper();
+        ComponentUtil.register(systemHelper, "systemHelper");
+        final CrawlerStatsHelper crawlerStatsHelper = new CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(systemHelper);
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+
+        // convertValue's real path goes through ComponentUtil.getScriptEngineFactory(), which this
+        // unit test has no business standing up -- see OneNoteDataStoreTest's identical seam.
+        // "doclib.roles" is the only template used here, so it is resolved with a direct nested
+        // map lookup instead; storeDocumentLibrary itself, including the role assembly under test,
+        // runs completely unmodified. getDrivePermissions is stubbed because it is the only member
+        // that would reach Graph.
+        final SharePointDocLibDataStore roleAwareDataStore = new SharePointDocLibDataStore() {
+            @Override
+            protected List<String> getDrivePermissions(final Microsoft365Client client, final String driveId,
+                    final DataStoreParams paramMap) {
+                return new ArrayList<>(List.of("1drive-permission"));
+            }
+
+            @Override
+            protected Object convertValue(final String scriptType, final String template, final Map<String, Object> resultMap) {
+                if ("doclib.roles".equals(template) && resultMap.get(DOCLIB) instanceof final Map<?, ?> docLibMap) {
+                    return docLibMap.get(DOCLIB_ROLES);
+                }
+                return super.convertValue(scriptType, template, resultMap);
+            }
+        };
+
+        final Site site = new Site();
+        site.setId("site-1");
+        site.setDisplayName("Site");
+
+        final Drive drive = new Drive();
+        drive.setId("drive-1");
+        drive.setName("Documents");
+        drive.setWebUrl("https://example.sharepoint.com/sites/site-1/Shared%20Documents");
+
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+        final Map<String, Object> defaultDataMap = new HashMap<>();
+        defaultDataMap.put(roleField, List.of("1config-role"));
+
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put(roleField, "doclib.roles");
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(SharePointDocLibDataStore.DEFAULT_PERMISSIONS, "{role}admin,{group}sales");
+
+        final TestCallback callback = new TestCallback();
+        roleAwareDataStore.storeDocumentLibrary(new DataConfig(), callback, new HashMap<>(), paramMap, scriptMap, defaultDataMap, null,
+                site, drive);
+
+        assertEquals("storeDocumentLibrary must have indexed the library exactly once", 1, callback.getCount());
+
+        @SuppressWarnings("unchecked")
+        final List<String> roles = (List<String>) callback.getLastDataMap().get(roleField);
+        assertEquals("the library's ACL must hold, in order: drive permissions, default_permissions, then the config's own roles", List
+                .of("1drive-permission", permissionHelper.encode("{role}admin"), permissionHelper.encode("{group}sales"), "1config-role"),
+                roles);
+    }
+
+    /**
+     * {@code PermissionHelper#systemHelper} is {@code @Resource}-injected, which plain
+     * {@code ComponentUtil.register(...)} does not perform in this minimal test container; this
+     * subclass exposes a same-package-crossing setter so the field can be wired by hand.
+     */
+    private static final class TestablePermissionHelper extends PermissionHelper {
+        void useSystemHelper(final SystemHelper systemHelper) {
+            this.systemHelper = systemHelper;
+        }
     }
 
     private static class TestCallback implements IndexUpdateCallback {

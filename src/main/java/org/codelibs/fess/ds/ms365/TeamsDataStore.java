@@ -38,9 +38,7 @@ import org.apache.lucene.analysis.charfilter.HTMLStripCharFilter;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
-import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
-import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client.UserType;
@@ -50,7 +48,6 @@ import org.codelibs.fess.exception.FessSystemException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
-import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
@@ -96,8 +93,6 @@ public class TeamsDataStore extends Microsoft365DataStore {
     private static final String CHANNEL_ID = "channel_id";
     /** Parameter name for the chat ID. */
     private static final String CHAT_ID = "chat_id";
-    /** Parameter name for the number of threads. */
-    protected static final String NUMBER_OF_THREADS = "number_of_threads";
     /** Parameter name for ignoring replies. */
     private static final String IGNORE_REPLIES = "ignore_replies";
     /** Parameter name for appending attachments. */
@@ -870,7 +865,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
             resultMap.put(MESSAGE, messageMap);
             resultAppender.accept(resultMap);
 
-            messageMap.put(MESSAGE_ROLES, buildMessageRoles(paramMap, permissions));
+            messageMap.put(MESSAGE_ROLES, buildMessageRoles(paramMap, defaultDataMap, permissions));
 
             crawlerStatsHelper.record(statsKey, StatsAction.PREPARED);
 
@@ -906,31 +901,10 @@ public class TeamsDataStore extends Microsoft365DataStore {
             }
         } catch (final CrawlingAccessException e) {
             logger.warn("Crawling Access Exception for message: {} (ID: {}) - Data: {}", message.getWebUrl(), message.getId(), dataMap, e);
-
-            Throwable target = e;
-            if (target instanceof final MultipleCrawlingAccessException ex) {
-                final Throwable[] causes = ex.getCauses();
-                if (causes.length > 0) {
-                    target = causes[causes.length - 1];
-                }
-            }
-
-            String errorName;
-            final Throwable cause = target.getCause();
-            if (cause != null) {
-                errorName = cause.getClass().getCanonicalName();
-            } else {
-                errorName = target.getClass().getCanonicalName();
-            }
-
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, errorName, message.getWebUrl(), target);
-            crawlerStatsHelper.record(statsKey, StatsAction.ACCESS_EXCEPTION);
+            handleCrawlingException(dataConfig, crawlerStatsHelper, statsKey, message.getWebUrl(), e);
         } catch (final Throwable t) {
             logger.warn("Processing exception for message: {} (ID: {}) - Data: {}", message.getWebUrl(), message.getId(), dataMap, t);
-            final FailureUrlService failureUrlService = ComponentUtil.getComponent(FailureUrlService.class);
-            failureUrlService.store(dataConfig, t.getClass().getCanonicalName(), message.getWebUrl(), t);
-            crawlerStatsHelper.record(statsKey, StatsAction.EXCEPTION);
+            handleCrawlingThrowable(dataConfig, crawlerStatsHelper, statsKey, message.getWebUrl(), t);
         } finally {
             crawlerStatsHelper.done(statsKey);
         }
@@ -940,22 +914,23 @@ public class TeamsDataStore extends Microsoft365DataStore {
 
     /**
      * Builds the role list for one indexed message: the roles its container contributed, plus the
-     * configured {@code default_permissions}, de-duplicated.
+     * configured {@code default_permissions}, plus the data config's own Permissions field carried
+     * in {@code defaultDataMap}, de-duplicated.
      *
      * <p>The returned list is new. The caller's list is never modified -- a channel's membership is
      * resolved once and shared across every message in that channel, so appending to it here would
      * accumulate one copy of {@code default_permissions} per message.
      *
      * @param paramMap The data store parameters.
+     * @param defaultDataMap The data store's default data map, holding the data config's Permissions field.
      * @param permissions The roles contributed by the message's channel or chat.
      * @return a new list of roles for this document.
      */
-    protected List<String> buildMessageRoles(final DataStoreParams paramMap, final List<String> permissions) {
+    protected List<String> buildMessageRoles(final DataStoreParams paramMap, final Map<String, Object> defaultDataMap,
+            final List<String> permissions) {
         final List<String> roles = new ArrayList<>(permissions);
-        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
-        StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
-        return roles.stream().distinct().collect(Collectors.toList());
+        roles.addAll(getDefaultPermissions(paramMap));
+        return mergeDefaultRoles(roles, defaultDataMap).stream().distinct().collect(Collectors.toList());
     }
 
     /**
