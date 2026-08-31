@@ -21,9 +21,14 @@ import org.junit.jupiter.api.TestInfo;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.entity.DataStoreParams;
 
@@ -645,6 +650,159 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         logger.info("Callback count: {}", callback.getCount());
         assertTrue(callback.getCount() > 0);
         */
+    }
+
+    @Test
+    public void test_isTargetListType_acceptsNumericTemplateIds() {
+        // The README tells users to write list_template_filter=100,101. Graph returns the
+        // template as a name, so those settings used to match nothing and the crawl produced
+        // no items at all.
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "100,101");
+
+        assertTrue("100 must select genericList", dataStore.isTargetListType(paramMap, listWithTemplate("genericList")));
+        assertTrue("101 must select documentLibrary", dataStore.isTargetListType(paramMap, listWithTemplate("documentLibrary")));
+        assertFalse("a template outside the filter must be rejected", dataStore.isTargetListType(paramMap, listWithTemplate("survey")));
+    }
+
+    @Test
+    public void test_isTargetListType_stillAcceptsTemplateNames() {
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "genericList,documentLibrary");
+
+        assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("genericList")));
+        assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("documentLibrary")));
+        assertFalse(dataStore.isTargetListType(paramMap, listWithTemplate("survey")));
+    }
+
+    @Test
+    public void test_isTargetListType_mixedNumericAndNameIsAccepted() {
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "100,documentLibrary");
+
+        assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("genericList")));
+        assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("documentLibrary")));
+    }
+
+    @Test
+    public void test_isTargetListType_blankFilterAcceptsEverything() {
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+
+        assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("survey")));
+    }
+
+    @Test
+    public void test_isProcessableListItemType_defaultsToGenericListOnly() {
+        // Unchanged default: without an explicit filter, only generic lists are processed.
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+
+        assertTrue(dataStore.isProcessableListItemType(paramMap, "genericList"));
+        assertFalse(dataStore.isProcessableListItemType(paramMap, "documentLibrary"));
+    }
+
+    @Test
+    public void test_isProcessableListItemType_honoursExplicitFilter() {
+        // Setting the filter used to be pointless: processListItem dropped anything that was
+        // not a generic list regardless.
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "101");
+
+        assertTrue(dataStore.isProcessableListItemType(paramMap, "documentLibrary"));
+        assertFalse(dataStore.isProcessableListItemType(paramMap, "genericList"));
+    }
+
+    @Test
+    public void test_unknownListTemplateFilterTokenWarnsOnceNotPerItem() {
+        // list_template_filter=106,100 against a genericList: "106" has no documented mapping,
+        // so evaluating it used to warn - and c01b81f made isTargetListType run once per list
+        // item via isProcessableListItemType, so that warning used to repeat once per item.
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "106,100");
+
+        final AtomicInteger warnCount = new AtomicInteger();
+        final org.apache.logging.log4j.core.Logger coreLogger =
+                (org.apache.logging.log4j.core.Logger) LogManager.getLogger(SharePointListDataStore.class);
+        final AbstractAppender appender =
+                new AbstractAppender("test-unknown-template-warn-counter", null, null, false, Property.EMPTY_ARRAY) {
+                    @Override
+                    public void append(final LogEvent event) {
+                        if (event.getLevel() == Level.WARN
+                                && event.getMessage().getFormattedMessage().contains("Unknown list template ID")) {
+                            warnCount.incrementAndGet();
+                        }
+                    }
+                };
+        appender.start();
+        coreLogger.addAppender(appender);
+        try {
+            // storeData calls this exactly once per crawl, regardless of how many lists or
+            // items it goes on to process.
+            dataStore.validateListTemplateFilter(paramMap);
+            assertEquals("the unmapped numeric token must warn exactly once", 1, warnCount.get());
+
+            // Simulate processListItem calling isProcessableListItemType once per item, as it
+            // does for every item in a matching list (c01b81f).
+            for (int i = 0; i < 25; i++) {
+                assertTrue(dataStore.isProcessableListItemType(paramMap, "genericList"));
+            }
+            assertEquals("evaluating the filter for 25 items must not add further warnings", 1, warnCount.get());
+        } finally {
+            coreLogger.removeAppender(appender);
+            appender.stop();
+        }
+    }
+
+    @Test
+    public void test_blankListTemplateFilterTokenDoesNotWarn() {
+        // list_template_filter=100,,101 - the blank entry used to be reported as an "unknown
+        // numeric ID" because "".chars().allMatch(Character::isDigit) is vacuously true for an
+        // empty stream.
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "100,,101");
+
+        final AtomicInteger warnCount = new AtomicInteger();
+        final org.apache.logging.log4j.core.Logger coreLogger =
+                (org.apache.logging.log4j.core.Logger) LogManager.getLogger(SharePointListDataStore.class);
+        final AbstractAppender appender =
+                new AbstractAppender("test-blank-template-warn-counter", null, null, false, Property.EMPTY_ARRAY) {
+                    @Override
+                    public void append(final LogEvent event) {
+                        if (event.getLevel() == Level.WARN
+                                && event.getMessage().getFormattedMessage().contains("Unknown list template ID")) {
+                            warnCount.incrementAndGet();
+                        }
+                    }
+                };
+        appender.start();
+        coreLogger.addAppender(appender);
+        try {
+            dataStore.validateListTemplateFilter(paramMap);
+            assertEquals("a blank token must be silently ignored, not treated as an unknown numeric ID", 0, warnCount.get());
+
+            // The match outcome itself must be unaffected by the blank token.
+            assertTrue(dataStore.isTargetListType(paramMap, listWithTemplate("documentLibrary")));
+            assertFalse(dataStore.isTargetListType(paramMap, listWithTemplate("survey")));
+            assertEquals("evaluating the blank token via isTargetListType must not warn either", 0, warnCount.get());
+        } finally {
+            coreLogger.removeAppender(appender);
+            appender.stop();
+        }
+    }
+
+    private static com.microsoft.graph.models.List listWithTemplate(final String template) {
+        final com.microsoft.graph.models.ListInfo info = new com.microsoft.graph.models.ListInfo();
+        info.setTemplate(template);
+        final com.microsoft.graph.models.List list = new com.microsoft.graph.models.List();
+        list.setList(info);
+        return list;
     }
 
     private static class TestCallback implements IndexUpdateCallback {

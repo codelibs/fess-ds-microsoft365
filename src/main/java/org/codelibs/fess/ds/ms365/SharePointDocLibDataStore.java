@@ -34,6 +34,7 @@ import org.codelibs.fess.Constants;
 import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
+import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
@@ -74,6 +75,8 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     protected static final String INCLUDE_PATTERN = "include_pattern";
     /** Regular expression pattern for files to exclude */
     protected static final String EXCLUDE_PATTERN = "exclude_pattern";
+    /** Key used to stash the {@link UrlFilter} built from {@link #INCLUDE_PATTERN}/{@link #EXCLUDE_PATTERN} in the config map */
+    protected static final String URL_FILTER = "url_filter";
 
     // Field mappings for document libraries
     /** Document library prefix for field mappings */
@@ -123,6 +126,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
 
         final Map<String, Object> configMap = new LinkedHashMap<>();
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
+        configMap.put(URL_FILTER, getUrlFilter(paramMap));
 
         if (logger.isDebugEnabled()) {
             logger.debug("SharePoint Document Library crawling started - Configuration: IgnoreError={}, Threads={}",
@@ -195,6 +199,29 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     }
 
     /**
+     * Gets the URL filter built from {@link #INCLUDE_PATTERN} and {@link #EXCLUDE_PATTERN}.
+     *
+     * @param paramMap the data store parameters
+     * @return the URL filter
+     */
+    protected UrlFilter getUrlFilter(final DataStoreParams paramMap) {
+        final UrlFilter urlFilter = ComponentUtil.getComponent(UrlFilter.class);
+        final String include = paramMap.getAsString(INCLUDE_PATTERN);
+        if (StringUtil.isNotBlank(include)) {
+            urlFilter.addInclude(include);
+        }
+        final String exclude = paramMap.getAsString(EXCLUDE_PATTERN);
+        if (StringUtil.isNotBlank(exclude)) {
+            urlFilter.addExclude(exclude);
+        }
+        urlFilter.init(paramMap.getAsString(Constants.CRAWLING_INFO_ID));
+        if (logger.isDebugEnabled()) {
+            logger.debug("urlFilter: {}", urlFilter);
+        }
+        return urlFilter;
+    }
+
+    /**
      * Stores document libraries and their files in a SharePoint site.
      *
      * @param dataConfig the data configuration
@@ -216,13 +243,15 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             logger.debug("Processing document libraries for site: {} ({})", site.getDisplayName(), site.getId());
         }
 
+        final UrlFilter urlFilter = (UrlFilter) configMap.get(URL_FILTER);
+
         // Get all drives (document libraries) for the site
         getSiteDrives(client, site.getId(), drive -> {
             if (logger.isDebugEnabled()) {
                 logger.debug("Evaluating drive: {} - Type: {}, System: {}", drive.getName(), drive.getDriveType(), isSystemLibrary(drive));
             }
             if (Microsoft365Constants.DOCUMENT_LIBRARY.equals(drive.getDriveType())
-                    && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive))) {
+                    && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive)) && isTargetLibrary(urlFilter, site, drive)) {
 
                 executorService.execute(() -> {
                     try {
@@ -245,9 +274,25 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                     }
                 });
             } else if (logger.isDebugEnabled()) {
-                logger.debug("Skipping drive: {} - Type: {}, System: {}", drive.getName(), drive.getDriveType(), isSystemLibrary(drive));
+                logger.debug("Skipping drive: {} - Type: {}, System: {}, Target: {}", drive.getName(), drive.getDriveType(),
+                        isSystemLibrary(drive), isTargetLibrary(urlFilter, site, drive));
             }
         });
+    }
+
+    /**
+     * Decides whether a document library should be crawled based on the URL filter built from
+     * {@link #INCLUDE_PATTERN}/{@link #EXCLUDE_PATTERN}. The filter is matched against the same
+     * canonical URL that is indexed as {@code doclib.url} (see {@link #generateDocumentLibraryUrl(Site, Drive)}),
+     * so a pattern that matches the indexed URL behaves as users expect.
+     *
+     * @param urlFilter the URL filter, or {@code null} if none is configured
+     * @param site the SharePoint site containing the document library
+     * @param drive the document library drive to evaluate
+     * @return true if the document library should be crawled
+     */
+    protected boolean isTargetLibrary(final UrlFilter urlFilter, final Site site, final Drive drive) {
+        return urlFilter == null || urlFilter.match(generateDocumentLibraryUrl(site, drive));
     }
 
     /**

@@ -145,6 +145,11 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         final Map<String, Object> configMap = new LinkedHashMap<>();
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
 
+        // Validate list_template_filter exactly once per crawl. isTargetListType is evaluated
+        // once per list, and (via isProcessableListItemType, see c01b81f) once per list item, so
+        // warning from inside it would repeat once per list item processed.
+        validateListTemplateFilter(paramMap);
+
         if (logger.isDebugEnabled()) {
             logger.debug(
                     "SharePoint lists crawling started - Configuration: SiteID={}, ListID={}, IgnoreError={}, IgnoreSystemLists={}, Threads={}",
@@ -345,10 +350,10 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         }
         listTemplate = list.getList().getTemplate();
 
-        if (!Microsoft365Constants.GENERIC_LIST.equals(listTemplate)) {
+        if (!isProcessableListItemType(paramMap, listTemplate)) {
             if (logger.isDebugEnabled()) {
-                logger.debug("Skipping non-generic list item - List: {} (ID: {}, Template: {}), Item ID: {}", list.getDisplayName(),
-                        list.getId(), listTemplate, item.getId());
+                logger.debug("Skipping list item whose template does not match {} - List: {} (ID: {}, Template: {}), Item ID: {}",
+                        LIST_TEMPLATE_FILTER, list.getDisplayName(), list.getId(), listTemplate, item.getId());
 
             }
             return;
@@ -684,22 +689,90 @@ public class SharePointListDataStore extends Microsoft365DataStore {
      * @return true if the list matches the template filter, false otherwise
      */
     protected boolean isTargetListType(final DataStoreParams paramMap, final com.microsoft.graph.models.List list) {
+        final String listTemplate = list.getList() != null ? list.getList().getTemplate() : null;
+        return isTargetListType(paramMap, listTemplate);
+    }
+
+    /**
+     * Checks if the given list template name matches the target template type filter.
+     *
+     * @param paramMap the data store parameters
+     * @param listTemplate the Graph template name of the list, or {@code null} if unknown
+     * @return true if the template matches the template filter, false otherwise
+     */
+    protected boolean isTargetListType(final DataStoreParams paramMap, final String listTemplate) {
         final String templateFilter = paramMap.getAsString(LIST_TEMPLATE_FILTER, null);
         if (StringUtil.isBlank(templateFilter)) {
             return true;
         }
 
-        if (list.getList() != null && list.getList().getTemplate() != null) {
-            final String template = list.getList().getTemplate();
+        if (listTemplate != null) {
             final String[] templates = templateFilter.split(",");
             for (final String t : templates) {
-                if (template.equals(t.trim())) {
+                final String candidate = t.trim();
+                if (candidate.isEmpty()) {
+                    // e.g. "100,,101" - nothing to look up, and nothing a list template could
+                    // ever equal.
+                    continue;
+                }
+                final String mapped = Microsoft365Constants.templateNameForId(candidate);
+                if (listTemplate.equals(mapped != null ? mapped : candidate)) {
                     return true;
                 }
             }
             return false;
         }
         return true;
+    }
+
+    /**
+     * Validates {@link #LIST_TEMPLATE_FILTER} once per crawl and warns about any token that
+     * looks like a numeric template ID but has no documented mapping.
+     *
+     * <p>{@link #isTargetListType(DataStoreParams, String)} is evaluated once per list while
+     * enumerating a site's lists, and (via {@link #isProcessableListItemType}, see c01b81f) once
+     * per list item while processing a list. Warning from inside that method would therefore
+     * repeat once per list, or once per list item processed, for the same misconfigured filter.
+     * This method performs the same lookup exactly once, when the crawl starts, instead.</p>
+     *
+     * @param paramMap the data store parameters
+     */
+    protected void validateListTemplateFilter(final DataStoreParams paramMap) {
+        final String templateFilter = paramMap.getAsString(LIST_TEMPLATE_FILTER, null);
+        if (StringUtil.isBlank(templateFilter)) {
+            return;
+        }
+
+        for (final String t : templateFilter.split(",")) {
+            final String candidate = t.trim();
+            if (candidate.isEmpty()) {
+                // A blank entry (e.g. "100,,101") is not an unknown numeric ID - it is nothing
+                // at all - so it must not be reported as one.
+                continue;
+            }
+            if (Microsoft365Constants.templateNameForId(candidate) == null && candidate.chars().allMatch(Character::isDigit)) {
+                logger.warn("Unknown list template ID '{}' in {}; use the Graph template name instead.", candidate, LIST_TEMPLATE_FILTER);
+            }
+        }
+    }
+
+    /**
+     * Decides whether items of the given list template should be processed.
+     *
+     * <p>Without an explicit {@code list_template_filter} this keeps the historical
+     * behaviour of handling generic lists only. Setting the filter used to have no effect
+     * here: items of any other template were dropped further down regardless of it.</p>
+     *
+     * @param paramMap the data store parameters
+     * @param listTemplate the Graph template name of the list owning the item
+     * @return true if items of this template should be processed
+     */
+    protected boolean isProcessableListItemType(final DataStoreParams paramMap, final String listTemplate) {
+        final String templateFilter = paramMap.getAsString(LIST_TEMPLATE_FILTER, null);
+        if (StringUtil.isBlank(templateFilter)) {
+            return Microsoft365Constants.GENERIC_LIST.equals(listTemplate);
+        }
+        return isTargetListType(paramMap, listTemplate);
     }
 
     /**

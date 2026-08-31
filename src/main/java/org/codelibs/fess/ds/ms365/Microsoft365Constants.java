@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import java.util.Map;
+
 /**
  * Constants used across Microsoft 365 data store implementations.
  *
@@ -89,6 +91,25 @@ public final class Microsoft365Constants {
     public static final String DOCUMENT_LIBRARY = "documentLibrary";
     /** SharePoint list template type for generic lists. */
     public static final String GENERIC_LIST = "genericList";
+
+    /** SharePoint list template type IDs mapped to the template names Graph reports. */
+    private static final Map<String, String> TEMPLATE_NAMES_BY_ID = Map.of("100", GENERIC_LIST, "101", DOCUMENT_LIBRARY, "102", "survey",
+            "103", "links", "104", "announcements", "105", "contacts");
+
+    /**
+     * Translates a SharePoint list template ID to the template name Graph reports.
+     *
+     * <p>Only the IDs Microsoft documents against Graph's {@code list.template} are mapped.
+     * Higher IDs exist in SharePoint's own SPListTemplateType enumeration, but Graph's
+     * documented names for them are not published, and guessing at them would recreate the
+     * silent no-match this mapping exists to fix.</p>
+     *
+     * @param id the numeric template ID
+     * @return the Graph template name, or null if the ID has no documented mapping
+     */
+    public static String templateNameForId(final String id) {
+        return TEMPLATE_NAMES_BY_ID.get(id);
+    }
 
     // SharePoint Authentication Notes
     /**

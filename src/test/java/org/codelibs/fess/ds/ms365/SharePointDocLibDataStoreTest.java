@@ -15,6 +15,12 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
@@ -23,8 +29,10 @@ import java.util.Map;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.Site;
@@ -323,6 +331,106 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         assertEquals("Should get site ID for document library enumeration", "metadata-test-site", paramMap.getAsString("site_id"));
         assertFalse("Should include system libraries when configured", dataStore.isIgnoreSystemLibraries(paramMap));
         assertEquals("Should get thread count", "3", paramMap.getAsString("number_of_threads", "1"));
+    }
+
+    @Test
+    public void test_isTargetLibrary_noFilterConfigured() {
+        final Site site = new Site();
+        site.setWebUrl("https://contoso.sharepoint.com/sites/test");
+
+        final Drive drive = new Drive();
+        drive.setName("Documents");
+        drive.setWebUrl("https://contoso.sharepoint.com/sites/test/Shared%20Documents");
+
+        assertTrue("No URL filter configured should crawl every library, matching pre-existing behavior",
+                dataStore.isTargetLibrary(null, site, drive));
+    }
+
+    @Test
+    public void test_isTargetLibrary_filterAcceptsMatchingLibrary() {
+        final Site site = new Site();
+        site.setWebUrl("https://contoso.sharepoint.com/sites/test");
+
+        final Drive drive = new Drive();
+        drive.setName("Marketing Assets");
+        // Deliberately different from the canonical URL so the assertions below prove which URL is filtered.
+        drive.setWebUrl("https://contoso.sharepoint.com/sites/test/_layouts/15/Doc.aspx?id=1");
+
+        final UrlFilter urlFilter = mock(UrlFilter.class);
+        final String canonicalUrl = dataStore.generateDocumentLibraryUrl(site, drive);
+        when(urlFilter.match(canonicalUrl)).thenReturn(true);
+
+        assertTrue("A library whose canonical URL is accepted by the filter must still be crawled",
+                dataStore.isTargetLibrary(urlFilter, site, drive));
+        verify(urlFilter).match(canonicalUrl);
+    }
+
+    @Test
+    public void test_isTargetLibrary_filterRejectsNonMatchingLibrary() {
+        final Site site = new Site();
+        site.setWebUrl("https://contoso.sharepoint.com/sites/test");
+
+        final Drive drive = new Drive();
+        drive.setName("Marketing Assets");
+        drive.setWebUrl("https://contoso.sharepoint.com/sites/test/_layouts/15/Doc.aspx?id=1");
+
+        final UrlFilter urlFilter = mock(UrlFilter.class);
+        final String canonicalUrl = dataStore.generateDocumentLibraryUrl(site, drive);
+        when(urlFilter.match(canonicalUrl)).thenReturn(false);
+
+        assertFalse("A library rejected by the URL filter must not be crawled", dataStore.isTargetLibrary(urlFilter, site, drive));
+        verify(urlFilter).match(canonicalUrl);
+    }
+
+    @Test
+    public void test_isTargetLibrary_filtersOnCanonicalUrlNotRawWebUrl() {
+        final Site site = new Site();
+        site.setWebUrl("https://contoso.sharepoint.com/sites/test");
+
+        final Drive drive = new Drive();
+        drive.setName("Marketing Assets");
+        drive.setWebUrl("https://contoso.sharepoint.com/sites/test/_layouts/15/Doc.aspx?id=1");
+
+        final String canonicalUrl = dataStore.generateDocumentLibraryUrl(site, drive);
+        assertFalse("Test setup should keep the raw webUrl distinct from the canonical URL", drive.getWebUrl().equals(canonicalUrl));
+
+        final UrlFilter urlFilter = mock(UrlFilter.class);
+        // Only the raw webUrl matches; the canonical (indexed doclib.url) URL does not.
+        when(urlFilter.match(drive.getWebUrl())).thenReturn(true);
+        when(urlFilter.match(canonicalUrl)).thenReturn(false);
+
+        assertFalse("isTargetLibrary must filter on the canonical URL indexed as doclib.url, not drive.getWebUrl()",
+                dataStore.isTargetLibrary(urlFilter, site, drive));
+    }
+
+    @Test
+    public void test_getUrlFilter_wiresIncludeAndExcludePatterns() {
+        final UrlFilter mockFilter = mock(UrlFilter.class);
+        ComponentUtil.register(mockFilter, UrlFilter.class.getCanonicalName());
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("include_pattern", "https://contoso\\.sharepoint\\.com/sites/allowed/.*");
+        paramMap.put("exclude_pattern", "https://contoso\\.sharepoint\\.com/sites/blocked/.*");
+
+        final UrlFilter result = dataStore.getUrlFilter(paramMap);
+
+        assertEquals(mockFilter, result);
+        verify(mockFilter).addInclude("https://contoso\\.sharepoint\\.com/sites/allowed/.*");
+        verify(mockFilter).addExclude("https://contoso\\.sharepoint\\.com/sites/blocked/.*");
+        verify(mockFilter).init(null);
+    }
+
+    @Test
+    public void test_getUrlFilter_leavesPatternsUnsetWhenNotConfigured() {
+        final UrlFilter mockFilter = mock(UrlFilter.class);
+        ComponentUtil.register(mockFilter, UrlFilter.class.getCanonicalName());
+
+        final UrlFilter result = dataStore.getUrlFilter(new DataStoreParams());
+
+        assertEquals(mockFilter, result);
+        verify(mockFilter, never()).addInclude(anyString());
+        verify(mockFilter, never()).addExclude(anyString());
+        verify(mockFilter).init(null);
     }
 
     @Test

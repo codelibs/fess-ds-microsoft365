@@ -396,10 +396,29 @@ role=page.roles
 |-----------|-------------|---------|----------|
 | `number_of_threads` | Concurrent crawling threads | `1` | `3` |
 | `ignore_error` | Continue on errors | `true` | `false` |
-| `include_pattern` | Regex pattern for inclusion | - | `.*\.pdf$` |
-| `exclude_pattern` | Regex pattern for exclusion | - | `.*temp.*` |
+| `include_pattern` | Regex pattern for inclusion - semantics differ by DataStore, see below | - | `.*\.pdf$` |
+| `exclude_pattern` | Regex pattern for exclusion - semantics differ by DataStore, see below | - | `.*temp.*` |
 | `default_permissions` | Default role assignments | - | `{role}admin` |
 | `permission_failure_policy` | What to do when a document's permissions cannot be retrieved | `skip` | `index_without_acl` |
+
+#### `include_pattern` / `exclude_pattern` semantics differ by DataStore
+
+`include_pattern` and `exclude_pattern` are accepted by several DataStores in this plugin, but
+each one matches them against different content, using different regex semantics, and none of
+that is visible from the table above:
+
+| DataStore | Matched against | Match mechanism |
+|-----------|------------------|------------------|
+| `oneDriveDataStore` | the generated drive-item URL (indexed as `file.url`) - **not** the raw Graph `webUrl` (`file.web_url`); the two usually agree, but diverge for `/_layouts/` paths, which `getUrl()` rewrites | Fess `UrlFilter` - full match (`Matcher.matches()`) |
+| `sharePointDocLibDataStore` | the document library's **canonical URL** (`doclib.url`, built by `generateDocumentLibraryUrl(site, drive)`) - **not** the raw Graph `webUrl` (`doclib.web_url`) or the library's display name | Fess `UrlFilter` - full match (`Matcher.matches()`) |
+| `sharePointListDataStore` | the list item's title (`Title`/`LinkTitle`/`FileLeafRef`, whichever resolves first) | `java.util.regex.Pattern.matches()` - full match |
+| `sharePointPageDataStore` | the page's `webUrl` | `java.util.regex.Pattern.find()` - **partial** match |
+| `teamsDataStore`, `oneNoteDataStore` | not supported - both parameters are silently ignored | - |
+
+Practically: a OneDrive or SharePoint document library pattern must match the *entire* URL, a
+SharePoint List pattern must match the *entire* title, and a SharePoint Pages pattern only needs
+to match *somewhere inside* the URL. A pattern written for one DataStore will not necessarily
+behave the same way on another.
 
 #### Permission lookup failures
 
@@ -511,6 +530,47 @@ Re-crawl the OneDrive, SharePoint document library, SharePoint list, and SharePo
 crawlers after upgrading to pick up the corrected ACLs, and re-crawl OneNoteDataStore (with
 `site_note_crawler` and/or `group_note_crawler` enabled) to index the site and group notebooks
 for the first time.
+
+#### Re-crawling after upgrading to the crawl filter fixes
+
+A separate set of fixes corrects which lists, items, and document libraries a crawl selects in
+the first place, not just their ACLs, so a re-crawl is needed here too:
+
+- **`list_template_filter`** (SharePointListDataStore) had two independent bugs. First, the
+  numeric IDs this README always documented (e.g. `list_template_filter=100,101`) never matched
+  anything, because the filter only compared against Graph's string template names internally -
+  crawls configured this way indexed **zero items**, regardless of what lists existed. Second,
+  even a filter that did match a list (by template name, or now by numeric ID too) only decided
+  which *lists* were considered; a separate, unconditional check further down discarded every item
+  whose list template wasn't `genericList`, so selecting e.g. `documentLibrary` still indexed no
+  items. Both are fixed now: numeric IDs are accepted, and the filter governs item processing too.
+  Re-crawl any configuration that sets `list_template_filter` to anything other than the default to
+  pick up items that were previously discarded either way. The default (filter unset) is
+  unchanged - generic lists only. This can also go the other way when `list_id` is set to crawl a
+  single list directly: that path never consults `list_template_filter` to decide *whether* to
+  crawl the list (only `list_id` does), but it now goes through the same, newly-enforced
+  item-level filter as every other list. A `list_id` whose list's actual template does not match
+  `list_template_filter` used to index all of that list's items regardless of the filter, and now
+  indexes **zero**. If you started using `list_id` as a workaround for `list_template_filter`
+  matching nothing in "all lists" mode, double-check that the filter value you left in place still
+  matches the template of the list `list_id` points at.
+- **`ignore_system_libraries`** was already enforced in SharePointDocLibDataStore before this
+  release - nothing changes there, and no re-crawl is needed on its account. The bug was isolated
+  to OneDriveDataStore: when it crawls all SharePoint sites' document libraries (Crawling Mode 1,
+  which runs whenever `shared_documents_drive_crawler=true`, the default), the same check existed
+  but was only ever passed as an argument to a `debug` log statement, so the default `true` changed
+  nothing there - `_catalogs`, `Forms`, Style Library, and `FormServerTemplates` were crawled like
+  any other library. It is actually enforced in OneDriveDataStore's Mode 1 now too, still the
+  default. Because Mode 1 indexes the files inside those libraries, not just library metadata the
+  way SharePointDocLibDataStore does, the drop in indexed items after a re-crawl can be far larger
+  here. Re-crawl OneDriveDataStore to remove them from the index, or set
+  `ignore_system_libraries=false` first if you want to keep indexing them.
+- **`include_pattern` / `exclude_pattern`** (SharePointDocLibDataStore) were declared as constants
+  but never read anywhere, so configuring either one had no effect at all. They now filter document
+  libraries by their canonical URL (`doclib.url`) - see
+  [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below for what
+  that means in practice. If you had already configured either parameter for this DataStore
+  expecting it to work, re-crawl to have it apply for the first time.
 
 ### Teams-Specific Parameters
 
@@ -684,6 +744,7 @@ The implementation extracts and indexes the following notebook metadata:
 | `shared_documents_drive_crawler` | Enable shared documents crawling | `true` | Crawl default user's OneDrive |
 | `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
+| `ignore_system_libraries` | Skip system libraries (`_catalogs`, `Forms`, Style Library, `FormServerTemplates`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the drive's URL, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below - so a site whose path merely contains a `/Forms/` segment (e.g. a site collection named "Forms") is misdetected as a system library and has all of its files skipped by default, not just an actual Forms system library |
 
 #### OneDrive Implementation Details
 
@@ -696,7 +757,7 @@ The OneDriveDataStore provides comprehensive Microsoft 365 file crawling capabil
 - **Permission Integration**: Extracts and maps Microsoft 365 access permissions to Fess role-based access control
 
 **Crawling Modes (Processing Order):**
-1. **Shared Documents Drive**: Crawls the authenticated user's OneDrive (`/me/drive`) or all SharePoint sites' document libraries
+1. **Shared Documents Drive**: Crawls the authenticated user's OneDrive (`/me/drive`) or all SharePoint sites' document libraries (the latter honors `ignore_system_libraries`, see the parameters table above). Runs whenever `shared_documents_drive_crawler=true` (default), regardless of whether `drive_id` is also set for Mode 4 below - the two crawls run independently, not exclusively
 2. **User Drives**: Iterates through all licensed users and crawls their personal OneDrive (`/users/{userId}/drive`)
 3. **Group Drives**: Crawls Microsoft 365 group-associated drives (`/groups/{groupId}/drive`)
 4. **Specific Drive**: Targets a single drive by ID when `drive_id` parameter is specified (`/drives/{driveId}`)
@@ -752,12 +813,27 @@ The implementation generates user-friendly URLs based on crawling context:
 |-----------|-------------|---------|-------|
 | `site_id` | Specific site ID to crawl | All sites | Full site ID format: `hostname,siteCollectionId,siteId` |
 | `exclude_site_id` | Site IDs to exclude | - | See format guide below |
-| `ignore_system_libraries` | Skip system libraries | `true` | Excludes Form Templates, Style Library, etc. |
+| `ignore_system_libraries` | Skip system libraries | `true` | Excludes `_catalogs`, `Forms`, Style Library, and `FormServerTemplates` folders (matched case-insensitively against the drive's URL) |
 | `number_of_threads` | Number of processing threads | `1` | Concurrent document library processing |
 | `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed libraries |
-| `include_pattern` | Regex pattern for library names to include | - | Filter libraries by name matching |
-| `exclude_pattern` | Regex pattern for library names to exclude | - | Skip libraries with matching names |
+| `include_pattern` | Regex pattern matched against the library's **canonical URL** (`doclib.url`), not its name | - | e.g. `https://contoso\.sharepoint\.com/sites/allowed/.*` |
+| `exclude_pattern` | Regex pattern matched against the library's **canonical URL** (`doclib.url`), not its name | - | e.g. `.*/sites/blocked/.*` |
 | `default_permissions` | Default role assignments | - | Additional permissions for all libraries |
+
+> **Behavior changes in this release:**
+> - `ignore_system_libraries` (default `true`) already worked correctly in this DataStore before
+>   this release: the check was a real conditional here, not just logged, so nothing changes for
+>   SharePointDocLibDataStore and no re-crawl is needed on its account. The bug this release fixes
+>   was isolated to OneDriveDataStore, where the same check was only ever passed as an argument to
+>   a `debug` log statement - see
+>   [Re-crawling after upgrading to the crawl filter fixes](#re-crawling-after-upgrading-to-the-crawl-filter-fixes)
+>   above for what changes there.
+> - `include_pattern` / `exclude_pattern` were declared but never referenced anywhere in this
+>   DataStore, so configuring them previously did nothing. They are wired to a Fess `UrlFilter` now,
+>   matched against the library's canonical URL (`doclib.url`, generated by
+>   `generateDocumentLibraryUrl(site, drive)`) - **not** the library's display name and **not**
+>   `drive.getWebUrl()` (`doclib.web_url`). This is the same `UrlFilter` mechanism OneDriveDataStore
+>   uses, just matched against a different URL.
 
 ##### exclude_site_id Format
 
@@ -823,7 +899,7 @@ The implementation creates rich, searchable content by combining:
 
 **Configuration Flexibility:**
 - **Site Exclusion**: Advanced `exclude_site_id` parameter supporting both simple comma-separated IDs and complex SharePoint site ID format with semicolon separation
-- **Pattern Filtering**: Support for `include_pattern` and `exclude_pattern` regex filtering on library names
+- **Pattern Filtering**: Support for `include_pattern` and `exclude_pattern` regex filtering on the library's canonical URL (`doclib.url`), not its name - via the same Fess `UrlFilter` OneDriveDataStore uses
 - **Permission Management**: Default permissions assignment via `default_permissions` parameter
 - **Threading Control**: Configurable `number_of_threads` for optimal performance tuning
 
@@ -848,7 +924,7 @@ The implementation creates rich, searchable content by combining:
 | `site_id` | SharePoint site ID containing lists | Required | Full site ID format: `hostname,siteCollectionId,siteId` |
 | `list_id` | Specific list ID to crawl | All lists | If specified, only this list will be crawled |
 | `exclude_list_id` | Comma-separated list IDs to exclude | - | Multiple list IDs separated by commas |
-| `list_template_filter` | Filter by list template types | - | Comma-separated template IDs (e.g., `100,101`) |
+| `list_template_filter` | Filter which lists - and, since this fix, which of their items - are processed, by template type | - | Comma-separated numeric IDs and/or Graph template names, e.g. `100,101` or `genericList,documentLibrary`; see [List Template Types](#list-template-types) below |
 | `ignore_system_lists` | Skip system lists | `true` | Excludes lists like User Information, Workflow Tasks |
 | `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed items |
 | `include_pattern` | Regex pattern for item titles to include | - | Filter items by title matching |
@@ -864,7 +940,7 @@ The SharePointListDataStore provides comprehensive crawling and indexing of Shar
 - **List Item Indexing**: Each SharePoint list item becomes a searchable entity with dynamic field extraction and content aggregation
 - **Site-Specific Crawling**: Requires a `site_id` parameter to target lists within a specific SharePoint site
 - **List Filtering**: Supports crawling all lists or specific lists using `list_id`, with exclusion capabilities via `exclude_list_id`
-- **Template-Based Filtering**: Filter lists by SharePoint template types (e.g., 100 for Generic List, 101 for Document Library)
+- **Template-Based Filtering**: Filter which lists - and which of their items are processed - by SharePoint template type, using numeric IDs or Graph template names (e.g. `100`/`genericList` for Generic Lists, `101`/`documentLibrary` for Document Libraries). Without this filter, only generic-list items are processed (unchanged default behavior); setting it also opens up processing of items in the selected template(s), which previously never happened regardless of this filter
 - **System List Exclusion**: Automatically skips system lists unless explicitly configured otherwise
 
 **Content Extraction Strategy:**
@@ -912,18 +988,36 @@ The implementation intelligently extracts content from list items:
 - **Custom Applications**: Search data from Power Apps and custom SharePoint solutions
 - **Business Process Content**: Index workflow-related lists and approval items
 
-**List Template Types:**
-Common SharePoint list template IDs for filtering:
-- `100`: Generic List (Custom Lists)
-- `101`: Document Library
-- `102`: Survey
-- `103`: Links
-- `104`: Announcements
-- `105`: Contacts
-- `106`: Events
-- `107`: Tasks
-- `108`: Discussion Board
-- `109`: Picture Library
+##### List Template Types
+
+`list_template_filter` accepts a comma-separated mix of numeric SharePoint template IDs and
+Microsoft Graph template name strings - for example `list_template_filter=100,documentLibrary` is
+valid, and either form of `100` or `genericList` matches the same lists. Only the IDs Microsoft
+documents against Graph's `list.template` property are mapped to a name internally, so only those
+IDs can be given numerically; the rest exist only as legacy `SPListTemplateType` IDs and have no
+published Graph name to map to:
+
+| ID | Name | Filter value to use |
+|----|------|----------------------|
+| `100` | Generic List (Custom Lists) | `100` or `genericList` |
+| `101` | Document Library | `101` or `documentLibrary` |
+| `102` | Survey | `102` or `survey` |
+| `103` | Links | `103` or `links` |
+| `104` | Announcements | `104` or `announcements` |
+| `105` | Contacts | `105` or `contacts` |
+| `106` | Events | name only - not published, see below |
+| `107` | Tasks | name only - not published, see below |
+| `108` | Discussion Board | name only - not published, see below |
+| `109` | Picture Library | name only - not published, see below |
+
+For `106`-`109`, Microsoft has not published what string value Graph's `list.template` reports, so
+this plugin cannot map the numeric ID to it, and guessing would silently reintroduce the same
+no-match problem this mapping exists to fix. Passing one of these IDs numerically (e.g.
+`list_template_filter=106`) logs a `WARN` ("Unknown list template ID ...; use the Graph template
+name instead") and matches nothing. To filter on one of these types, enable `DEBUG` logging for
+`org.codelibs.fess.ds.ms365` (see [Debug Mode](#debug-mode) below), run a crawl, and read the
+`Template:` value logged for that list - then use that literal string as the filter value instead
+of the numeric ID.
 
 **Performance Optimizations:**
 - Efficient list enumeration with pagination support
