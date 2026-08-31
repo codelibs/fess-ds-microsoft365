@@ -20,13 +20,27 @@ import org.junit.jupiter.api.TestInfo;
 
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codelibs.fess.ds.callback.IndexUpdateCallback;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.CrawlerStatsHelper;
+import org.codelibs.fess.helper.PermissionHelper;
+import org.codelibs.fess.helper.SystemHelper;
+import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
+
+import com.microsoft.graph.models.ChatMessage;
+import com.microsoft.graph.models.Channel;
+import com.microsoft.graph.models.ConversationMember;
+import com.microsoft.graph.models.Group;
 
 public class TeamsDataStoreTest extends UnitDsTestCase {
 
@@ -612,5 +626,266 @@ public class TeamsDataStoreTest extends UnitDsTestCase {
         // HTML entities might be processed depending on HTMLStripCharFilter implementation
         final String result = dataStore.stripHtmlTags("&lt;test&gt;");
         assertNotNull(result);
+    }
+
+    // Test buildMessageRoles method
+
+    @Test
+    public void test_buildMessageRoles_doesNotModifyTheCallersList() {
+        registerPermissionHelper();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin");
+
+        final List<String> channelRoles = new ArrayList<>(List.of("1alice"));
+
+        final List<String> first = dataStore.buildMessageRoles(paramMap, channelRoles);
+        final List<String> second = dataStore.buildMessageRoles(paramMap, channelRoles);
+
+        assertEquals("the caller's list must be untouched", 1, channelRoles.size());
+        assertEquals(first, second);
+        assertEquals(2, first.size());
+    }
+
+    @Test
+    public void test_buildMessageRoles_appendsDefaultPermissions() {
+        registerPermissionHelper();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin,{group}everyone");
+
+        final List<String> roles = dataStore.buildMessageRoles(paramMap, List.of("1alice"));
+
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        assertEquals(List.of("1alice", permissionHelper.encode("{role}admin"), permissionHelper.encode("{group}everyone")), roles);
+    }
+
+    @Test
+    public void test_buildMessageRoles_deduplicates() {
+        registerPermissionHelper();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("default_permissions", "{role}admin");
+
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        final List<String> roles = dataStore.buildMessageRoles(paramMap, List.of(permissionHelper.encode("{role}admin")));
+
+        assertEquals(1, roles.size());
+    }
+
+    /**
+     * permissionHelper is not wired into test_app.xml, and it in turn needs systemHelper (also
+     * not wired) via its {@code @Resource} field, which plain {@link ComponentUtil#register} does
+     * not auto-inject -- the same pattern {@code OneNoteDataStoreTest} and
+     * {@code Microsoft365DataStorePermissionTest} use. {@link TestablePermissionHelper} exposes a
+     * same-package-crossing setter so the field can be wired by hand.
+     */
+    private static void registerPermissionHelper() {
+        final SystemHelper systemHelper = new SystemHelper();
+        ComponentUtil.register(systemHelper, "systemHelper");
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(systemHelper);
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+    }
+
+    private static final class TestablePermissionHelper extends PermissionHelper {
+        void useSystemHelper(final SystemHelper systemHelper) {
+            this.systemHelper = systemHelper;
+        }
+    }
+
+    // Test processChannelMessages resolves channel membership once per channel
+
+    /**
+     * {@code getGroupRoles(client, teamId, channelId)} pages {@code GET
+     * /teams/{id}/channels/{id}/members} to exhaustion. Before this task it was called once per
+     * message and once per reply, every call returning the same membership -- a channel with 500
+     * messages and 2000 replies issued 2500 identical listings.
+     *
+     * <p>Uses a {@link CountingMicrosoft365Client} subclass -- the fallback the brief offered --
+     * rather than a {@code GraphMockServer}: a {@code GraphMockServer} is a strict FIFO
+     * {@code MockWebServer} with no path-based dispatcher, so a fixture ordered for the post-hoist
+     * call sequence cannot survive the pre-hoist sequence long enough for a count assertion to run
+     * (it derails into a {@code CrawlerStatsHelper} exception on mismatched response content
+     * instead). Counting calls directly on the client removes that coupling entirely: the
+     * assertion below is the only thing that can fail, regardless of call order.
+     */
+    @Test
+    public void test_processChannelMessages_resolvesChannelMembersOncePerChannel() throws Exception {
+        registerPermissionHelper();
+        registerCrawlerStatsHelper();
+
+        final ChatMessage message1 = new ChatMessage();
+        message1.setId("msg-1");
+        message1.setWebUrl("https://example.com/msg-1");
+        final ChatMessage message2 = new ChatMessage();
+        message2.setId("msg-2");
+        message2.setWebUrl("https://example.com/msg-2");
+
+        try (CountingMicrosoft365Client client = new CountingMicrosoft365Client(dummyParams(), List.of(message1, message2))) {
+            final Group group = new Group();
+            group.setId("team-1");
+            group.setDisplayName("Team One");
+
+            final Channel channel = new Channel();
+            channel.setId("channel-1");
+            channel.setDisplayName("General");
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            final Map<String, Object> configMap = new HashMap<>();
+            configMap.put("ignore_replies", dataStore.isIgnoreReplies(paramMap));
+            configMap.put("append_attachment", dataStore.isAppendAttachment(paramMap));
+            configMap.put("title_dateformat", dataStore.getTitleDateformat(paramMap));
+            configMap.put("title_timezone_offset", dataStore.getTitleTimezone(paramMap));
+            configMap.put("ignore_system_events", dataStore.isIgnoreSystemEvents(paramMap));
+
+            final IndexUpdateCallback callback = new IndexUpdateCallback() {
+                @Override
+                public void store(final DataStoreParams storeParamMap, final Map<String, Object> dataMap) {
+                    // no-op: this test asserts only on how many times getChannelMembers is called
+                }
+
+                @Override
+                public long getDocumentSize() {
+                    return 0;
+                }
+
+                @Override
+                public long getExecuteTime() {
+                    return 0;
+                }
+
+                @Override
+                public void commit() {
+                    // do nothing
+                }
+            };
+
+            dataStore.processChannelMessages(new DataConfig(), callback, paramMap, new HashMap<>(), new HashMap<>(), configMap, client,
+                    group, channel);
+
+            assertEquals("channel membership must be fetched once, but was fetched " + client.getChannelMembersCallCount() + " times", 1,
+                    client.getChannelMembersCallCount());
+        }
+    }
+
+    /**
+     * Hoisting the membership lookup out of the per-message lambda made it unconditional: a channel
+     * that yields no messages started issuing -- and could newly fail on -- a
+     * {@code GET /teams/{id}/channels/{id}/members} whose result nothing would ever read. Resolving
+     * it on first use keeps "once per channel" without paying for a channel that yields nothing.
+     */
+    @Test
+    public void test_processChannelMessages_doesNotResolveMembersForAChannelWithNoMessages() throws Exception {
+        registerPermissionHelper();
+        registerCrawlerStatsHelper();
+
+        try (CountingMicrosoft365Client client = new CountingMicrosoft365Client(dummyParams(), List.of())) {
+            final Group group = new Group();
+            group.setId("team-1");
+            group.setDisplayName("Team One");
+
+            final Channel channel = new Channel();
+            channel.setId("channel-empty");
+            channel.setDisplayName("Empty");
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            final Map<String, Object> configMap = new HashMap<>();
+            configMap.put("ignore_replies", dataStore.isIgnoreReplies(paramMap));
+            configMap.put("append_attachment", dataStore.isAppendAttachment(paramMap));
+            configMap.put("title_dateformat", dataStore.getTitleDateformat(paramMap));
+            configMap.put("title_timezone_offset", dataStore.getTitleTimezone(paramMap));
+            configMap.put("ignore_system_events", dataStore.isIgnoreSystemEvents(paramMap));
+
+            final IndexUpdateCallback callback = new IndexUpdateCallback() {
+                @Override
+                public void store(final DataStoreParams storeParamMap, final Map<String, Object> dataMap) {
+                    fail("a channel with no messages must not store anything");
+                }
+
+                @Override
+                public long getDocumentSize() {
+                    return 0;
+                }
+
+                @Override
+                public long getExecuteTime() {
+                    return 0;
+                }
+
+                @Override
+                public void commit() {
+                    // do nothing
+                }
+            };
+
+            dataStore.processChannelMessages(new DataConfig(), callback, paramMap, new HashMap<>(), new HashMap<>(), configMap, client,
+                    group, channel);
+
+            assertEquals("a channel with no messages must issue no members request, but issued " + client.getChannelMembersCallCount(), 0,
+                    client.getChannelMembersCallCount());
+        }
+    }
+
+    /**
+     * Credentials are never used: {@code ClientSecretCredential} acquires tokens lazily, so
+     * construction is offline.
+     */
+    private static DataStoreParams dummyParams() {
+        final DataStoreParams params = new DataStoreParams();
+        params.put("tenant", "dummy-tenant");
+        params.put("client_id", "dummy-client-id");
+        params.put("client_secret", "dummy-client-secret");
+        return params;
+    }
+
+    /**
+     * crawlerStatsHelper is not wired into test_app.xml either -- {@code processChatMessage}
+     * calls {@code ComponentUtil.getCrawlerStatsHelper()} directly, the same pattern
+     * {@code SharePointPageDataStoreTest} and {@code SharePointListDataStoreTest} use.
+     */
+    private static void registerCrawlerStatsHelper() {
+        final CrawlerStatsHelper crawlerStatsHelper = new CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+    }
+
+    /**
+     * A {@link Microsoft365Client} that counts {@code getChannelMembers} calls instead of issuing
+     * any Graph traffic, and feeds a fixed list of messages with no replies. Overriding at the
+     * client layer (rather than mocking with Mockito) keeps {@link TeamsDataStore#processChannelMessages}
+     * exercised completely unmodified, exactly as {@code MockableMicrosoft365Client}-style
+     * subclasses do elsewhere in this test suite (see {@code OneNoteDataStoreTest},
+     * {@code SharePointPageDataStoreTest}) -- just without the {@code GraphMockServer} wiring,
+     * since no HTTP traffic needs to flow for this test's assertion.
+     */
+    private static final class CountingMicrosoft365Client extends Microsoft365Client {
+        private final List<ChatMessage> messages;
+        private int channelMembersCallCount;
+
+        CountingMicrosoft365Client(final DataStoreParams params, final List<ChatMessage> messages) {
+            super(params);
+            this.messages = messages;
+        }
+
+        int getChannelMembersCallCount() {
+            return channelMembersCallCount;
+        }
+
+        @Override
+        public void getChannelMembers(final List<Object> options, final Consumer<ConversationMember> consumer, final String teamId,
+                final String channelId) {
+            channelMembersCallCount++;
+            // No members are needed: this test only cares about how many times this is called.
+        }
+
+        @Override
+        public void getTeamMessages(final List<Object> options, final Consumer<ChatMessage> consumer, final String teamId,
+                final String channelId) {
+            messages.forEach(consumer::accept);
+        }
+
+        @Override
+        public void getTeamReplyMessages(final List<Object> options, final Consumer<ChatMessage> consumer, final String teamId,
+                final String channelId, final String messageId) {
+            // No replies in this fixture.
+        }
     }
 }

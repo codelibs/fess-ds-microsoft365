@@ -27,7 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -35,7 +35,6 @@ import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.analysis.charfilter.HTMLStripCharFilter;
-import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
@@ -189,7 +188,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     configMap.get(APPEND_ATTACHMENT), paramMap.getAsString(NUMBER_OF_THREADS, "1"));
         }
 
-        final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
+        final ReportingExecutor executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
         try (final Microsoft365Client client = createClient(paramMap)) {
             if (logger.isDebugEnabled()) {
                 logger.debug("Starting Teams messages processing");
@@ -204,10 +203,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
             if (logger.isDebugEnabled()) {
                 logger.debug("Teams crawling completed - shutting down thread executor");
             }
-            executorService.shutdown();
-            executorService.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        } catch (final InterruptedException e) {
-            throw new InterruptedRuntimeException(e);
+            shutdownExecutor(executorService, paramMap);
         } finally {
             executorService.shutdownNow();
         }
@@ -479,17 +475,24 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     group.getDisplayName());
         }
 
+        // One channel has one membership. Resolving it inside the per-message lambda issued the
+        // same paged GET /teams/{id}/channels/{id}/members once per message and once per reply;
+        // resolving it before the listing instead made a channel that yields no messages pay for --
+        // and newly able to fail on -- a membership it would never read. The holder keeps it at once
+        // per channel while deferring it to the first message that actually needs it.
+        final AtomicReference<List<String>> channelRolesHolder = new AtomicReference<>();
         try {
             client.getTeamMessages(Collections.emptyList(), message -> {
+                final List<String> channelRoles = resolveChannelRoles(channelRolesHolder, client, group, channel);
                 final Map<String, Object> processedMessage = processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap,
-                        defaultDataMap, getGroupRoles(client, group.getId(), channel.getId()), message, map -> {
+                        defaultDataMap, channelRoles, message, map -> {
                             map.put(TEAM, group);
                             map.put(CHANNEL, channel);
                         }, client);
                 if (processedMessage != null && !ignoreReplies) {
                     client.getTeamReplyMessages(Collections.emptyList(), reply -> {
-                        processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap,
-                                getGroupRoles(client, group.getId(), channel.getId()), reply, map -> {
+                        processChatMessage(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, channelRoles, reply,
+                                map -> {
                                     map.put(TEAM, group);
                                     map.put(CHANNEL, channel);
                                     map.put(PARENT, processedMessage);
@@ -502,6 +505,32 @@ public class TeamsDataStore extends Microsoft365DataStore {
                     group.getDisplayName(), e);
             throw new DataStoreException("Failed to process channel: " + channel.getId(), e);
         }
+    }
+
+    /**
+     * Returns the channel's search roles, resolving them the first time a message needs them and
+     * reusing that result for every later message and reply in the same channel.
+     *
+     * <p>No synchronisation: {@code holder} is confined to one thread. {@code processChannelMessages}
+     * <em>is</em> the pool task body -- {@code submitChannelMessages} passes a call to it straight to
+     * {@code executorService.execute} -- and both Graph consumers below run inline on that same
+     * thread, so the slot is never touched concurrently.
+     *
+     * @param holder The single-slot cache for this channel, confined to the calling thread.
+     * @param client The Microsoft365Client.
+     * @param group The Microsoft 365 group (team).
+     * @param channel The Teams channel.
+     * @return The channel's roles.
+     */
+    protected List<String> resolveChannelRoles(final AtomicReference<List<String>> holder, final Microsoft365Client client,
+            final Group group, final Channel channel) {
+        final List<String> cached = holder.get();
+        if (cached != null) {
+            return cached;
+        }
+        final List<String> resolved = getGroupRoles(client, group.getId(), channel.getId());
+        holder.set(resolved);
+        return resolved;
     }
 
     /**
@@ -841,10 +870,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
             resultMap.put(MESSAGE, messageMap);
             resultAppender.accept(resultMap);
 
-            final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
-            StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
-                    .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(permissions::add));
-            messageMap.put(MESSAGE_ROLES, permissions.stream().distinct().collect(Collectors.toList()));
+            messageMap.put(MESSAGE_ROLES, buildMessageRoles(paramMap, permissions));
 
             crawlerStatsHelper.record(statsKey, StatsAction.PREPARED);
 
@@ -910,6 +936,26 @@ public class TeamsDataStore extends Microsoft365DataStore {
         }
 
         return messageMap;
+    }
+
+    /**
+     * Builds the role list for one indexed message: the roles its container contributed, plus the
+     * configured {@code default_permissions}, de-duplicated.
+     *
+     * <p>The returned list is new. The caller's list is never modified -- a channel's membership is
+     * resolved once and shared across every message in that channel, so appending to it here would
+     * accumulate one copy of {@code default_permissions} per message.
+     *
+     * @param paramMap The data store parameters.
+     * @param permissions The roles contributed by the message's channel or chat.
+     * @return a new list of roles for this document.
+     */
+    protected List<String> buildMessageRoles(final DataStoreParams paramMap, final List<String> permissions) {
+        final List<String> roles = new ArrayList<>(permissions);
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
+                .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
+        return roles.stream().distinct().collect(Collectors.toList());
     }
 
     /**

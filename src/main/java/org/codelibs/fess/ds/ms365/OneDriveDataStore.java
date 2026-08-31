@@ -25,7 +25,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -221,7 +220,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                     isIgnoreSystemLists(paramMap), isIgnoreSystemLibraries(paramMap));
         }
 
-        final ExecutorService executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
+        final ReportingExecutor executorService = newFixedThreadPool(Integer.parseInt(paramMap.getAsString(NUMBER_OF_THREADS, "1")));
         try (final Microsoft365Client client = createClient(paramMap)) {
             if (isSharedDocumentsDriveCrawler(paramMap)) {
                 if (logger.isDebugEnabled()) {
@@ -299,10 +298,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             if (logger.isDebugEnabled()) {
                 logger.debug("Shutting down thread executor.");
             }
-            executorService.shutdown();
-            executorService.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        } catch (final InterruptedException e) {
-            throw new InterruptedRuntimeException(e);
+            shutdownExecutor(executorService, paramMap);
         } finally {
             executorService.shutdownNow();
         }

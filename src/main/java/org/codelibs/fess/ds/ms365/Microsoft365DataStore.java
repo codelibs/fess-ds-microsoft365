@@ -21,14 +21,15 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
@@ -77,6 +78,9 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     // Thread pool constants
     /** Default timeout in seconds for executor service shutdown. */
     protected static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 60L;
+
+    /** The parameter name for how long to wait for crawling tasks to finish, in seconds. */
+    protected static final String EXECUTOR_SHUTDOWN_TIMEOUT = "executor_shutdown_timeout";
 
     /**
      * Default constructor.
@@ -133,9 +137,9 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      * Thread pool size is capped to prevent excessive resource usage.
      *
      * @param nThreads The number of threads in the pool.
-     * @return A new ExecutorService with a fixed thread pool.
+     * @return A new ReportingExecutor with a fixed thread pool.
      */
-    protected ExecutorService newFixedThreadPool(final int nThreads) {
+    protected ReportingExecutor newFixedThreadPool(final int nThreads) {
         // Cap thread pool size to prevent system resource exhaustion
         final int maxThreads = Runtime.getRuntime().availableProcessors() * 2;
         final int actualThreads = Math.min(nThreads, maxThreads);
@@ -148,8 +152,167 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
             }
         }
 
-        return new ThreadPoolExecutor(actualThreads, actualThreads, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(actualThreads),
-                new ThreadPoolExecutor.CallerRunsPolicy());
+        return new ReportingExecutor(actualThreads, getName());
+    }
+
+    /**
+     * Returns how long to wait for submitted crawling tasks to finish, in seconds.
+     *
+     * <p>Zero and negative values are rejected as well as non-numeric ones: a wait of zero or less
+     * would cancel every in-flight task the moment the shutdown starts, which is never what an
+     * operator setting this parameter is asking for. Each rejected value logs a warning naming the
+     * value that was ignored and the default used instead.
+     *
+     * @param paramMap The data store parameters.
+     * @return the configured wait, or {@link #EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS} when the value is
+     *         absent, malformed, zero or negative.
+     */
+    protected long getShutdownTimeoutSeconds(final DataStoreParams paramMap) {
+        final String value = paramMap.getAsString(EXECUTOR_SHUTDOWN_TIMEOUT, String.valueOf(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS));
+        try {
+            final long timeout = Long.parseLong(value.trim());
+            if (timeout <= 0L) {
+                logger.warn("{}={} must be positive. Using {}.", EXECUTOR_SHUTDOWN_TIMEOUT, value, EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS);
+                return EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS;
+            }
+            return timeout;
+        } catch (final NumberFormatException e) {
+            logger.warn("Failed to parse {}={}. Using {}.", EXECUTOR_SHUTDOWN_TIMEOUT, value, EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, e);
+            return EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS;
+        }
+    }
+
+    /**
+     * Stops accepting new crawling tasks and waits for the submitted ones, reporting whatever did
+     * not finish and whatever failed. Cancellation stays with the caller's {@code finally} block.
+     *
+     * @param executorService The pool to shut down.
+     * @param paramMap The data store parameters.
+     */
+    protected void shutdownExecutor(final ReportingExecutor executorService, final DataStoreParams paramMap) {
+        executorService.shutdown();
+        final long timeout = getShutdownTimeoutSeconds(paramMap);
+        try {
+            if (!executorService.awaitTermination(timeout, TimeUnit.SECONDS)) {
+                logger.error(
+                        "{}: {} crawling task(s) were still running and {} had not started after {} seconds. They are about to be "
+                                + "cancelled, and the documents they would have produced are missing from this crawl. Raise {} for a "
+                                + "large tenant.",
+                        getName(), executorService.getActiveCount(), executorService.getQueue().size(), timeout, EXECUTOR_SHUTDOWN_TIMEOUT);
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new InterruptedRuntimeException(e);
+        } finally {
+            // Reported from a finally block because this line, not the per-task warning, is the
+            // one notification a crawl with failures produces; skipping it when the wait is
+            // interrupted would be the difference between one notification and none.
+            //
+            // The count is a snapshot: on the timed-out path the tasks about to be cancelled are
+            // still running and can fail after this read, so it can undercount.
+            final int failures = executorService.getFailureCount();
+            if (failures > 0) {
+                logger.error("{}: {} crawling task(s) failed; their documents are missing from this crawl. See the warnings above.",
+                        getName(), failures);
+            }
+        }
+    }
+
+    /**
+     * A thread pool that never lets a task's failure disappear.
+     *
+     * <p>Tasks are submitted with {@link #execute(Runnable)}, which discards whatever escapes them,
+     * while the saturation policy runs a rejected task on the submitting thread, where the same
+     * throwable would instead abort the crawl. One failure therefore had two outcomes depending on
+     * whether the queue happened to be full. Both paths now log at {@code WARN} and increment
+     * {@link #getFailureCount()}, and the crawl continues; the count is reported at shutdown.
+     *
+     * <p>{@code WARN} rather than {@code ERROR} because two data stores submit one task per
+     * document -- {@code SharePointListDataStore} per list item and {@code SharePointPageDataStore}
+     * per page -- and both rethrow under the default {@code ignore_error=false}, so a bad crawl
+     * produces one report per failed document. In this project {@code ERROR} from
+     * {@code org.codelibs} is wired to operator notification, and that would be one notification
+     * per document. The single end-of-crawl summary {@code shutdownExecutor} logs is the
+     * {@code ERROR}: it carries the count, and it is bounded at one per crawl.
+     *
+     * <p>Only {@link #execute(Runnable)} is covered. {@link #afterExecute} receives a non-null
+     * {@code Throwable} only for a task submitted that way; {@code submit(...)} wraps the task in a
+     * {@link java.util.concurrent.FutureTask}, which captures the throwable into the returned
+     * {@code Future} instead, so a failure submitted that way would once again disappear unnoticed.
+     * Every submission site in this plugin uses {@code execute}; keep it that way, or make
+     * {@code submit} report too.
+     *
+     * <p>{@link Error} is not caught on the submitting thread: an {@code OutOfMemoryError} must not
+     * be swallowed to keep crawling. On a pool thread it is still reported before the thread dies.
+     *
+     * <p>The two paths report identically, but they cannot be made to behave identically beyond
+     * that: {@link ThreadPoolExecutor} rethrows what escaped a pool thread after
+     * {@link #afterExecute} has run, so the pool path additionally reaches the thread's default
+     * uncaught-exception handler and kills the worker (the pool immediately replaces it), while a
+     * task run on the submitting thread does neither.
+     */
+    protected static class ReportingExecutor extends ThreadPoolExecutor {
+
+        private final AtomicInteger failureCount = new AtomicInteger();
+
+        /** The name of the data store that owns this pool, so a mixed-crawl log says which one failed. */
+        private final String storeName;
+
+        /**
+         * @param nThreads the pool size, which is also the queue capacity.
+         * @param storeName the name of the data store that owns this pool.
+         */
+        protected ReportingExecutor(final int nThreads, final String storeName) {
+            super(nThreads, nThreads, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(nThreads), (task, executor) -> {
+                if (!executor.isShutdown()) {
+                    ((ReportingExecutor) executor).runOnCallerThread(task);
+                }
+            });
+            this.storeName = storeName;
+        }
+
+        @Override
+        protected void afterExecute(final Runnable task, final Throwable throwable) {
+            super.afterExecute(task, throwable);
+            if (throwable != null) {
+                report(throwable);
+            }
+        }
+
+        /**
+         * Runs a rejected task on the submitting thread, reporting a failure the same way a pool
+         * thread would.
+         *
+         * @param task the rejected task.
+         */
+        protected void runOnCallerThread(final Runnable task) {
+            try {
+                task.run();
+            } catch (final Exception e) {
+                report(e);
+            }
+        }
+
+        /**
+         * Reports one failed task, identically whichever thread ran it.
+         *
+         * <p>{@code WARN}, not {@code ERROR}: this line is emitted once per failed task, and two
+         * data stores submit one task per document. The bounded end-of-crawl summary is what
+         * notifies.
+         *
+         * @param throwable the failure to report.
+         */
+        protected void report(final Throwable throwable) {
+            failureCount.incrementAndGet();
+            logger.warn("{}: a crawling task failed.", storeName, throwable);
+        }
+
+        /**
+         * @return the number of tasks that ended by throwing.
+         */
+        public int getFailureCount() {
+            return failureCount.get();
+        }
     }
 
     /**

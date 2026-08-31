@@ -19,15 +19,22 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
+import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
@@ -217,6 +224,517 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         }
     }
 
+    /**
+     * Runs {@code action}, returning every record {@link Microsoft365DataStore} logged at
+     * {@code WARN} or worse while it ran, in order.
+     *
+     * <p>The threshold keeps the pool's own debug chatter out without hiding a report that was
+     * demoted to {@code WARN}: a test that compares two captures can then see the level differ
+     * rather than seeing one capture silently become empty.
+     *
+     * @param action the code whose logging should be captured.
+     * @return the captured records.
+     */
+    private static List<LogEvent> captureDataStoreReports(final Runnable action) {
+        final List<LogEvent> events = Collections.synchronizedList(new ArrayList<>());
+        captureDataStoreReportsInto(events, action);
+        return events;
+    }
+
+    /**
+     * As {@link #captureDataStoreReports(Runnable)}, but appends into {@code sink} so the records
+     * captured before an action threw are still readable afterwards.
+     *
+     * @param sink the list to append captured records to.
+     * @param action the code whose logging should be captured.
+     */
+    private static void captureDataStoreReportsInto(final List<LogEvent> sink, final Runnable action) {
+        final List<LogEvent> events = sink;
+        final org.apache.logging.log4j.core.Logger coreLogger =
+                (org.apache.logging.log4j.core.Logger) LogManager.getLogger(Microsoft365DataStore.class);
+        final AbstractAppender appender =
+                new AbstractAppender("test-ms365-datastore-report-capture", null, null, false, Property.EMPTY_ARRAY) {
+                    @Override
+                    public void append(final LogEvent event) {
+                        if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                            // the pool thread appends too, and log4j may recycle the event
+                            events.add(event.toImmutable());
+                        }
+                    }
+                };
+        appender.start();
+        coreLogger.addAppender(appender);
+        try {
+            action.run();
+        } finally {
+            coreLogger.removeAppender(appender);
+            appender.stop();
+        }
+    }
+
+    /**
+     * @param events the captured records.
+     * @return their formatted messages, for an assertion failure that can be read.
+     */
+    private static List<String> messagesOf(final List<LogEvent> events) {
+        return events.stream().map(event -> event.getMessage().getFormattedMessage()).collect(Collectors.toList());
+    }
+
+    @Test
+    public void test_reportingExecutor_reportsAPoolThreadFailureIdenticallyToACallerThreadFailure() {
+        // This is the property Task 3 exists for: one failure must stop having two outcomes.
+        // Counting it is a different property and is pinned separately below. The two captures are
+        // compared against each other rather than against two hand-written literals, so the test
+        // cannot drift into agreeing with only one of the paths.
+        final IllegalStateException failure = new IllegalStateException("boom");
+
+        final List<LogEvent> poolPath = captureDataStoreReports(() -> {
+            final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+            try {
+                executor.execute(() -> {
+                    throw failure;
+                });
+                executor.shutdown();
+                assertTrue("the pool thread must finish inside the capture window", executor.awaitTermination(10, TimeUnit.SECONDS));
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                fail("interrupted while waiting for the pool thread: " + e);
+            } finally {
+                executor.shutdownNow();
+            }
+        });
+
+        final List<LogEvent> callerPath = captureDataStoreReports(() -> {
+            final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+            final java.util.concurrent.CountDownLatch block = new java.util.concurrent.CountDownLatch(1);
+            try {
+                executor.execute(() -> {
+                    try {
+                        block.await();
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                // one thread is busy and the queue holds one task; the third submission saturates
+                executor.execute(() -> {});
+                executor.execute(() -> {
+                    throw failure;
+                });
+            } finally {
+                block.countDown();
+                executor.shutdownNow();
+            }
+        });
+
+        assertEquals("the pool path must report exactly once, got " + messagesOf(poolPath), 1, poolPath.size());
+        assertEquals("the caller path must report exactly once, got " + messagesOf(callerPath), 1, callerPath.size());
+
+        final LogEvent onPool = poolPath.get(0);
+        final LogEvent onCaller = callerPath.get(0);
+        assertEquals("both paths must report at the same level", onPool.getLevel(), onCaller.getLevel());
+        assertEquals("a per-task report is emitted once per failed document by two stores, so it must not notify", Level.WARN,
+                onPool.getLevel());
+        assertEquals("both paths must report the same message", onPool.getMessage().getFormattedMessage(),
+                onCaller.getMessage().getFormattedMessage());
+        assertSame("both paths must attach the throwable that escaped", failure, onPool.getThrown());
+        assertSame("both paths must attach the throwable that escaped", failure, onCaller.getThrown());
+
+        // and the shared report must name the data store, or a mixed-crawl log cannot be read
+        assertTrue(onPool.getMessage().getFormattedMessage(), onPool.getMessage().getFormattedMessage().contains("TestDataStore"));
+    }
+
+    @Test
+    public void test_reportingExecutor_countsAFailureOnAPoolThread() throws Exception {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            executor.execute(() -> {
+                throw new IllegalStateException("boom");
+            });
+            executor.shutdown();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(1, executor.getFailureCount());
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_reportingExecutor_countsAFailureRunOnTheCallerThread() {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            final java.util.concurrent.CountDownLatch block = new java.util.concurrent.CountDownLatch(1);
+            executor.execute(() -> {
+                try {
+                    block.await();
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            // one thread is busy and the queue holds one task; the third submission saturates
+            executor.execute(() -> {});
+            executor.execute(() -> {
+                throw new IllegalStateException("boom on the caller");
+            });
+            assertEquals(1, executor.getFailureCount());
+            block.countDown();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_reportingExecutor_countsNothingWhenTasksSucceed() throws Exception {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            executor.execute(() -> {});
+            executor.shutdown();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(0, executor.getFailureCount());
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_getShutdownTimeoutSeconds_defaultsToTheExistingValue() {
+        assertEquals(Microsoft365DataStore.EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, dataStore.getShutdownTimeoutSeconds(new DataStoreParams()));
+    }
+
+    @Test
+    public void test_getShutdownTimeoutSeconds_readsTheParameter() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("executor_shutdown_timeout", "600");
+        assertEquals(600L, dataStore.getShutdownTimeoutSeconds(paramMap));
+    }
+
+    @Test
+    public void test_getShutdownTimeoutSeconds_malformedValueFallsBackToTheDefault() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("executor_shutdown_timeout", "soon");
+        assertEquals(Microsoft365DataStore.EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, dataStore.getShutdownTimeoutSeconds(paramMap));
+    }
+
+    @Test
+    public void test_getShutdownTimeoutSeconds_zeroFallsBackToTheDefault() {
+        // A zero wait would cancel every in-flight task the moment shutdown starts.
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("executor_shutdown_timeout", "0");
+        assertEquals(Microsoft365DataStore.EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, dataStore.getShutdownTimeoutSeconds(paramMap));
+    }
+
+    @Test
+    public void test_getShutdownTimeoutSeconds_negativeValueFallsBackToTheDefault() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("executor_shutdown_timeout", "-1");
+        assertEquals(Microsoft365DataStore.EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, dataStore.getShutdownTimeoutSeconds(paramMap));
+    }
+
+    @Test
+    public void test_shutdownExecutor_reportsTasksThatDidNotFinish() {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        final java.util.concurrent.CountDownLatch block = new java.util.concurrent.CountDownLatch(1);
+        try {
+            executor.execute(() -> {
+                try {
+                    block.await();
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            paramMap.put("executor_shutdown_timeout", "1");
+
+            final long started = System.nanoTime();
+            final List<LogEvent> reports = captureDataStoreReports(() -> dataStore.shutdownExecutor(executor, paramMap));
+            final long elapsedSeconds = (System.nanoTime() - started) / 1_000_000_000L;
+
+            // it must wait the configured period and return rather than hang or throw
+            assertTrue("expected roughly the configured 1s wait but took " + elapsedSeconds + "s", elapsedSeconds < 10L);
+            assertEquals("the unfinished tasks must be reported once, got " + messagesOf(reports), 1, reports.size());
+            assertEquals("an unfinished crawl is an operator-visible failure", Level.ERROR, reports.get(0).getLevel());
+            final String message = reports.get(0).getMessage().getFormattedMessage();
+            assertTrue(message,
+                    message.contains("TestDataStore: 1 crawling task(s) were still running and 0 had not started after 1 seconds"));
+            assertTrue(message, message.contains("executor_shutdown_timeout"));
+        } finally {
+            block.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_shutdownExecutor_reportsNothingWhenEveryTaskFinishes() {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            executor.execute(() -> {});
+            final List<LogEvent> reports = captureDataStoreReports(() -> dataStore.shutdownExecutor(executor, new DataStoreParams()));
+            assertTrue("a drained, failure-free shutdown must say nothing, got " + messagesOf(reports), reports.isEmpty());
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_shutdownExecutor_reportsHowManyTasksFailed() {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            executor.execute(() -> {
+                throw new IllegalStateException("boom");
+            });
+            final List<LogEvent> reports = captureDataStoreReports(() -> dataStore.shutdownExecutor(executor, new DataStoreParams()));
+
+            // the per-task report may or may not land inside the capture window, depending on
+            // whether the pool thread got there first; only the summary is this test's subject.
+            final List<LogEvent> summaries = reports.stream()
+                    .filter(event -> event.getMessage().getFormattedMessage().contains("crawling task(s) failed;"))
+                    .collect(Collectors.toList());
+            assertEquals("the failure count must be reported once, got " + messagesOf(reports), 1, summaries.size());
+            assertEquals("a crawl that lost documents is an operator-visible failure", Level.ERROR, summaries.get(0).getLevel());
+            assertEquals("TestDataStore: 1 crawling task(s) failed; their documents are missing from this crawl. See the warnings above.",
+                    summaries.get(0).getMessage().getFormattedMessage());
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_shutdownExecutor_restoresTheInterruptStatusBeforeRethrowing() {
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            final java.util.concurrent.CountDownLatch block = new java.util.concurrent.CountDownLatch(1);
+            executor.execute(() -> {
+                try {
+                    block.await();
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            paramMap.put("executor_shutdown_timeout", "30");
+
+            // awaitTermination throws immediately when the calling thread is already interrupted,
+            // and clears the status while doing so.
+            Thread.currentThread().interrupt();
+            boolean interruptStatusRestored = false;
+            try {
+                dataStore.shutdownExecutor(executor, paramMap);
+                fail("shutdownExecutor should have rethrown the interrupt");
+            } catch (final InterruptedRuntimeException e) {
+                interruptStatusRestored = Thread.interrupted();
+            }
+            assertTrue("the interrupt status must be restored before the exception is rethrown", interruptStatusRestored);
+            block.countDown();
+        } finally {
+            // never let the flag leak into another test
+            Thread.interrupted();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_shutdownExecutor_notifiesOncePerCrawlNotOncePerFailedDocument() {
+        // SharePointListDataStore submits one pool task per list item and SharePointPageDataStore
+        // one per page, and both rethrow under the default ignore_error=false. With the per-task
+        // report at ERROR -- and ERROR from org.codelibs wired to operator notification -- a crawl
+        // with 25 failing items raised 25 notifications. The per-task detail is kept, at WARN; the
+        // single end-of-crawl summary is the ERROR.
+        final int failingItems = 25;
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        try {
+            final List<LogEvent> reports = captureDataStoreReports(() -> {
+                for (int i = 0; i < failingItems; i++) {
+                    final int item = i;
+                    executor.execute(() -> {
+                        throw new IllegalStateException("item " + item + " failed");
+                    });
+                }
+                dataStore.shutdownExecutor(executor, new DataStoreParams());
+            });
+
+            final List<LogEvent> errors = reports.stream().filter(event -> event.getLevel() == Level.ERROR).collect(Collectors.toList());
+            final List<LogEvent> warnings = reports.stream().filter(event -> event.getLevel() == Level.WARN).collect(Collectors.toList());
+
+            assertEquals(failingItems + " failing tasks must notify once, not " + failingItems + " times; got " + messagesOf(errors), 1,
+                    errors.size());
+            assertEquals("TestDataStore: 25 crawling task(s) failed; their documents are missing from this crawl. See the warnings above.",
+                    errors.get(0).getMessage().getFormattedMessage());
+            assertEquals("every failure must still be reported in detail, one WARN per task", failingItems, warnings.size());
+            for (final LogEvent warning : warnings) {
+                assertEquals("TestDataStore: a crawling task failed.", warning.getMessage().getFormattedMessage());
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_shutdownExecutor_reportsFailuresEvenWhenTheWaitIsInterrupted() {
+        // With the per-task line demoted to WARN, the summary is the only notification a failing
+        // crawl produces, so skipping it on the interrupted path is the difference between one
+        // notification and none.
+        final Microsoft365DataStore.ReportingExecutor executor = dataStore.newFixedThreadPool(1);
+        final java.util.concurrent.CountDownLatch block = new java.util.concurrent.CountDownLatch(1);
+        try {
+            executor.execute(() -> {
+                try {
+                    block.await();
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            // fill the single-capacity queue, then saturate: the third task fails on this thread,
+            // so the count is already 1 before the shutdown begins, with no polling
+            executor.execute(() -> {});
+            executor.execute(() -> {
+                throw new IllegalStateException("boom");
+            });
+            assertEquals("the failure must be counted before the shutdown starts", 1, executor.getFailureCount());
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            paramMap.put("executor_shutdown_timeout", "30");
+
+            final List<LogEvent> reports = new ArrayList<>();
+            Thread.currentThread().interrupt();
+            try {
+                captureDataStoreReportsInto(reports, () -> dataStore.shutdownExecutor(executor, paramMap));
+                fail("shutdownExecutor should have rethrown the interrupt");
+            } catch (final InterruptedRuntimeException expected) {
+                Thread.interrupted();
+            }
+
+            final List<LogEvent> summaries = reports.stream()
+                    .filter(event -> event.getMessage().getFormattedMessage().contains("crawling task(s) failed;"))
+                    .collect(Collectors.toList());
+            assertEquals("an interrupted shutdown must still notify, got " + messagesOf(reports), 1, summaries.size());
+            assertEquals(Level.ERROR, summaries.get(0).getLevel());
+        } finally {
+            Thread.interrupted();
+            block.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void test_everyDataStoreShutsDownThroughTheSharedHelper() throws Exception {
+        // An architecture assertion, deliberately scanning the source tree rather than exercising
+        // code: no test drives all six stores' storeData, so reverting one of them to a bare
+        // executorService.shutdown() left the whole suite green. Two things have to hold, and only
+        // the pair catches both ways a store can drift out of the convergence -- dropping the
+        // helper, or growing its own wait beside it.
+        final java.nio.file.Path sources = java.nio.file.Paths.get("src/main/java");
+        assertTrue("expected to run from the module directory, but " + sources.toAbsolutePath() + " is not a directory",
+                java.nio.file.Files.isDirectory(sources));
+
+        final List<java.nio.file.Path> javaFiles;
+        try (java.util.stream.Stream<java.nio.file.Path> tree = java.nio.file.Files.walk(sources)) {
+            javaFiles = tree.filter(path -> path.toString().endsWith(".java")).sorted().collect(Collectors.toList());
+        }
+        assertFalse("the scan found no sources at all, so it would pass vacuously", javaFiles.isEmpty());
+
+        final List<String> waits = new ArrayList<>();
+        final List<String> storesWithAPool = new ArrayList<>();
+        final List<String> storesBypassingTheHelper = new ArrayList<>();
+        for (final java.nio.file.Path file : javaFiles) {
+            final String relative = sources.relativize(file).toString();
+            final String source = java.nio.file.Files.readString(file, java.nio.charset.StandardCharsets.UTF_8);
+
+            // Scan code only. A textual scan over the raw source is defeated by a comment that
+            // merely names the helper: reverting a store to a bare shutdown() and writing
+            // "// intentionally not calling shutdownExecutor(...)" beside it kept this test green.
+            final String[] lines = stripComments(source);
+            final String code = String.join("\n", lines);
+            for (int i = 0; i < lines.length; i++) {
+                if (lines[i].contains("awaitTermination")) {
+                    waits.add(relative + ":" + (i + 1));
+                }
+            }
+
+            if ("Microsoft365DataStore.java".equals(file.getFileName().toString()) || !code.contains("newFixedThreadPool(")) {
+                continue;
+            }
+            storesWithAPool.add(relative);
+            if (!code.contains("shutdownExecutor(")) {
+                storesBypassingTheHelper.add(relative);
+            }
+        }
+
+        // (a) no data store may grow a wait of its own beside the shared one
+        assertEquals("awaitTermination must appear only in Microsoft365DataStore#shutdownExecutor, but was found at " + waits, 1,
+                waits.size());
+        assertTrue("the single awaitTermination must be the shared helper's, but was at " + waits.get(0),
+                waits.get(0).startsWith("org/codelibs/fess/ds/ms365/Microsoft365DataStore.java"));
+
+        // (b) and every data store that builds a pool must hand it to that helper
+        assertEquals("expected all six data stores to build a thread pool, found " + storesWithAPool, 6, storesWithAPool.size());
+        assertEquals("every data store must shut its pool down through Microsoft365DataStore#shutdownExecutor, but these do not: "
+                + storesBypassingTheHelper, List.of(), storesBypassingTheHelper);
+    }
+
+    /**
+     * Blanks out every comment in a Java source, keeping one array entry per original line so a
+     * match still reports the line it was found on. String literals are preserved, because a
+     * {@code //} inside one is not a comment. Char literals need no special handling here: no
+     * source in this module contains a quote character literal.
+     *
+     * @param source the Java source to strip
+     * @return the source's lines with comment content removed
+     */
+    private static String[] stripComments(final String source) {
+        final String[] lines = source.split("\n", -1);
+        boolean inBlockComment = false;
+        for (int i = 0; i < lines.length; i++) {
+            final String line = lines[i];
+            final StringBuilder code = new StringBuilder(line.length());
+            boolean inString = false;
+            int at = 0;
+            while (at < line.length()) {
+                if (inBlockComment) {
+                    if (line.startsWith("*/", at)) {
+                        inBlockComment = false;
+                        at += 2;
+                    } else {
+                        at++;
+                    }
+                    continue;
+                }
+                final char c = line.charAt(at);
+                if (inString) {
+                    code.append(c);
+                    if (c == '\\' && at + 1 < line.length()) {
+                        code.append(line.charAt(at + 1));
+                        at += 2;
+                        continue;
+                    }
+                    if (c == '"') {
+                        inString = false;
+                    }
+                    at++;
+                    continue;
+                }
+                if (c == '"') {
+                    inString = true;
+                    code.append(c);
+                    at++;
+                    continue;
+                }
+                if (line.startsWith("//", at)) {
+                    break;
+                }
+                if (line.startsWith("/*", at)) {
+                    inBlockComment = true;
+                    at += 2;
+                    continue;
+                }
+                code.append(c);
+                at++;
+            }
+            lines[i] = code.toString();
+        }
+        return lines;
+    }
+
     @Test
     public void test_getUserRoles_structure() {
         // Test that getUserRoles method exists and has correct signature
@@ -361,7 +879,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
 
         // Expose protected methods for testing
         @Override
-        public ExecutorService newFixedThreadPool(int nThreads) {
+        public ReportingExecutor newFixedThreadPool(int nThreads) {
             return super.newFixedThreadPool(nThreads);
         }
 
