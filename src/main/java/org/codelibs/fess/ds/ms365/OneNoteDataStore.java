@@ -15,7 +15,6 @@
  */
 package org.codelibs.fess.ds.ms365;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,6 +32,7 @@ import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.exception.MultipleCrawlingAccessException;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
+import org.codelibs.fess.ds.ms365.client.NotebookScope;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
@@ -186,10 +186,41 @@ public class OneNoteDataStore extends Microsoft365DataStore {
     protected void storeSiteNotes(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
             final Microsoft365Client client) {
-        final Site root = client.getSite("root");
-        final List<String> roles = Collections.emptyList();
-        getNotebooks(client, "sites/" + root.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig, callback,
-                paramMap, scriptMap, defaultDataMap, client, "sites/" + root.getId(), notebook, roles)));
+        final Site root;
+        try {
+            root = client.getSite("root");
+        } catch (final ApiException e) {
+            // storeData runs storeSiteNotes, storeUsersNotes and storeGroupsNotes one after
+            // another inside the same try block. Letting this propagate would abort user and
+            // group notebook crawling too, not just site notebooks, so it is caught here and
+            // only site notebooks are skipped.
+            logger.warn("Skipping site notebooks: unable to resolve the root site.", e);
+            return;
+        }
+
+        final List<String> roles;
+        try {
+            // Notebooks under a site inherit the site's ACL. Indexing them with an empty role
+            // list would hide them from every user who has roles at all.
+            roles = getSitePermissions(client, root.getId(), paramMap);
+        } catch (final PermissionUnavailableException e) {
+            // storeData runs storeSiteNotes, storeUsersNotes and storeGroupsNotes one after
+            // another inside the same try block. Letting this propagate would abort user and
+            // group notebook crawling too, not just site notebooks, so it is caught here and
+            // only site notebooks are skipped.
+            logger.warn("Skipping site notebooks: unable to resolve permissions for site: {}", root.getId(), e);
+            return;
+        }
+        if (roles.isEmpty()) {
+            // GET /sites/{site-id}/permissions succeeding with an empty result is not an error --
+            // it is Microsoft's documented shape for this endpoint on a site with no per-user/group
+            // grantees for it to report. But it leaves the notebook with no ACL, so it is worth
+            // surfacing rather than passing silently.
+            logger.warn("Site {} returned no permissions; its notebooks will be indexed with an empty ACL "
+                    + "and will not match any user's role filter.", root.getId());
+        }
+        getNotebooks(client, NotebookScope.SITE, root.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig,
+                callback, paramMap, scriptMap, defaultDataMap, client, NotebookScope.SITE, root.getId(), notebook, roles)));
     }
 
     /**
@@ -219,12 +250,12 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             }
 
             try {
-                getNotebooks(client, user.getId(), notebook -> {
+                getNotebooks(client, NotebookScope.USER, user.getId(), notebook -> {
                     if (logger.isDebugEnabled()) {
                         logger.debug("Processing notebook: {} for user: {}", notebook.getDisplayName(), user.getDisplayName());
                     }
                     executorService.execute(() -> processNotebook(dataConfig, callback, paramMap, scriptMap, defaultDataMap, client,
-                            user.getId(), notebook, roles));
+                            NotebookScope.USER, user.getId(), notebook, roles));
                 });
             } catch (final ApiException e) {
                 logger.warn("Failed to retrieve notebooks for user: {} (ID: {})", user.getDisplayName(), user.getId(), e);
@@ -253,19 +284,18 @@ public class OneNoteDataStore extends Microsoft365DataStore {
 
         getMicrosoft365Groups(client, group -> {
             final List<String> roles = getGroupRoles(group);
-            final String groupPath = "groups/" + group.getId();
 
             if (logger.isDebugEnabled()) {
-                logger.debug("Processing notebooks for group: {} (ID: {}, Path: {})", group.getDisplayName(), group.getId(), groupPath);
+                logger.debug("Processing notebooks for group: {} (ID: {})", group.getDisplayName(), group.getId());
             }
 
             try {
-                getNotebooks(client, groupPath, notebook -> {
+                getNotebooks(client, NotebookScope.GROUP, group.getId(), notebook -> {
                     if (logger.isDebugEnabled()) {
                         logger.debug("Processing notebook: {} for group: {}", notebook.getDisplayName(), group.getDisplayName());
                     }
                     executorService.execute(() -> processNotebook(dataConfig, callback, paramMap, scriptMap, defaultDataMap, client,
-                            groupPath, notebook, roles));
+                            NotebookScope.GROUP, group.getId(), notebook, roles));
                 });
             } catch (final Exception e) {
                 logger.warn("Failed to retrieve notebooks for group: {} (ID: {})", group.getDisplayName(), group.getId(), e);
@@ -283,13 +313,14 @@ public class OneNoteDataStore extends Microsoft365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param client The Microsoft365Client.
-     * @param userId The user ID.
+     * @param scope which Graph root the notebook lives under.
+     * @param ownerId The user, site or group ID.
      * @param notebook The notebook.
      * @param roles The roles.
      */
     protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
-            final String userId, final Notebook notebook, final List<String> roles) {
+            final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
         final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
         final Map<String, Object> resultMap = new LinkedHashMap<>(paramMap.asMap());
@@ -298,8 +329,8 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
 
         if (logger.isDebugEnabled()) {
-            logger.debug("Processing notebook: {} (ID: {}) for user/group: {} - Roles: {}", notebook.getDisplayName(), notebook.getId(),
-                    userId, roles.size());
+            logger.debug("Processing notebook: {} (ID: {}) for {} {} - Roles: {}", notebook.getDisplayName(), notebook.getId(), scope,
+                    ownerId, roles.size());
         }
 
         try {
@@ -311,7 +342,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
                 logger.debug("Retrieving notebook content for notebook: {} (ID: {})", notebook.getDisplayName(), notebook.getId());
             }
 
-            final String contents = client.getNotebookContent(userId, notebook.getId());
+            final String contents = client.getNotebookContent(scope, ownerId, notebook.getId());
             final long size = contents != null ? contents.length() : 0L;
 
             if (logger.isDebugEnabled()) {
@@ -397,37 +428,47 @@ public class OneNoteDataStore extends Microsoft365DataStore {
      * Gets the notebooks.
      *
      * @param client The Microsoft365Client.
-     * @param userId The user ID.
+     * @param scope which Graph root the notebooks live under.
+     * @param ownerId The user, site or group ID.
      * @param consumer The consumer to process each notebook.
      */
-    protected void getNotebooks(final Microsoft365Client client, final String userId, final Consumer<Notebook> consumer) {
+    protected void getNotebooks(final Microsoft365Client client, final NotebookScope scope, final String ownerId,
+            final Consumer<Notebook> consumer) {
         if (logger.isDebugEnabled()) {
-            logger.debug("Retrieving notebooks for user/group: {}", userId);
+            logger.debug("Retrieving notebooks for {} {}", scope, ownerId);
         }
 
         try {
-            final NotebookCollectionResponse response = client.getNotebookPage(userId);
+            final NotebookCollectionResponse response = client.getNotebookPage(scope, ownerId);
             if (response.getValue() != null) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("Retrieved {} notebooks for user/group: {}", response.getValue().size(), userId);
+                    logger.debug("Retrieved {} notebooks for {} {}", response.getValue().size(), scope, ownerId);
                 }
                 response.getValue().forEach(notebook -> {
                     if (logger.isDebugEnabled()) {
-                        logger.debug("Processing notebook: {} (ID: {}) for user/group: {}", notebook.getDisplayName(), notebook.getId(),
-                                userId);
+                        logger.debug("Processing notebook: {} (ID: {}) for {} {}", notebook.getDisplayName(), notebook.getId(), scope,
+                                ownerId);
                     }
                     consumer.accept(notebook);
                 });
             } else if (logger.isDebugEnabled()) {
-                logger.debug("No notebooks found for user/group: {}", userId);
+                logger.debug("No notebooks found for {} {}", scope, ownerId);
             }
         } catch (final ApiException e) {
             if (e.getResponseStatusCode() == 404) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Notebooks not found (404) for user/group: {}", userId, e);
+                if (scope == NotebookScope.USER) {
+                    // A user without a provisioned personal site 404s here routinely, and USER was never
+                    // the path this fix repaired -- logging one line per licensed user buys nothing.
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("No notebooks found for {} {} (404).", scope, ownerId);
+                    }
+                } else {
+                    // SITE and GROUP used to 404 because the request went to the wrong Graph root, so
+                    // these stay visible.
+                    logger.warn("No notebooks found for {} {} (404).", scope, ownerId);
                 }
             } else {
-                logger.warn("Failed to retrieve notebooks for user/group: {}", userId, e);
+                logger.warn("Failed to retrieve notebooks for {} {}.", scope, ownerId, e);
             }
         }
     }

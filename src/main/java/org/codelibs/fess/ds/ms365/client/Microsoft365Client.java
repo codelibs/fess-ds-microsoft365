@@ -609,32 +609,53 @@ public class Microsoft365Client implements Closeable {
     }
 
     /**
-     * Retrieves a page of notebooks.
+     * Validates that an owner id was supplied for scopes that require one.
      *
-     * @param userId The ID of the user, or null for the current user.
+     * <p>{@link NotebookScope#USER} may be resolved with a null id via {@code /me}, but
+     * {@link NotebookScope#SITE} and {@link NotebookScope#GROUP} have no such fallback.</p>
+     *
+     * @param scope which Graph root the notebook lives under
+     * @param ownerId the user, site or group id
+     */
+    private void requireOwnerId(final NotebookScope scope, final String ownerId) {
+        if (scope != NotebookScope.USER && StringUtil.isBlank(ownerId)) {
+            throw new IllegalArgumentException("ownerId is required for scope " + scope);
+        }
+    }
+
+    /**
+     * Retrieves a page of notebooks for the given owner.
+     *
+     * @param scope which Graph root the notebooks live under
+     * @param ownerId the user, site or group id; null means the signed-in user, and is only valid for {@link NotebookScope#USER}
      * @return a NotebookCollectionResponse containing the notebooks.
      */
-    public NotebookCollectionResponse getNotebookPage(final String userId) {
-        if (userId != null) {
-            return client.users().byUserId(userId).onenote().notebooks().get();
-        }
-        return client.me().onenote().notebooks().get();
+    public NotebookCollectionResponse getNotebookPage(final NotebookScope scope, final String ownerId) {
+        requireOwnerId(scope, ownerId);
+        return switch (scope) {
+        case SITE -> client.sites().bySiteId(ownerId).onenote().notebooks().get();
+        case GROUP -> client.groups().byGroupId(ownerId).onenote().notebooks().get();
+        case USER -> ownerId != null ? client.users().byUserId(ownerId).onenote().notebooks().get()
+                : client.me().onenote().notebooks().get();
+        };
     }
 
     /**
      * Retrieves all sections within a notebook.
      *
-     * @param userId The ID of the user, or null for the current user.
+     * @param scope which Graph root the notebook lives under
+     * @param ownerId the user, site or group id; null means the signed-in user, and is only valid for {@link NotebookScope#USER}
      * @param notebookId The ID of the notebook.
      * @return A list of OnenoteSection objects.
      */
-    protected List<OnenoteSection> getSections(final String userId, final String notebookId) {
-        OnenoteSectionCollectionResponse response;
-        if (userId != null) {
-            response = client.users().byUserId(userId).onenote().notebooks().byNotebookId(notebookId).sections().get();
-        } else {
-            response = client.me().onenote().notebooks().byNotebookId(notebookId).sections().get();
-        }
+    protected List<OnenoteSection> getSections(final NotebookScope scope, final String ownerId, final String notebookId) {
+        requireOwnerId(scope, ownerId);
+        OnenoteSectionCollectionResponse response = switch (scope) {
+        case SITE -> client.sites().bySiteId(ownerId).onenote().notebooks().byNotebookId(notebookId).sections().get();
+        case GROUP -> client.groups().byGroupId(ownerId).onenote().notebooks().byNotebookId(notebookId).sections().get();
+        case USER -> ownerId != null ? client.users().byUserId(ownerId).onenote().notebooks().byNotebookId(notebookId).sections().get()
+                : client.me().onenote().notebooks().byNotebookId(notebookId).sections().get();
+        };
         final List<OnenoteSection> sections = new ArrayList<>();
 
         // Handle pagination with odata.nextLink
@@ -647,18 +668,21 @@ public class Microsoft365Client implements Closeable {
                 break;
             }
             // Request the next page using the nextLink URL
-            if (userId != null) {
-                response = client.users()
-                        .byUserId(userId)
-                        .onenote()
-                        .notebooks()
-                        .byNotebookId(notebookId)
-                        .sections()
-                        .withUrl(response.getOdataNextLink())
-                        .get();
-            } else {
-                response = client.me().onenote().notebooks().byNotebookId(notebookId).sections().withUrl(response.getOdataNextLink()).get();
-            }
+            final String nextLink = response.getOdataNextLink();
+            response = switch (scope) {
+            case SITE -> client.sites().bySiteId(ownerId).onenote().notebooks().byNotebookId(notebookId).sections().withUrl(nextLink).get();
+            case GROUP -> client.groups()
+                    .byGroupId(ownerId)
+                    .onenote()
+                    .notebooks()
+                    .byNotebookId(notebookId)
+                    .sections()
+                    .withUrl(nextLink)
+                    .get();
+            case USER -> ownerId != null
+                    ? client.users().byUserId(ownerId).onenote().notebooks().byNotebookId(notebookId).sections().withUrl(nextLink).get()
+                    : client.me().onenote().notebooks().byNotebookId(notebookId).sections().withUrl(nextLink).get();
+            };
         }
         return sections;
     }
@@ -666,17 +690,19 @@ public class Microsoft365Client implements Closeable {
     /**
      * Retrieves all pages within a section.
      *
-     * @param userId The ID of the user, or null for the current user.
+     * @param scope which Graph root the section lives under
+     * @param ownerId the user, site or group id; null means the signed-in user, and is only valid for {@link NotebookScope#USER}
      * @param sectionId The ID of the section.
      * @return A list of OnenotePage objects.
      */
-    protected List<OnenotePage> getPages(final String userId, final String sectionId) {
-        OnenotePageCollectionResponse response;
-        if (userId != null) {
-            response = client.users().byUserId(userId).onenote().sections().byOnenoteSectionId(sectionId).pages().get();
-        } else {
-            response = client.me().onenote().sections().byOnenoteSectionId(sectionId).pages().get();
-        }
+    protected List<OnenotePage> getPages(final NotebookScope scope, final String ownerId, final String sectionId) {
+        requireOwnerId(scope, ownerId);
+        OnenotePageCollectionResponse response = switch (scope) {
+        case SITE -> client.sites().bySiteId(ownerId).onenote().sections().byOnenoteSectionId(sectionId).pages().get();
+        case GROUP -> client.groups().byGroupId(ownerId).onenote().sections().byOnenoteSectionId(sectionId).pages().get();
+        case USER -> ownerId != null ? client.users().byUserId(ownerId).onenote().sections().byOnenoteSectionId(sectionId).pages().get()
+                : client.me().onenote().sections().byOnenoteSectionId(sectionId).pages().get();
+        };
         final List<OnenotePage> pages = new ArrayList<>();
 
         // Handle pagination with odata.nextLink
@@ -689,19 +715,28 @@ public class Microsoft365Client implements Closeable {
                 break;
             }
             // Request the next page using the nextLink URL
-            if (userId != null) {
-                response = client.users()
-                        .byUserId(userId)
-                        .onenote()
-                        .sections()
-                        .byOnenoteSectionId(sectionId)
-                        .pages()
-                        .withUrl(response.getOdataNextLink())
-                        .get();
-            } else {
-                response =
-                        client.me().onenote().sections().byOnenoteSectionId(sectionId).pages().withUrl(response.getOdataNextLink()).get();
-            }
+            final String nextLink = response.getOdataNextLink();
+            response = switch (scope) {
+            case SITE -> client.sites()
+                    .bySiteId(ownerId)
+                    .onenote()
+                    .sections()
+                    .byOnenoteSectionId(sectionId)
+                    .pages()
+                    .withUrl(nextLink)
+                    .get();
+            case GROUP -> client.groups()
+                    .byGroupId(ownerId)
+                    .onenote()
+                    .sections()
+                    .byOnenoteSectionId(sectionId)
+                    .pages()
+                    .withUrl(nextLink)
+                    .get();
+            case USER -> ownerId != null
+                    ? client.users().byUserId(ownerId).onenote().sections().byOnenoteSectionId(sectionId).pages().withUrl(nextLink).get()
+                    : client.me().onenote().sections().byOnenoteSectionId(sectionId).pages().withUrl(nextLink).get();
+            };
         }
         return pages;
     }
@@ -709,32 +744,38 @@ public class Microsoft365Client implements Closeable {
     /**
      * Retrieves the contents of a OneNote section as a single string.
      *
-     * @param userId The ID of the user, or null for the current user.
+     * @param scope which Graph root the section lives under
+     * @param ownerId the user, site or group id; null means the signed-in user, and is only valid for {@link NotebookScope#USER}
      * @param section The OnenoteSection to retrieve contents from.
      * @return A string containing the concatenated contents of the section.
      */
-    protected String getSectionContents(final String userId, final OnenoteSection section) {
+    protected String getSectionContents(final NotebookScope scope, final String ownerId, final OnenoteSection section) {
         final StringBuilder sb = new StringBuilder();
         sb.append(section.getDisplayName()).append('\n');
-        final List<OnenotePage> pages = getPages(userId, section.getId());
+        final List<OnenotePage> pages = getPages(scope, ownerId, section.getId());
         Collections.reverse(pages);
-        sb.append(pages.stream().map(page -> getPageContents(userId, page)).collect(Collectors.joining("\n")));
+        sb.append(pages.stream().map(page -> getPageContents(scope, ownerId, page)).collect(Collectors.joining("\n")));
         return sb.toString();
     }
 
     /**
      * Retrieves the contents of a OneNote page as a single string.
      *
-     * @param userId The ID of the user, or null for the current user.
+     * @param scope which Graph root the page lives under
+     * @param ownerId the user, site or group id; null means the signed-in user, and is only valid for {@link NotebookScope#USER}
      * @param page The OnenotePage to retrieve contents from.
      * @return A string containing the contents of the page.
      */
-    protected String getPageContents(final String userId, final OnenotePage page) {
+    protected String getPageContents(final NotebookScope scope, final String ownerId, final OnenotePage page) {
+        requireOwnerId(scope, ownerId);
         final StringBuilder sb = new StringBuilder();
         sb.append(page.getTitle()).append('\n');
-        try (final InputStream in =
-                userId != null ? client.users().byUserId(userId).onenote().pages().byOnenotePageId(page.getId()).content().get()
-                        : client.me().onenote().pages().byOnenotePageId(page.getId()).content().get()) {
+        try (final InputStream in = switch (scope) {
+        case SITE -> client.sites().bySiteId(ownerId).onenote().pages().byOnenotePageId(page.getId()).content().get();
+        case GROUP -> client.groups().byGroupId(ownerId).onenote().pages().byOnenotePageId(page.getId()).content().get();
+        case USER -> ownerId != null ? client.users().byUserId(ownerId).onenote().pages().byOnenotePageId(page.getId()).content().get()
+                : client.me().onenote().pages().byOnenotePageId(page.getId()).content().get();
+        }) {
             sb.append(ComponentUtil.getExtractorFactory()
                     .builder(in, Collections.emptyMap())
                     .maxContentLength(maxContentLength)
@@ -756,14 +797,15 @@ public class Microsoft365Client implements Closeable {
     /**
      * Retrieves the content of a notebook as a single string.
      *
-     * @param userId The ID of the user, or null for the current user.
+     * @param scope which Graph root the notebook lives under
+     * @param ownerId the user, site or group id; null means the signed-in user, and is only valid for {@link NotebookScope#USER}
      * @param notebookId The ID of the notebook.
      * @return A string containing the concatenated contents of the notebook.
      */
-    public String getNotebookContent(final String userId, final String notebookId) {
-        final List<OnenoteSection> sections = getSections(userId, notebookId);
+    public String getNotebookContent(final NotebookScope scope, final String ownerId, final String notebookId) {
+        final List<OnenoteSection> sections = getSections(scope, ownerId, notebookId);
         Collections.reverse(sections);
-        return sections.stream().map(section -> getSectionContents(userId, section)).collect(Collectors.joining("\n"));
+        return sections.stream().map(section -> getSectionContents(scope, ownerId, section)).collect(Collectors.joining("\n"));
     }
 
     /**
