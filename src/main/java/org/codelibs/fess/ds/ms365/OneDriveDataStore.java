@@ -701,7 +701,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             filesMap.put(FILE_SPECIAL_FOLDER, item.getSpecialFolder() != null ? item.getSpecialFolder().getName() : null);
             filesMap.put(FILE_VIDEO, item.getVideo());
 
-            final List<String> fileRoles = getDriveItemPermissions(client, driveId, item);
+            final List<String> fileRoles = getDriveItemPermissions(client, driveId, item, paramMap);
             roles.forEach(fileRoles::add);
             final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
             StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")

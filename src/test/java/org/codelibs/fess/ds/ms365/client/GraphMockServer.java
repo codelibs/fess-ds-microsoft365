@@ -21,7 +21,9 @@ import com.microsoft.graph.core.requests.BaseGraphRequestAdapter;
 import com.microsoft.graph.core.requests.GraphClientFactory;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
 import com.microsoft.kiota.RequestInformation;
+import com.microsoft.kiota.RequestOption;
 import com.microsoft.kiota.authentication.AuthenticationProvider;
+import com.microsoft.kiota.http.middleware.options.RetryHandlerOption;
 
 import okhttp3.OkHttpClient;
 import okhttp3.mockwebserver.MockResponse;
@@ -84,6 +86,23 @@ public class GraphMockServer implements AutoCloseable {
         final String base = server.url("/").toString();
         final String baseUrl = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
         final OkHttpClient http = GraphClientFactory.create().build();
+        return new GraphServiceClient(new BaseGraphRequestAdapter(new NoopAuthenticationProvider(), baseUrl, http));
+    }
+
+    /**
+     * A GraphServiceClient like {@link #newGraphClient()}, but with the SDK's own 429/503 retry
+     * middleware disabled (maxRetries=0) so a queued 429/503 response is surfaced to the caller
+     * as an {@code ApiException} on the first request instead of being retried internally.
+     *
+     * <p>Useful for tests that exercise a caller's own retry/caching logic (for example {@code
+     * Microsoft365Client}'s UPN/group-name caches): without this, every queued 429/503 would be
+     * retried up to 3 more times by the SDK before the caller's code ever sees it, inflating both
+     * the request count and the real wall-clock time the test takes to run.</p>
+     */
+    public GraphServiceClient newGraphClientWithRetriesDisabled() {
+        final String base = server.url("/").toString();
+        final String baseUrl = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+        final OkHttpClient http = GraphClientFactory.create(new RequestOption[] { new RetryHandlerOption(null, 0, 0) }).build();
         return new GraphServiceClient(new BaseGraphRequestAdapter(new NoopAuthenticationProvider(), baseUrl, http));
     }
 
