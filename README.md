@@ -494,6 +494,12 @@ role=page.roles
 | `exclude_pattern` | Regex pattern for exclusion - semantics differ by DataStore, see below | - | `.*temp.*` |
 | `default_permissions` | Default role assignments | - | `{role}admin` |
 | `permission_failure_policy` | What to do when a document's permissions cannot be retrieved | `skip` | `index_without_acl` |
+| `connect_timeout` | Connect timeout for Microsoft Graph HTTP requests, in whole seconds - see below | `100` | `30` |
+| `read_timeout` | Read timeout for Microsoft Graph HTTP requests, in whole seconds - see below | `100` | `30` |
+| `access_timeout` | Overall timeout for a Microsoft Graph HTTP call, in whole seconds - see below | `100` | `120` |
+| `max_retry_count` | Maximum automatic retries for a failed Graph request - see below | `3` | `5` |
+| `retry_interval` | Delay between automatic retries, in whole seconds - see below | `3` | `10` |
+| `additionally_allowed_tenants` | Tenant IDs the credential may also acquire tokens for, comma-separated, or `*` for any tenant - see below | - (only the configured `tenant`) | `*` |
 
 #### `include_pattern` / `exclude_pattern` semantics differ by DataStore
 
@@ -639,6 +645,55 @@ the first place, not just their ACLs, so a re-crawl is needed here too:
   [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below for what
   that means in practice. If you had already configured either parameter for this DataStore
   expecting it to work, re-crawl to have it apply for the first time.
+
+#### Graph client timeouts and retries
+
+`connect_timeout`, `read_timeout`, and `access_timeout` (OkHttp's *call* timeout - the ceiling on
+the whole request: DNS, connecting, writing, server processing, and reading the response, with
+any redirects or retries all counted against the one period) configure the OkHttp client the
+Microsoft Graph Java SDK builds internally. That client is built by the SDK's own
+`GraphClientFactory`, which hard-codes all three to **100 seconds** regardless of whether this
+plugin passes it any options - this is the Graph client library's own default, not OkHttp's raw
+10-second connect/read default (OkHttp's call timeout has no default at all - `0`, meaning
+unlimited). `0`, or leaving one of these parameters unset, keeps that 100-second default.
+
+Setting one above `2147483` seconds - the largest whole-second value OkHttp's client builder
+accepts - logs a `WARN` and uses `2147483` instead of failing. A non-numeric value also falls back
+to the 100-second default, with a `WARN` logged. A negative value is treated the same as `0` (the
+100-second default is kept), and now also logs a `WARN` naming the parameter and the value, so an
+`access_timeout=-1` meant as "no timeout" is not silently ignored.
+
+`max_retry_count` (default `3`, maximum `10`) and `retry_interval` (default `3` seconds, maximum
+`180` seconds) configure the SDK's retry handler; which responses get retried is not
+configurable. A value above the maximum, or a non-numeric value, logs a `WARN` and falls back to
+the maximum or the default respectively. A negative value also logs a `WARN`, but falls back to
+`0` - not to the parameter's own default of `3` - so a negative `max_retry_count` disables
+retries entirely rather than reverting to three attempts, and a negative `retry_interval` removes
+the delay between them.
+
+`access_timeout` is not a new parameter: the constant has been declared since the plugin's first
+release and was never read anywhere, so setting it had no effect. This release is the first time
+it does anything - it now sets OkHttp's call timeout - so if you already have `access_timeout`
+configured, upgrading changes its behavior from a no-op to an active timeout.
+
+#### `additionally_allowed_tenants` and the Graph host allowlist
+
+The credential backing this client used to accept tokens for any Azure AD tenant
+(`additionallyAllowedTenants("*")`, hard-coded). It now accepts tokens only for the configured
+`tenant` unless `additionally_allowed_tenants` says otherwise. Set
+`additionally_allowed_tenants=*` to restore the old behavior, or list specific tenant IDs
+separated by commas (surrounding whitespace and empty entries are ignored) to allow just those.
+No code path in this plugin was found that requests a token for a tenant other than the
+configured one, which is why the default was changed - "no path was found", not "no path exists".
+An installation that does something unusual with the underlying credential outside this plugin's
+own code could still depend on the old, unrestricted behavior.
+
+Separately, a deployment that configures `proxy_host`/`proxy_port` used to send the bearer token
+to any host named by a Graph response's `@odata.nextLink`, even one outside the six Microsoft
+Graph national-cloud hosts. A deployment without a proxy was never affected - it already carried
+that same six-host restriction. The proxied path now gets it too: a `@odata.nextLink` naming a
+host outside that list is still followed, but without the `Authorization` header, rather than
+leaking the tenant's app-only token to it.
 
 ### Teams-Specific Parameters
 

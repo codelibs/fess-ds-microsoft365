@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -38,6 +39,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.CoreLibConstants;
 import org.codelibs.core.lang.StringUtil;
+import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
@@ -54,6 +56,7 @@ import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.microsoft.graph.core.authentication.AzureIdentityAuthenticationProvider;
 import com.microsoft.graph.core.requests.GraphClientFactory;
 import com.microsoft.graph.models.BaseSitePage;
 import com.microsoft.graph.models.Channel;
@@ -88,8 +91,9 @@ import com.microsoft.graph.models.User;
 import com.microsoft.graph.models.UserCollectionResponse;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
 import com.microsoft.kiota.ApiException;
+import com.microsoft.kiota.RequestOption;
 import com.microsoft.kiota.ResponseHeaders;
-import com.microsoft.kiota.authentication.AzureIdentityAuthenticationProvider;
+import com.microsoft.kiota.http.middleware.options.RetryHandlerOption;
 import com.microsoft.kiota.serialization.UntypedArray;
 import com.microsoft.kiota.serialization.UntypedNode;
 import com.microsoft.kiota.serialization.UntypedString;
@@ -116,8 +120,16 @@ public class Microsoft365Client implements Closeable {
     protected static final String CLIENT_ID_PARAM = "client_id";
     /** The parameter name for the Azure AD client secret. */
     protected static final String CLIENT_SECRET_PARAM = "client_secret";
-    /** The parameter name for the access timeout. */
+    /** The parameter name for the access (call) timeout, in seconds. 0 keeps the library default. */
     protected static final String ACCESS_TIMEOUT = "access_timeout";
+    /** The parameter name for the connect timeout, in seconds. 0 keeps the library default. */
+    protected static final String CONNECT_TIMEOUT = "connect_timeout";
+    /** The parameter name for the read timeout, in seconds. 0 keeps the library default. */
+    protected static final String READ_TIMEOUT = "read_timeout";
+    /** The parameter name for the maximum number of retries. */
+    protected static final String MAX_RETRY_COUNT = "max_retry_count";
+    /** The parameter name for the delay between retries, in seconds. */
+    protected static final String RETRY_INTERVAL = "retry_interval";
     /** The parameter name for the refresh token interval. */
     protected static final String REFRESH_TOKEN_INTERVAL = "refresh_token_interval";
     /** The parameter name for the cache size. */
@@ -132,6 +144,8 @@ public class Microsoft365Client implements Closeable {
     protected static final String PROXY_USERNAME_PARAM = "proxy_username";
     /** The parameter name for the proxy password. */
     protected static final String PROXY_PASSWORD_PARAM = "proxy_password";
+    /** The parameter name for additional tenants this credential may acquire tokens for. */
+    protected static final String ADDITIONALLY_ALLOWED_TENANTS = "additionally_allowed_tenants";
 
     /** Error code for an invalid authentication token. */
     protected static final String INVALID_AUTHENTICATION_TOKEN = "InvalidAuthenticationToken";
@@ -139,8 +153,36 @@ public class Microsoft365Client implements Closeable {
     /** Default cache size for user type, group ID, UPN, and group name caches. */
     protected static final int DEFAULT_CACHE_SIZE = 10000;
 
+    /**
+     * The largest whole-second timeout OkHttp's {@code OkHttpClient.Builder} will accept.
+     * {@code checkDuration} requires the value in milliseconds to fit in an {@code int}, so
+     * {@code Integer.MAX_VALUE / 1000} seconds is the true ceiling; anything past it throws
+     * {@code IllegalArgumentException: timeout too large} from the constructor.
+     */
+    protected static final long MAX_TIMEOUT_SECONDS = Integer.MAX_VALUE / 1000L;
+
     /** The Microsoft Graph service client. */
     protected GraphServiceClient client;
+    /**
+     * The token authentication provider backing the Graph client. Deliberately
+     * {@code com.microsoft.graph.core.authentication.AzureIdentityAuthenticationProvider}, not
+     * kiota's own class of the same simple name: passed a null/empty allowed-hosts array, the
+     * Graph one installs the six Graph national-cloud hosts on its {@code AllowedHostsValidator},
+     * while kiota's leaves the validator's host set empty -- which makes it accept every host,
+     * including a non-Graph host named by a server-supplied {@code @odata.nextLink}.
+     */
+    protected AzureIdentityAuthenticationProvider authProvider;
+    /** The OkHttp client backing the Graph client. Owned by this instance and released in {@link #close()}. */
+    protected OkHttpClient httpClient;
+    /**
+     * The Azure AD credential backing the Graph client. Held as a field -- rather than only a
+     * constructor-local variable -- so a test can reach {@code credential}'s private
+     * {@code identityClient} field by reflection and assert that
+     * {@link #getAdditionallyAllowedTenants(DataStoreParams)}'s result actually reached
+     * {@link ClientSecretCredentialBuilder#additionallyAllowedTenants(String...)}, not merely
+     * computed and discarded.
+     */
+    protected ClientSecretCredential credential;
     /** The data store parameters. */
     protected DataStoreParams params;
     /** A cache for user types. */
@@ -185,10 +227,12 @@ public class Microsoft365Client implements Closeable {
         final String proxyPassword = params.getAsString(PROXY_PASSWORD_PARAM, StringUtil.EMPTY);
 
         try {
-            final ClientSecretCredentialBuilder credentialBuilder = new ClientSecretCredentialBuilder().clientId(clientId)
-                    .clientSecret(clientSecret)
-                    .tenantId(tenant)
-                    .additionallyAllowedTenants("*"); // Allow all tenants for backward compatibility
+            final ClientSecretCredentialBuilder credentialBuilder =
+                    new ClientSecretCredentialBuilder().clientId(clientId).clientSecret(clientSecret).tenantId(tenant);
+            final List<String> allowedTenants = getAdditionallyAllowedTenants(params);
+            if (!allowedTenants.isEmpty()) {
+                credentialBuilder.additionallyAllowedTenants(allowedTenants.toArray(new String[allowedTenants.size()]));
+            }
 
             // Configure proxy for Azure Identity (OAuth token acquisition)
             if (!proxyHost.isEmpty() && !proxyPortStr.isEmpty()) {
@@ -203,17 +247,23 @@ public class Microsoft365Client implements Closeable {
                 logger.info("Proxy configured for Azure Identity: {}:{}", proxyHost, proxyPort);
             }
 
-            final ClientSecretCredential credential = credentialBuilder.build();
+            credential = credentialBuilder.build();
 
             // Initialize GraphServiceClient
+            // GraphServiceClient.getGraphClientOptions() (public, static) is included as a
+            // RequestOption so the SdkVersion telemetry header carries the client library
+            // version (graph-java/<version>), same as GraphServiceClient(TokenCredential, ...)
+            // builds internally. Without it, GraphClientFactory falls back to a bare
+            // GraphClientOption, and the header loses the version suffix -- e.g.
+            // "graph-java, graph-java-core/3.6.6" instead of "graph-java/6.67.0, ...". No
+            // functional effect; this only restores what Microsoft-side telemetry sees.
+            final OkHttpClient.Builder okHttpBuilder = GraphClientFactory
+                    .create(new RequestOption[] { newRetryHandlerOption(params), GraphServiceClient.getGraphClientOptions() });
+            applyTimeouts(okHttpBuilder, params);
             if (!proxyHost.isEmpty() && !proxyPortStr.isEmpty()) {
                 final int proxyPort = Integer.parseInt(proxyPortStr);
                 final InetSocketAddress proxyAddress = new InetSocketAddress(proxyHost, proxyPort);
-                final Proxy proxy = new Proxy(Proxy.Type.HTTP, proxyAddress);
-
-                final OkHttpClient.Builder okHttpBuilder = GraphClientFactory.create().proxy(proxy);
-
-                // Configure proxy authentication if credentials are provided
+                okHttpBuilder.proxy(new Proxy(Proxy.Type.HTTP, proxyAddress));
                 if (!proxyUsername.isEmpty() && !proxyPassword.isEmpty()) {
                     final String proxyUser = proxyUsername;
                     final String proxyPass = proxyPassword;
@@ -225,75 +275,211 @@ public class Microsoft365Client implements Closeable {
                         }
                     });
                 }
-
-                final OkHttpClient okHttpClient = okHttpBuilder.build();
-                final String[] scopes = new String[] { "https://graph.microsoft.com/.default" };
-                final AzureIdentityAuthenticationProvider authProvider = new AzureIdentityAuthenticationProvider(credential, null, scopes);
-                client = new GraphServiceClient(authProvider, okHttpClient);
                 logger.info("Proxy configured for Graph client: {}:{}", proxyHost, proxyPort);
-            } else {
-                // No proxy - use default initialization
-                client = new GraphServiceClient(credential);
             }
+
+            httpClient = okHttpBuilder.build();
+            // Fixed to the global cloud rather than left empty (base commit's no-proxy path
+            // passed no scopes, so kiota derived "scheme://host/.default" per request). Inert
+            // today, since the base URL below is always the global cloud and that derivation
+            // produces this exact string -- it would only diverge if a response's
+            // @odata.nextLink ever pointed at a national-cloud host.
+            final String[] scopes = new String[] { "https://graph.microsoft.com/.default" };
+            authProvider = new AzureIdentityAuthenticationProvider(credential, null, scopes);
+            client = new GraphServiceClient(authProvider, httpClient);
         } catch (final NumberFormatException e) {
             throw new DataStoreException("Invalid proxy port: " + proxyPortStr, e);
         } catch (final Exception e) {
             throw new DataStoreException("Failed to create a client.", e);
         }
 
-        userTypeCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE))))
-                .build(new CacheLoader<String, UserType>() {
-                    @Override
-                    public UserType load(final String key) {
-                        try {
-                            getUser(key, Collections.emptyList());
-                            return UserType.USER;
-                        } catch (final ApiException e) {
-                            if (e.getResponseStatusCode() == 404) {
-                                return UserType.GROUP;
-                            }
-                            logger.warn("Failed to detect an user type.", e);
-                        } catch (final Exception e) {
-                            logger.warn("Failed to get an user.", e);
-                        }
-                        return UserType.UNKNOWN;
+        userTypeCache = CacheBuilder.newBuilder().maximumSize(getCacheSize(params)).build(new CacheLoader<String, UserType>() {
+            @Override
+            public UserType load(final String key) {
+                try {
+                    getUser(key, Collections.emptyList());
+                    return UserType.USER;
+                } catch (final ApiException e) {
+                    if (e.getResponseStatusCode() == 404) {
+                        return UserType.GROUP;
+                    }
+                    logger.warn("Failed to detect an user type.", e);
+                } catch (final Exception e) {
+                    logger.warn("Failed to get an user.", e);
+                }
+                return UserType.UNKNOWN;
+            }
+        });
+
+        groupIdCache = CacheBuilder.newBuilder().maximumSize(getCacheSize(params)).build(new CacheLoader<String, String[]>() {
+            @Override
+            public String[] load(final String email) {
+                final List<String> idList = new ArrayList<>();
+                getGroups(Collections.emptyList(), g -> {
+                    if (email.equals(g.getMail())) {
+                        idList.add(g.getId());
                     }
                 });
+                return idList.toArray(new String[idList.size()]);
+            }
+        });
 
-        groupIdCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE))))
-                .build(new CacheLoader<String, String[]>() {
-                    @Override
-                    public String[] load(final String email) {
-                        final List<String> idList = new ArrayList<>();
-                        getGroups(Collections.emptyList(), g -> {
-                            if (email.equals(g.getMail())) {
-                                idList.add(g.getId());
-                            }
-                        });
-                        return idList.toArray(new String[idList.size()]);
-                    }
-                });
+        upnCache = CacheBuilder.newBuilder().maximumSize(getCacheSize(params)).build(new CacheLoader<String, Optional<String>>() {
+            @Override
+            public Optional<String> load(final String objectId) {
+                return Optional.ofNullable(doResolveUserPrincipalName(objectId));
+            }
+        });
 
-        upnCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE))))
-                .build(new CacheLoader<String, Optional<String>>() {
-                    @Override
-                    public Optional<String> load(final String objectId) {
-                        return Optional.ofNullable(doResolveUserPrincipalName(objectId));
-                    }
-                });
+        groupNameCache = CacheBuilder.newBuilder().maximumSize(getCacheSize(params)).build(new CacheLoader<String, Optional<String>>() {
+            @Override
+            public Optional<String> load(final String objectId) {
+                return Optional.ofNullable(doResolveGroupName(objectId));
+            }
+        });
 
-        groupNameCache = CacheBuilder.newBuilder()
-                .maximumSize(Integer.parseInt(params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE))))
-                .build(new CacheLoader<String, Optional<String>>() {
-                    @Override
-                    public Optional<String> load(final String objectId) {
-                        return Optional.ofNullable(doResolveGroupName(objectId));
-                    }
-                });
+    }
 
+    /**
+     * Returns the configured cache size, falling back to {@link #DEFAULT_CACHE_SIZE} when the
+     * value is absent or not a number. A malformed value must not prevent the client from being
+     * constructed: the caches are an optimisation, not a correctness requirement.
+     *
+     * @param params The data store parameters.
+     * @return the cache size to use.
+     */
+    protected static int getCacheSize(final DataStoreParams params) {
+        final String value = params.getAsString(CACHE_SIZE, String.valueOf(DEFAULT_CACHE_SIZE));
+        try {
+            final int size = Integer.parseInt(value);
+            if (size < 0) {
+                logger.warn("{}={} must not be negative. Using {}.", CACHE_SIZE, value, DEFAULT_CACHE_SIZE);
+                return DEFAULT_CACHE_SIZE;
+            }
+            return size;
+        } catch (final NumberFormatException e) {
+            logger.warn("Failed to parse {}={}. Using {}.", CACHE_SIZE, value, DEFAULT_CACHE_SIZE, e);
+            return DEFAULT_CACHE_SIZE;
+        }
+    }
+
+    /**
+     * Parses a whole-second parameter, returning {@code defaultValue} when it is absent, blank or
+     * not a number. A malformed value must not prevent the client from being constructed.
+     *
+     * @param params The data store parameters.
+     * @param key The parameter name.
+     * @param defaultValue The value to use when the parameter is absent or malformed.
+     * @return the parsed value, or defaultValue.
+     */
+    protected static long getLongParam(final DataStoreParams params, final String key, final long defaultValue) {
+        final String value = params.getAsString(key, StringUtil.EMPTY);
+        if (StringUtil.isBlank(value)) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (final NumberFormatException e) {
+            logger.warn("Failed to parse {}={}. Using {}.", key, value, defaultValue, e);
+            return defaultValue;
+        }
+    }
+
+    /**
+     * Builds the retry configuration for the Graph client. Only the retry count and the delay are
+     * configurable; which responses are retried stays on the library's default predicate.
+     *
+     * @param params The data store parameters.
+     * @return the retry handler option to install on the client.
+     */
+    protected static RetryHandlerOption newRetryHandlerOption(final DataStoreParams params) {
+        long maxRetries = getLongParam(params, MAX_RETRY_COUNT, RetryHandlerOption.DEFAULT_MAX_RETRIES);
+        if (maxRetries > RetryHandlerOption.MAX_RETRIES) {
+            logger.warn("{}={} exceeds the maximum supported by the Graph client. Using {}.", MAX_RETRY_COUNT, maxRetries,
+                    RetryHandlerOption.MAX_RETRIES);
+            maxRetries = RetryHandlerOption.MAX_RETRIES;
+        }
+        if (maxRetries < 0) {
+            logger.warn("{}={} is negative. Using 0.", MAX_RETRY_COUNT, maxRetries);
+            maxRetries = 0;
+        }
+        long delay = getLongParam(params, RETRY_INTERVAL, RetryHandlerOption.DEFAULT_DELAY);
+        if (delay > RetryHandlerOption.MAX_DELAY) {
+            logger.warn("{}={} exceeds the maximum supported by the Graph client. Using {}.", RETRY_INTERVAL, delay,
+                    RetryHandlerOption.MAX_DELAY);
+            delay = RetryHandlerOption.MAX_DELAY;
+        }
+        if (delay < 0) {
+            logger.warn("{}={} is negative. Using 0.", RETRY_INTERVAL, delay);
+            delay = 0;
+        }
+        return new RetryHandlerOption(RetryHandlerOption.DEFAULT_SHOULD_RETRY, (int) maxRetries, delay);
+    }
+
+    /**
+     * Applies the configured timeouts to the HTTP client builder. A value of 0 leaves the
+     * library's own default in place.
+     *
+     * @param builder The OkHttp client builder.
+     * @param params The data store parameters.
+     */
+    protected static void applyTimeouts(final OkHttpClient.Builder builder, final DataStoreParams params) {
+        final long connectTimeout = clampTimeoutSeconds(CONNECT_TIMEOUT, getLongParam(params, CONNECT_TIMEOUT, 0L));
+        if (connectTimeout > 0) {
+            builder.connectTimeout(connectTimeout, TimeUnit.SECONDS);
+        }
+        final long readTimeout = clampTimeoutSeconds(READ_TIMEOUT, getLongParam(params, READ_TIMEOUT, 0L));
+        if (readTimeout > 0) {
+            builder.readTimeout(readTimeout, TimeUnit.SECONDS);
+        }
+        final long accessTimeout = clampTimeoutSeconds(ACCESS_TIMEOUT, getLongParam(params, ACCESS_TIMEOUT, 0L));
+        if (accessTimeout > 0) {
+            builder.callTimeout(accessTimeout, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Clamps a whole-second timeout to {@link #MAX_TIMEOUT_SECONDS}, warning when it does, and
+     * resets a negative value to {@code 0} (leave the library default in place), also warning.
+     * An out-of-range value must not prevent the client from being constructed: OkHttp's
+     * {@code Builder} throws {@code IllegalArgumentException} for anything larger, and that
+     * exception is not a {@link NumberFormatException}, so left unclamped it would abort
+     * construction from the generic catch below instead of falling back like a malformed value.
+     * A negative value would otherwise be silently accepted here -- {@code applyTimeouts}'s
+     * {@code > 0} guard already keeps it from being applied, but without a warning an operator
+     * who wrote e.g. {@code access_timeout=-1} meaning "no timeout" has no way to learn the
+     * 100-second default was kept instead.
+     *
+     * @param key The parameter name, for the warning message.
+     * @param value The parsed timeout, in seconds.
+     * @return value, or {@link #MAX_TIMEOUT_SECONDS} if value exceeds it, or {@code 0} if value is negative.
+     */
+    protected static long clampTimeoutSeconds(final String key, final long value) {
+        if (value > MAX_TIMEOUT_SECONDS) {
+            logger.warn("{}={} exceeds the maximum timeout OkHttp accepts. Using {}.", key, value, MAX_TIMEOUT_SECONDS);
+            return MAX_TIMEOUT_SECONDS;
+        }
+        if (value < 0) {
+            logger.warn("{}={} is negative. The default is kept.", key, value);
+            return 0L;
+        }
+        return value;
+    }
+
+    /**
+     * Returns the additional tenants this credential may acquire tokens for. Empty by default:
+     * the plugin only ever requests tokens for the configured tenant, so a credential that will
+     * mint tokens for any tenant it is asked about grants more than the crawl needs. Set
+     * {@code additionally_allowed_tenants=*} to restore the previous behaviour.
+     *
+     * @param params The data store parameters.
+     * @return the configured tenant list, possibly empty; never null.
+     */
+    protected static List<String> getAdditionallyAllowedTenants(final DataStoreParams params) {
+        final List<String> tenants = new ArrayList<>();
+        StreamUtil.split(params.getAsString(ADDITIONALLY_ALLOWED_TENANTS, StringUtil.EMPTY), ",")
+                .of(stream -> stream.map(String::trim).filter(StringUtil::isNotBlank).forEach(tenants::add));
+        return tenants;
     }
 
     @Override
@@ -302,6 +488,15 @@ public class Microsoft365Client implements Closeable {
         groupIdCache.invalidateAll();
         upnCache.invalidateAll();
         groupNameCache.invalidateAll();
+        if (httpClient != null) {
+            // OkHttp's documented shutdown. The leak this plugin actually had is the pooled
+            // keep-alive sockets evicted below: kiota's OkHttpRequestAdapter calls Call#execute,
+            // never Call#enqueue, so the dispatcher's executor is created lazily and never used
+            // by request processing -- shutting it down here is a no-op today, kept only because
+            // it is correct and harmless if kiota (or a future transport) ever goes async.
+            httpClient.dispatcher().executorService().shutdown();
+            httpClient.connectionPool().evictAll();
+        }
     }
 
     /**
@@ -593,19 +788,24 @@ public class Microsoft365Client implements Closeable {
      * @return The Group object, or null if not found.
      */
     public Group getGroupById(final String id) {
-        final List<Group> groupList = new ArrayList<>();
-        getGroups(Collections.emptyList(), g -> {
-            if (id.equals(g.getId())) {
-                groupList.add(g);
+        try {
+            final Group group = client.groups().byGroupId(id).get(requestConfiguration -> {
+                requestConfiguration.queryParameters.select = new String[] { "id", "displayName", "mail", "description",
+                        "resourceProvisioningOptions", "visibility", "groupTypes" };
+            });
+            if (logger.isDebugEnabled() && group != null) {
+                logger.debug("Group: {}", ToStringBuilder.reflectionToString(group));
             }
-        });
-        if (logger.isDebugEnabled()) {
-            groupList.forEach(group -> logger.debug("Group: {}", ToStringBuilder.reflectionToString(group)));
+            return group;
+        } catch (final ApiException e) {
+            if (e.getResponseStatusCode() == 404) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Group not found: {}", id);
+                }
+                return null;
+            }
+            throw e;
         }
-        if (groupList.size() == 1) {
-            return groupList.get(0);
-        }
-        return null;
     }
 
     /**

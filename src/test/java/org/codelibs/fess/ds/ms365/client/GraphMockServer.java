@@ -127,6 +127,11 @@ public class GraphMockServer implements AutoCloseable {
         return server.takeRequest().getPath();
     }
 
+    /** Value of the given header on the next request the server received, or null if absent. */
+    public String takeHeader(final String name) throws InterruptedException {
+        return server.takeRequest().getHeader(name);
+    }
+
     @Override
     public void close() throws Exception {
         server.shutdown();
