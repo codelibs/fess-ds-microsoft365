@@ -30,10 +30,12 @@ import java.util.function.Consumer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.lang.StringUtil;
+import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
 import org.codelibs.fess.ds.AbstractDataStore;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.helper.PermissionHelper;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -42,6 +44,7 @@ import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.Permission;
 import com.microsoft.graph.models.PermissionCollectionResponse;
+import com.microsoft.graph.models.SharePointIdentitySet;
 import com.microsoft.graph.models.User;
 
 /**
@@ -62,6 +65,8 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     protected static final String IGNORE_SYSTEM_LISTS = "ignore_system_lists";
     /** Parameter name for what to do when a document's permissions cannot be retrieved. */
     protected static final String PERMISSION_FAILURE_POLICY = "permission_failure_policy";
+    /** Parameter name for the roles to add to every document's ACL, regardless of what the source system reports. */
+    protected static final String DEFAULT_PERMISSIONS = "default_permissions";
 
     /** Skip the document and record it as a failed URL. The default. */
     protected static final String POLICY_SKIP = "skip";
@@ -250,6 +255,22 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     }
 
     /**
+     * Reads {@link #DEFAULT_PERMISSIONS} and encodes each configured entry via
+     * {@link PermissionHelper#encode}, the same pattern every sibling data store applies inline
+     * when adding operator-configured roles on top of whatever the source system reports.
+     *
+     * @param paramMap the data store parameters
+     * @return the encoded default roles, or an empty list when the parameter is absent
+     */
+    protected List<String> getDefaultPermissions(final DataStoreParams paramMap) {
+        final List<String> roles = new ArrayList<>();
+        final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
+        StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
+                .of(stream -> stream.filter(StringUtil::isNotBlank).map(permissionHelper::encode).forEach(roles::add));
+        return roles;
+    }
+
+    /**
      * Gets the permissions for a drive item.
      *
      * @param client The Microsoft365Client.
@@ -267,11 +288,11 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         final List<String> permissions = new ArrayList<>();
         try {
             PermissionCollectionResponse response = client.getDrivePermissions(driveId, item.getId());
-            final Consumer<Permission> consumer = p -> {
-                if (p.getGrantedToV2() != null) {
-                    assignPermission(client, permissions, p);
-                }
-            };
+            // No grantedToV2 pre-check: a sharing-link permission has grantedToV2 null and link
+            // set, and assignPermission handles both shapes. Gating here made the link branch
+            // unreachable from this path while SharePointDocLibDataStore reached it, so the same
+            // file got a different ACL depending on which DataStore indexed it.
+            final Consumer<Permission> consumer = p -> assignPermission(client, permissions, p);
 
             // Handle pagination with odata.nextLink
             while (response != null && response.getValue() != null) {
@@ -303,73 +324,60 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     }
 
     /**
-     * Retrieves and processes permissions for a SharePoint site, converting them to role strings.
+     * Assigns the roles named by a permission to the given list.
      *
-     * @param client The Microsoft365Client instance to use for API calls
-     * @param siteId The ID of the SharePoint site
-     * @param paramMap the data store parameters, consulted for {@link #PERMISSION_FAILURE_POLICY}
-     * @return List of permission strings in the format "user:email" or "group:id"
-     */
-    protected List<String> getSitePermissions(final Microsoft365Client client, final String siteId, final DataStoreParams paramMap) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("Retrieving permissions for site - SiteId: {}", siteId);
-        }
-
-        final List<String> permissions = new ArrayList<>();
-        try {
-            PermissionCollectionResponse response = client.getSitePermissions(siteId);
-            final Consumer<Permission> consumer = p -> {
-                if (p.getGrantedToV2() != null) {
-                    assignPermission(client, permissions, p);
-                }
-            };
-
-            // Handle pagination with odata.nextLink
-            while (response != null && response.getValue() != null) {
-                response.getValue().forEach(consumer);
-
-                // Check if there's a next page
-                if (response.getOdataNextLink() == null || response.getOdataNextLink().isEmpty()) {
-                    // No more pages, exit loop
-                    break;
-                }
-                // Request the next page using a helper method in Microsoft365Client
-                try {
-                    response = client.getSitePermissionsByNextLink(siteId, response.getOdataNextLink());
-                } catch (final Exception e) {
-                    // A partial page must not be treated as the complete ACL: roles named only on
-                    // later pages would otherwise be silently dropped from the document's permissions.
-                    handlePermissionFailure(paramMap, siteId, e);
-                    break;
-                }
-            }
-
-            if (logger.isDebugEnabled()) {
-                logger.debug("Successfully retrieved {} permissions for site: {}", permissions.size(), siteId);
-            }
-        } catch (final Exception e) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Failed to retrieve permissions for site: {}", siteId, e);
-            } else {
-                logger.warn("Failed to retrieve permissions for site: {} - {}", siteId, e.getMessage());
-            }
-            handlePermissionFailure(paramMap, siteId, e);
-        }
-        return permissions;
-    }
-
-    /**
-     * Assigns a permission to a user or group.
+     * <p>Graph carries grantees in two fields: {@code grantedToV2} for a permission granted
+     * directly to one identity, and {@code grantedToIdentitiesV2} for the grantees of a link
+     * shared with specific people. Both are read. The deprecated {@code grantedTo} /
+     * {@code grantedToIdentities} pair is deliberately not read.
      *
      * @param client The Microsoft365Client.
      * @param permissions The list of permissions.
      * @param permission The permission to assign.
      */
     protected void assignPermission(final Microsoft365Client client, final List<String> permissions, final Permission permission) {
-        final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
+        final int before = permissions.size();
         if (permission.getGrantedToV2() != null) {
-            if (permission.getGrantedToV2().getUser() != null) {
-                final String oid = permission.getGrantedToV2().getUser().getId();
+            assignIdentity(client, permissions, permission.getGrantedToV2());
+        }
+        if (permission.getGrantedToIdentitiesV2() != null) {
+            permission.getGrantedToIdentitiesV2().forEach(identity -> {
+                if (identity != null) {
+                    assignIdentity(client, permissions, identity);
+                }
+            });
+        }
+        if (permissions.size() > before) {
+            // A named grantee is more specific than the link's scope; do not widen the ACL.
+            return;
+        }
+        if (permission.getLink() != null) {
+            final var link = permission.getLink();
+            if ("organization".equalsIgnoreCase(link.getScope())) {
+                permissions.add(ComponentUtil.getSystemHelper().getSearchRoleByGroup("EVERYONE_IN_TENANT"));
+            }
+            // "anonymous" ?
+        }
+    }
+
+    /**
+     * Assigns the role named by a single identity set. A user identity takes precedence over a
+     * group identity within one set.
+     *
+     * @param client The Microsoft365Client.
+     * @param permissions The list of permissions.
+     * @param identity The identity set to read.
+     */
+    protected void assignIdentity(final Microsoft365Client client, final List<String> permissions, final SharePointIdentitySet identity) {
+        final SystemHelper systemHelper = ComponentUtil.getSystemHelper();
+        if (identity.getUser() != null) {
+            final String oid = identity.getUser().getId();
+            // An unredeemed external invitee has a displayName/email but no directory object id;
+            // getSearchRoleByUser(null) reaches FessProp#getCanonicalLdapName, which NPEs on
+            // null.split(...) under the default ldap.ignore.netbios.name=true. Skip rather than
+            // encode a role that cannot be built -- and must not throw, or the whole document is
+            // dropped by the caller's outer catch.
+            if (StringUtil.isNotBlank(oid)) {
                 permissions.add(systemHelper.getSearchRoleByUser(oid));
                 final String principal = client.tryResolveUserPrincipalName(oid);
                 if (StringUtil.isNotBlank(principal) && !principal.equals(oid)) {
@@ -377,12 +385,20 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 }
                 if (logger.isDebugEnabled()) {
                     logger.debug("Assigned permission to user - ID: {}, Principal: {}", oid, principal);
-
                 }
-                return;
+            } else {
+                // A blank-id user must still be reported: it is a directory identity Graph could
+                // not resolve to an id (see the unredeemed-invitee case above), not one of the
+                // structurally-unmappable kinds below -- without this call it vanished with no
+                // line at any level.
+                logUnmappableIdentity(identity);
             }
-            if (permission.getGrantedToV2().getGroup() != null) {
-                final String gid = permission.getGrantedToV2().getGroup().getId();
+            return;
+        }
+        if (identity.getGroup() != null) {
+            final String gid = identity.getGroup().getId();
+            // Same hazard as the user branch above: a group identity with no id must not throw.
+            if (StringUtil.isNotBlank(gid)) {
                 permissions.add(systemHelper.getSearchRoleByGroup(gid));
                 final String principal = client.tryResolveGroupName(gid);
                 if (StringUtil.isNotBlank(principal) && !principal.equals(gid)) {
@@ -393,14 +409,72 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
                 }
                 return;
             }
+            // Blank-id group: fall through to logUnmappableIdentity below, same as the user case.
         }
-        if (permission.getLink() != null) {
-            final var link = permission.getLink();
-            if ("organization".equalsIgnoreCase(link.getScope())) {
-                permissions.add(systemHelper.getSearchRoleByGroup("EVERYONE_IN_TENANT"));
-            }
-            // "anonymous" ?
+        logUnmappableIdentity(identity);
+    }
+
+    /**
+     * Logs that a grantee could not be mapped to a search role, naming its principal kind.
+     *
+     * <p>Extracted out of {@link #assignIdentity} so a test can override it and record the
+     * calls: the debug log line it produces has no other assertable effect, so without this seam
+     * the entire production effect of reporting an unmappable grantee -- the actual deliverable
+     * here -- would have no coverage; deleting the call from {@code assignIdentity} would leave
+     * the suite green.
+     *
+     * @param identity The identity set to describe, when it names an unmappable principal.
+     */
+    protected void logUnmappableIdentity(final SharePointIdentitySet identity) {
+        if (!logger.isDebugEnabled()) {
+            return;
         }
+        final String kind = describeUnmappableIdentity(identity);
+        if (kind != null) {
+            logger.debug("Skipped a {} grantee: it carries no Entra object id, so it cannot become a search role.", kind);
+        }
+    }
+
+    /**
+     * Names the principal kind of an identity set this plugin cannot map to a Fess role, or
+     * {@code null} when the set names a directory user or group that it can map.
+     *
+     * <p>A {@code user} or {@code group} identity with a blank id is a directory identity Graph
+     * could not resolve to an id (for example an unredeemed external invitee); it is reported
+     * here even though its kind is otherwise mappable. SharePoint-local principals
+     * ({@code siteUser}, {@code siteGroup}, {@code sharePointGroup}) carry a site-local numeric id
+     * rather than an Entra object id, so there is nothing to encode as a search role. An
+     * {@code application} or {@code device} grantee names an Entra app registration or device
+     * object, not a person. All are reported at debug level rather than dropped silently, because
+     * an ACL that is empty for this reason looks identical to one that is empty because the drive
+     * item genuinely has no grantees.
+     *
+     * @param identity The identity set to inspect.
+     * @return the unmappable principal kind, or null when the set is mappable.
+     */
+    protected String describeUnmappableIdentity(final SharePointIdentitySet identity) {
+        if (identity.getUser() != null) {
+            return StringUtil.isBlank(identity.getUser().getId()) ? "user" : null;
+        }
+        if (identity.getGroup() != null) {
+            return StringUtil.isBlank(identity.getGroup().getId()) ? "group" : null;
+        }
+        if (identity.getSiteUser() != null) {
+            return "siteUser";
+        }
+        if (identity.getSiteGroup() != null) {
+            return "siteGroup";
+        }
+        if (identity.getSharePointGroup() != null) {
+            return "sharePointGroup";
+        }
+        if (identity.getApplication() != null) {
+            return "application";
+        }
+        if (identity.getDevice() != null) {
+            return "device";
+        }
+        return null;
     }
 
     /**

@@ -67,8 +67,6 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     protected static final String EXCLUDE_SITE_ID = "exclude_site_id";
     /** Number of concurrent threads for processing */
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
-    /** Default permissions to assign to crawled documents */
-    protected static final String DEFAULT_PERMISSIONS = "default_permissions";
     /** Flag to continue crawling on errors */
     protected static final String IGNORE_ERROR = "ignore_error";
     /** Regular expression pattern for files to include */

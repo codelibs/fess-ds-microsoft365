@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -75,8 +76,6 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     protected static final String IGNORE_SYSTEM_PAGES = "ignore_system_pages";
     /** Number of concurrent threads for processing */
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
-    /** Default permissions to assign to crawled pages */
-    protected static final String DEFAULT_PERMISSIONS = "default_permissions";
     /** Flag to continue crawling on errors */
     protected static final String IGNORE_ERROR = "ignore_error";
     /** Regular expression pattern for pages to include */
@@ -339,12 +338,11 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                         site.getDisplayName(), pageType, pageContent.length());
             }
 
-            // Handle permissions
-            final List<String> permissions = getPagePermissions(client, site.getId(), fullPage.getId(), paramMap);
-            if (logger.isDebugEnabled()) {
-                logger.debug("Initial permissions for page {} - Count: {}, Permissions: {}", fullPage.getId(), permissions.size(),
-                        permissions);
-            }
+            // Graph has no page-level permission endpoint, and the site-level one
+            // (Microsoft365Client's removed getSitePermissions) needed Sites.FullControl.All for
+            // application grants only, never user or group roles -- so a page carries no
+            // site-derived roles. default_permissions below is its only role source.
+            final List<String> permissions = new ArrayList<>();
 
             final PermissionHelper permissionHelper = ComponentUtil.getPermissionHelper();
             StreamUtil.split(paramMap.getAsString(DEFAULT_PERMISSIONS), ",")
@@ -655,29 +653,6 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         }
 
         return false;
-    }
-
-    /**
-     * Gets the permissions to index for a page.
-     *
-     * <p>Graph exposes no page-level permission list, so a page inherits the ACL of its
-     * site. This used to go through a client-side helper that emitted raw display names;
-     * those match no Fess role, so the ACL was inert. It now uses the shared
-     * {@link Microsoft365DataStore#getSitePermissions} path, which prefix-encodes ids the
-     * way every other data store does.</p>
-     *
-     * @param client the Microsoft 365 client
-     * @param siteId the ID of the site owning the page
-     * @param pageId the ID of the page, for logging only
-     * @param paramMap the data store parameters
-     * @return the roles to index, already encoded
-     */
-    protected List<String> getPagePermissions(final Microsoft365Client client, final String siteId, final String pageId,
-            final DataStoreParams paramMap) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("Resolving permissions for page {} from site {}", pageId, siteId);
-        }
-        return getSitePermissions(client, siteId, paramMap).stream().distinct().collect(Collectors.toList());
     }
 
     /**

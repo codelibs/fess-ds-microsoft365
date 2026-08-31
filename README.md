@@ -87,46 +87,140 @@ Each DataStore requires specific Microsoft Graph API permissions. Grant only the
 
 | DataStore | Required Permissions | Conditional Permissions |
 |-----------|---------------------|------------------------|
-| OneDriveDataStore | Files.Read.All | User.Read.All (*1), Group.Read.All (*2), Sites.Read.All (*3) |
-| OneNoteDataStore | Notes.Read.All | User.Read.All (*1), Group.Read.All (*2), Sites.Read.All (*4), Sites.FullControl.All (*4, *8) |
-| TeamsDataStore | Team.ReadBasic.All, Group.Read.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMember.Read.All, User.Read.All | Chat.Read.All (*5), Files.Read.All (*6) |
-| SharePointDocLibDataStore | Files.Read.All, Sites.Read.All (*7) | - |
-| SharePointListDataStore | Sites.Read.All (*7), Sites.FullControl.All (*8) | - |
-| SharePointPageDataStore | Sites.Read.All (*7), Sites.FullControl.All (*8) | - |
+| OneDriveDataStore | Files.Read.All, User.Read.All, Group.Read.All | Sites.Read.All (*1) |
+| OneNoteDataStore | Notes.Read.All | User.Read.All (*2), Group.Read.All (*3), Sites.Read.All (*4) |
+| TeamsDataStore | Team.ReadBasic.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMember.Read.All, Group.Read.All, User.Read.All | Chat.Read.All (*5), attachment permission (*6) |
+| SharePointDocLibDataStore | Sites.Read.All, User.Read.All, Group.Read.All | - |
+| SharePointListDataStore | Sites.Read.All (*7) | - |
+| SharePointPageDataStore | Sites.Read.All (*7) | - |
+
+`User.Read.All` and `Group.Read.All` are unconditional for OneDriveDataStore and
+SharePointDocLibDataStore: every drive-item ACL entry resolves its grantee's UPN or group name via
+`GET /users/{id}` / `GET /groups/{id}` (`processDriveItem` builds this ACL on every crawling mode,
+not just user/group drives), regardless of which crawling mode found the item. `Files.Read.All` is
+not listed for SharePointDocLibDataStore: the two endpoints it needs beyond site enumeration -
+`GET /sites/{id}/drives` and `GET /drives/{id}/items/root/permissions` - both accept `Sites.Read.All`,
+which the DataStore already needs to enumerate sites, so a separate `Files.Read.All` grant would buy
+nothing.
 
 **Conditional Permission Notes:**
-- (*1) Required when `user_drive_crawler=true` or `user_note_crawler=true` (default: true)
-- (*2) Required when `group_drive_crawler=true` or `group_note_crawler=true` (default: true)
-- (*3) Required when `shared_documents_drive_crawler=true` (default: true)
-- (*4) Required when `site_note_crawler=true` (default: true)
+- (*1) Required when `shared_documents_drive_crawler=true` (default: true). In that mode
+  OneDriveDataStore enumerates every SharePoint site (`GET /sites`) and every subsite (`GET
+  /sites/{site-id}/sites`, see the subsite note below) to find their document libraries; neither
+  call accepts `Files.Read.All` as an alternative.
+- (*2) Required when `user_note_crawler=true` (default: true)
+- (*3) Required when `group_note_crawler=true` (default: true)
+- (*4) Required when `site_note_crawler=true` (default: true), to resolve the root site
+  (`GET /sites/root`) that site notebooks are enumerated under
 - (*5) Required when `chat_id` is specified
-- (*6) Required when `append_attachment=true`
-- (*7) Can be replaced with `Sites.Selected` when `site_id` is specified (requires additional per-site configuration), **for reading site/list/page content only**. It does not satisfy (*8) below -- see the note under [Using Sites.Selected Permission](#using-sitesselected-permission).
-- (*8) SharePointListDataStore and SharePointPageDataStore each call Microsoft Graph's ["List permissions"](https://learn.microsoft.com/en-us/graph/api/site-list-permissions) API (`GET /sites/{site-id}/permissions`) to build every item's/page's ACL; OneNoteDataStore's site notebooks (`site_note_crawler=true`, the default) call the same endpoint, through the same `getSitePermissions` helper, to build their ACL. For that specific call, Microsoft documents `Sites.FullControl.All` as the only Application permission -- there is no lower option and `Sites.Selected` is not listed as an alternative. Without it the call returns `403` for every site, which is a permanent failure, not throttling. Under the default `permission_failure_policy=skip` this means SharePointListDataStore and SharePointPageDataStore index **zero documents**, because every item they index is site-scoped; for OneNoteDataStore it is narrower -- only the site notebooks are skipped, since user and group notebooks resolve their roles from data already in hand and never call this endpoint. See [Permanent 403s on SharePointListDataStore / SharePointPageDataStore](#permanent-403s-on-sharepointlistdatastore--sharepointpagedatastore) below.
+- (*6) TeamsDataStore fetches attachment content via `GET /shares/{id}/driveItem/content`, whose
+  Microsoft-documented Application permissions are `Files.ReadWrite.All` (least privileged) or
+  `Sites.ReadWrite.All` (higher) - a write-class grant, even though this plugin only reads the
+  attachment. `Files.Read.All` is not listed as acceptable for this call at all. `append_attachment`
+  defaults to `true`, so this permission is required unless you set `append_attachment=false`,
+  which skips attachment content entirely and keeps the grant read-only.
+- (*7) Can be replaced with `Sites.Selected` when `site_id` is specified - see
+  [Using Sites.Selected Permission](#using-sitesselected-permission) below.
+
+**Subsites:** `GET /sites/{site-id}/sites` recursion is used by OneDriveDataStore (in
+shared-documents mode), SharePointDocLibDataStore, SharePointListDataStore, and
+SharePointPageDataStore to discover every child site under a parent site. Each subsite it returns
+is treated as an ordinary site - itself enumerated for content, and itself capable of having
+further subsites - under the same `Sites.Read.All` (or `Sites.Selected`) grant.
 
 #### Using Sites.Selected Permission
 
-When `site_id` is specified, you can use `Sites.Selected` instead of `Sites.Read.All` for more restrictive access to site/list/page **content**:
+When `site_id` is specified, `Sites.Selected` is a genuine least-privilege alternative to
+`Sites.Read.All` for SharePointDocLibDataStore, SharePointListDataStore and SharePointPageDataStore:
 
 1. Grant `Sites.Selected` permission to your app registration in Azure Portal
 2. Use Microsoft Graph PowerShell or API to grant access to specific sites
 3. Explicitly allow access for each target site
 
+`Sites.Selected` cannot serve `GET /sites` (listing every site in the tenant), which is why it only
+helps when `site_id` restricts the crawl to sites you have explicitly granted the app access to;
+without `site_id`, these three DataStores still need `Sites.Read.All`.
+
 Reference: https://learn.microsoft.com/en-us/graph/permissions-reference#sitesselected
 
-> **`Sites.Selected` does not cover the ACL lookup.** SharePointListDataStore and
-> SharePointPageDataStore still need `Sites.FullControl.All` (see note *8 above) to call
-> `GET /sites/{site-id}/permissions`, regardless of whether `Sites.Selected` is used for content
-> access and regardless of what role the app was granted on the site through `Sites.Selected`.
-> Microsoft's own documentation for that specific API lists only `Sites.FullControl.All`; it does
-> not offer a `Sites.Selected`-based path. If you cannot grant `Sites.FullControl.All`, set
-> `permission_failure_policy=index_without_acl` for these two DataStores instead.
+> **No individual Microsoft Graph API reference page lists `Sites.Selected`** in its per-endpoint
+> permissions table - not `site-get`, not `list-list`, not `driveitem-list-permissions`, none of the
+> endpoints these three DataStores call. The `Sites.Selected` model is documented only in the
+> [permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#sitesselected)
+> and the site-level access-grant APIs, not as a row in any individual endpoint's table. Treat it as
+> Microsoft's documented site-access model rather than a per-endpoint guarantee.
+
+#### What ACL Each DataStore Can Produce
+
+An administrator needs to predict what roles a crawled document will carry, not just what
+permissions it took to crawl it:
+
+| DataStore | Roles on each document |
+|-----------|------------------------|
+| OneDriveDataStore | `GET /drives/.../permissions` (per-user/per-group grantees and organization-scope sharing links) plus `default_permissions` |
+| SharePointDocLibDataStore | `GET /drives/.../permissions` (per-user/per-group grantees and organization-scope sharing links) plus `default_permissions` |
+| SharePointListDataStore | `default_permissions` only |
+| SharePointPageDataStore | `default_permissions` only |
+| OneNoteDataStore | User/group notebooks: a role synthesized from the owner's id, plus `default_permissions`. Site notebooks: `default_permissions` only |
+| TeamsDataStore | Channel or chat membership plus `default_permissions` |
+
+Microsoft Graph exposes no app-only way to read SharePoint's own user and group role assignments
+for a site, list, list item or page. Microsoft's own Azure AI Search SharePoint ACL indexer
+requires `Sites.FullControl.All` or a full-control-class `Sites.Selected` grant to do the
+equivalent lookup, in every documented scenario. This plugin does not attempt it: for
+SharePointListDataStore, SharePointPageDataStore, and OneNoteDataStore's site notebooks,
+`default_permissions` is the only way those documents get an audience - leave it unset and they
+are indexed with no role at all, which means they are findable by **nobody**, not by everybody.
+
+**Upgrading from 15.8.0:** SharePointListDataStore and SharePointPageDataStore documents were
+already being indexed, and already carried a `default_permissions`-plus-config-Permissions ACL,
+before this release. The removed site-permissions lookup caught every exception it could raise -
+including the `403` a tenant without `Sites.FullControl.All` got - logged it at `WARN`, and
+returned an empty list rather than failing the item; `default_permissions` and the data config's
+Permissions field were appended to that empty list either way, and the item or page was indexed.
+So their audience does not change on upgrade. What does change: `Sites.FullControl.All` is no
+longer needed at all, and the per-site `Failed to retrieve permissions for site` `WARN` these
+tenants have been seeing on every crawl is gone, because the call that produced it no longer
+exists.
+
+The one genuinely new thing in the index after upgrading is OneNote site notebooks. They were
+missing under 15.8.0 because the notebook, section, page, and content requests for them were sent
+to the wrong Graph path and 404'd - not because of a permissions problem. See [Re-crawling after
+upgrading to this fix](#re-crawling-after-upgrading-to-this-fix) below for how that ACL is built.
+
+As always: if `default_permissions` is left unset on SharePointListDataStore,
+SharePointPageDataStore, or OneNoteDataStore's site notebooks, those documents carry no role at
+all and are searchable by nobody, and nothing in the logs flags it - only this note does.
+
+**Organization-shared OneDrive files:** a document whose only Graph permission is an
+organization-scope sharing link (`link.scope == "organization"`, i.e. "Anyone in your organization
+with the link") previously carried no roles at all on the OneDrive path, so it was findable by
+nobody. It now carries a single role, the group named `EVERYONE_IN_TENANT`, which also matches
+nobody unless the operator creates an actual group named `EVERYONE_IN_TENANT` and maps it to a
+Fess role. This is not a loss of visibility (those files were already unfindable), but it is the
+only way organization-shared OneDrive files become searchable, and the sentinel group name appears
+nowhere else in this document.
+
+**Precedence between a named grantee and a link's scope:** when one permission carries both a
+named grantee (`grantedToV2`, or an entry in `grantedToIdentitiesV2`) and a `link`, only the
+grantee's role is added; the permission does not also widen the ACL to the link's scope. This is
+deliberate and fail-closed - a permission that already names who it is for should not also be
+read as "anyone in the organization" - but it narrows one ACL shape SharePointDocLibDataStore
+already produced before this branch. Its root-drive permission lookup has always run through this
+same code, and the previous version of that code ignored `grantedToIdentitiesV2` entirely, so a root
+permission shaped like `{link: {scope: "organization"}, grantedToIdentitiesV2: [user A]}` used to
+contribute `EVERYONE_IN_TENANT` in addition to A's role. Now it contributes only A's role.
+SharePointDocLibDataStore indexes one document per document library (library metadata, not its
+individual files - see the Data Store Types table below), and computes that document's entire ACL
+once, from the drive's root permissions. So after upgrading, a document library whose root
+permission names grantees alongside an organization-scope link loses `EVERYONE_IN_TENANT` from
+that library's indexed document.
 
 #### Minimum Permissions Examples
 
 **OneDrive only (user drives):**
 ```
-Files.Read.All, User.Read.All
+Files.Read.All, User.Read.All, Group.Read.All
 ```
 
 **SharePoint Lists (specific site):**
@@ -134,12 +228,12 @@ Files.Read.All, User.Read.All
 Sites.Selected (with per-site configuration)
 ```
 
-**Teams (channels only, no chat):**
+**Teams (channels only, no chat, read-only):**
 ```
-Team.ReadBasic.All, Group.Read.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMember.Read.All, User.Read.All
+Team.ReadBasic.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMember.Read.All, Group.Read.All, User.Read.All
 ```
-
-For detailed permission documentation, see [PERMISSIONS.md](PERMISSIONS.md).
+Requires `append_attachment=false` (default is `true`) to stay within this permission set - see
+conditional note (*6) above.
 
 ### Basic Configuration
 
@@ -422,34 +516,29 @@ behave the same way on another.
 
 #### Permission lookup failures
 
-This applies to OneDriveDataStore, SharePointDocLibDataStore, SharePointListDataStore, and
-SharePointPageDataStore, where a document's ACL comes from a separate Microsoft Graph call
-(listing its permissions) that can fail on its own even when the document itself was read
-successfully. That failure is often a transient `429` or `503` under throttling, but for
-SharePointListDataStore and SharePointPageDataStore it can also be a permanent `403` - see
-[Permanent 403s on SharePointListDataStore / SharePointPageDataStore](#permanent-403s-on-sharepointlistdatastore--sharepointpagedatastore)
-below.
+This applies to OneDriveDataStore and SharePointDocLibDataStore, where a document's ACL comes from
+a separate Microsoft Graph call (`GET /drives/{id}/items/{id}/permissions`, listing its
+permissions) that can fail on its own even when the document itself was read successfully -
+typically a transient `429` or `503` under throttling.
 
-OneNoteDataStore is a mixed case. Its user and group notebooks resolve permissions from data
-already in hand while enumerating - the same mechanism OneDriveDataStore uses for its own
-personal and group drives, synthesizing a role from the owner's ID rather than calling Graph for
-it - so `permission_failure_policy` has no effect on them. Its site notebooks are different: they
-call the same `getSitePermissions` helper, and the same `GET /sites/{site-id}/permissions` Graph
-call, that SharePointListDataStore and SharePointPageDataStore use, so `permission_failure_policy`
-governs them too, including the same permanent-`403` risk covered below. A failure resolving the
-site's ACL only skips the site
-notebooks; user and group notebook crawling continues regardless. TeamsDataStore does not call
-any of the permission-fetch methods this parameter governs either, so this parameter has no
-effect for it too - but not because TeamsDataStore has no permission-fetch failure path of its
-own. It makes a separate Graph call per message (listing the channel's members, to resolve that
-message's roles), and a failure there is not governed by `permission_failure_policy` at all: it
-propagates out of the per-channel handler as a `DataStoreException`, which aborts the rest of
-that channel's messages rather than skipping just the one message.
+SharePointListDataStore, SharePointPageDataStore, and OneNoteDataStore do not call this or any
+other permission-fetch endpoint, so `permission_failure_policy` has no effect on any of them:
+SharePointListDataStore and SharePointPageDataStore rely solely on `default_permissions` (see
+[What ACL Each DataStore Can Produce](#what-acl-each-datastore-can-produce) above); OneNoteDataStore's
+user and group notebooks resolve permissions from data already in hand while enumerating - the
+same mechanism OneDriveDataStore uses for its own personal and group drives, synthesizing a role
+from the owner's ID rather than calling Graph for it - and its site notebooks rely solely on
+`default_permissions` too. TeamsDataStore does not call any of the permission-fetch methods this
+parameter governs either, so this parameter has no effect for it too - but not because
+TeamsDataStore has no permission-fetch failure path of its own. It makes a separate Graph call per
+message (listing the channel's members, to resolve that message's roles), and a failure there is
+not governed by `permission_failure_policy` at all: it propagates out of the per-channel handler as
+a `DataStoreException`, which aborts the rest of that channel's messages rather than skipping just
+the one message.
 
 `permission_failure_policy` controls what happens when the permissions call fails for the
-DataStores and paths it covers - OneDriveDataStore, SharePointDocLibDataStore,
-SharePointListDataStore, SharePointPageDataStore, and OneNoteDataStore's site notebooks - and
-takes one of two values:
+DataStores and paths it covers - OneDriveDataStore and SharePointDocLibDataStore - and takes one of
+two values:
 
 | Value | Behavior |
 |-------|----------|
@@ -467,27 +556,6 @@ document from every user's search results until it is re-crawled successfully, a
 everyone that setting covers - more widely than intended, because the per-user/per-group roles
 that should have narrowed access down were never added. Choose `index_without_acl` only if
 surfacing a document without its full ACL is preferable to not surfacing it at all.
-
-##### Permanent 403s on SharePointListDataStore / SharePointPageDataStore
-
-`GET /sites/{site-id}/permissions`, the Graph call both of these DataStores use to build a
-document's ACL, requires the `Sites.FullControl.All` Application permission - see note (*8) in
-[Required Permissions by DataStore](#required-permissions-by-datastore). If the app registration
-was granted only `Sites.Read.All` (or `Sites.Selected`), that call returns `403` for *every*
-site, not just occasionally under load. Under the default `permission_failure_policy=skip`, that
-means SharePointListDataStore and SharePointPageDataStore index **zero documents**: every item
-fails the ACL lookup and lands in the failed URL list.
-
-OneNoteDataStore's site notebooks call the same endpoint (see note (*8) above) and hit the same
-`403` under the same conditions, but the blast radius is smaller: `storeSiteNotes` catches the
-failure, logs a `WARN`, and skips only the site notebooks. It does not propagate into
-`storeUsersNotes` or `storeGroupsNotes`, so user and group notebooks are still crawled and
-indexed normally even when the site notebooks can't be.
-
-There are two ways to fix this:
-- Grant the app registration `Sites.FullControl.All` and re-run the crawl, or
-- Set `permission_failure_policy=index_without_acl` on the affected DataStore(s) instead, to
-  index documents without a complete ACL rather than skip them (see the tradeoffs above).
 
 `ignore_error` and `permission_failure_policy` cover different failures. `ignore_error` governs
 failures while enumerating sites, drives, and lists (for example, a site that fails to list);
@@ -516,12 +584,12 @@ documents indexed by an older version keep their old ACL until they are re-crawl
   notebook, section, page, and page-content request for them to the wrong Graph path; Graph
   returned `404` for all of it, and that was logged only at `debug` level, so the crawl reported
   success while indexing zero notebooks. This is not an ACL correction like the ones above - it
-  is the first time these notebooks are indexed at all. Site notebooks also now attempt to carry
-  the site's permissions instead of an unconditionally empty ACL (see above and the "Permission
-  Mapping" note under OneNote Implementation Details) - though depending on the tenant, that
-  lookup can itself come back empty, in which case the notebooks are indexed with an empty ACL and
-  a `WARN` is logged - so `permission_failure_policy` governs the lookup failure case for them for
-  the first time too. A `404` that persists after re-crawling for a site's or group's notebooks is
+  is the first time these notebooks are indexed at all. Site notebooks previously carried an
+  unconditionally empty ACL; they now carry `default_permissions` when it is configured (see
+  [What ACL Each DataStore Can Produce](#what-acl-each-datastore-can-produce) above) -
+  `permission_failure_policy` still has no effect on OneNoteDataStore, because it never calls a
+  Graph permission-fetch endpoint for any notebook type. A `404` that persists after re-crawling
+  for a site's or group's notebooks is
   now logged at `WARN` and means the site or group genuinely has no notebooks, not that the
   crawler is asking the wrong Graph path; a user's `404` stays at `debug` (see "404 Visibility"
   below).
@@ -669,15 +737,12 @@ The OneNoteDataStore provides comprehensive OneNote notebook crawling with the f
 **Core Functionality:**
 - **Multi-Source Notebook Crawling**: Processes notebooks from three distinct sources in a systematic order
 - **Aggregated Content Extraction**: Consolidates all sections and pages within each notebook into searchable content
-- **Permission Mapping**: Site notebooks are indexed with whatever `GET
-  /sites/{site-id}/permissions` returns, via the same `getSitePermissions` helper
-  SharePointListDataStore and SharePointPageDataStore use; user and group notebooks get a role
-  synthesized from the owner's ID instead. Per Microsoft's documented response shape for that
-  endpoint, it may return only application grants and no user/group grantees at all, depending on
-  the tenant and how the site is shared - in which case the site's notebooks end up with an empty
-  ACL and will not match any user's role filter. This has not been verified against a live tenant
-  with user/group site permissions. When the result is empty, a `WARN` is logged so the condition
-  is visible instead of passing silently.
+- **Permission Mapping**: User and group notebooks get a role synthesized from the owner's ID,
+  plus `default_permissions` when configured. Site notebooks carry no per-user or per-group role
+  at all - Microsoft Graph exposes no app-only way to read a SharePoint site's user and group role
+  assignments (see [What ACL Each DataStore Can Produce](#what-acl-each-datastore-can-produce) in
+  the permissions section) - so `default_permissions` is their only role source; leave it unset
+  and site notebooks are indexed but findable by nobody.
 
 **Crawling Modes (Processing Order):**
 1. **Site Notebooks**: Crawls notebooks at the root SharePoint site level (`/sites/root/onenote/notebooks`)

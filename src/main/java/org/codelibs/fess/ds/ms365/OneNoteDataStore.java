@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,6 +23,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -37,6 +39,7 @@ import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
+import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 
@@ -198,27 +201,11 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             return;
         }
 
-        final List<String> roles;
-        try {
-            // Notebooks under a site inherit the site's ACL. Indexing them with an empty role
-            // list would hide them from every user who has roles at all.
-            roles = getSitePermissions(client, root.getId(), paramMap);
-        } catch (final PermissionUnavailableException e) {
-            // storeData runs storeSiteNotes, storeUsersNotes and storeGroupsNotes one after
-            // another inside the same try block. Letting this propagate would abort user and
-            // group notebook crawling too, not just site notebooks, so it is caught here and
-            // only site notebooks are skipped.
-            logger.warn("Skipping site notebooks: unable to resolve permissions for site: {}", root.getId(), e);
-            return;
-        }
-        if (roles.isEmpty()) {
-            // GET /sites/{site-id}/permissions succeeding with an empty result is not an error --
-            // it is Microsoft's documented shape for this endpoint on a site with no per-user/group
-            // grantees for it to report. But it leaves the notebook with no ACL, so it is worth
-            // surfacing rather than passing silently.
-            logger.warn("Site {} returned no permissions; its notebooks will be indexed with an empty ACL "
-                    + "and will not match any user's role filter.", root.getId());
-        }
+        // Graph has no user/group role-assignment endpoint for a site that this plugin can call
+        // without Sites.FullControl.All (see Microsoft365Client's removed getSitePermissions),
+        // so site notebooks carry no owner-derived roles. default_permissions is their only role
+        // source.
+        final List<String> roles = getDefaultPermissions(paramMap);
         getNotebooks(client, NotebookScope.SITE, root.getId(), notebook -> executorService.execute(() -> processNotebook(dataConfig,
                 callback, paramMap, scriptMap, defaultDataMap, client, NotebookScope.SITE, root.getId(), notebook, roles)));
     }
@@ -243,7 +230,11 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         }
 
         getLicensedUsers(client, user -> {
-            final List<String> roles = getUserRoles(user);
+            // A user notebook already derives roles from its owner; default_permissions adds to
+            // that list, it does not replace it. getUserRoles returns an immutable singleton
+            // list, so the combined list is built fresh here rather than mutated in place.
+            final List<String> roles = new ArrayList<>(getUserRoles(user));
+            roles.addAll(getDefaultPermissions(paramMap));
 
             if (logger.isDebugEnabled()) {
                 logger.debug("Processing notebooks for user: {} (ID: {})", user.getDisplayName(), user.getId());
@@ -283,7 +274,11 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         }
 
         getMicrosoft365Groups(client, group -> {
-            final List<String> roles = getGroupRoles(group);
+            // A group notebook already derives roles from its owner; default_permissions adds to
+            // that list, it does not replace it. getGroupRoles returns an immutable singleton
+            // list, so the combined list is built fresh here rather than mutated in place.
+            final List<String> roles = new ArrayList<>(getGroupRoles(group));
+            roles.addAll(getDefaultPermissions(paramMap));
 
             if (logger.isDebugEnabled()) {
                 logger.debug("Processing notebooks for group: {} (ID: {})", group.getDisplayName(), group.getId());
@@ -356,7 +351,20 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             notebooksMap.put(NOTEBOOK_CREATED, notebook.getCreatedDateTime());
             notebooksMap.put(NOTEBOOK_LAST_MODIFIED, notebook.getLastModifiedDateTime());
             notebooksMap.put(NOTEBOOK_WEB_URL, url);
-            notebooksMap.put(NOTEBOOK_ROLES, roles);
+
+            // roles may be shared across concurrent notebook-processing threads for the same
+            // owner (storeUsersNotes/storeGroupsNotes build it once per user/group before
+            // dispatching one executorService task per notebook), so it must not be mutated in
+            // place here. The data config's own Permissions field -- seeded into defaultDataMap
+            // under the role index field -- is folded in the same way every sibling data store
+            // folds it, so it is not silently discarded when the script maps role=notebook.roles.
+            final FessConfig fessConfig = ComponentUtil.getFessConfig();
+            final List<String> combinedRoles = new ArrayList<>(roles);
+            if (defaultDataMap.get(fessConfig.getIndexFieldRole()) instanceof final List<?> roleTypeList) {
+                roleTypeList.stream().map(s -> (String) s).forEach(combinedRoles::add);
+            }
+            final List<String> finalRoles = combinedRoles.stream().distinct().collect(Collectors.toList());
+            notebooksMap.put(NOTEBOOK_ROLES, finalRoles);
 
             resultMap.put(NOTEBOOK, notebooksMap);
 

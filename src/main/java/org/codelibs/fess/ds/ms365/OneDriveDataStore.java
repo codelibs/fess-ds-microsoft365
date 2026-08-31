@@ -114,8 +114,6 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected static final String URL_FILTER = "url_filter";
     /** Parameter name for the drive ID. */
     protected static final String DRIVE_ID = "drive_id";
-    /** Parameter name for default permissions. */
-    protected static final String DEFAULT_PERMISSIONS = "default_permissions";
     /** Parameter name for the number of threads. */
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
     /** Parameter name for enabling the shared documents drive crawler. */
