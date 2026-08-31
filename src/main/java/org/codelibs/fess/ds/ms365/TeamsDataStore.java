@@ -1084,7 +1084,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
         final Map<String, Object> resultMap = new LinkedHashMap<>(paramMap.asMap());
         final Map<String, Object> messageMap = new HashMap<>();
         final StatsKeyObject statsKey = new StatsKeyObject(message.getWebUrl());
-        paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
+        final DataStoreParams localParams = newStatsParams(paramMap, statsKey);
 
         try {
             crawlerStatsHelper.begin(statsKey);
@@ -1151,7 +1151,7 @@ public class TeamsDataStore extends Microsoft365DataStore {
                 statsKey.setUrl(statsUrl);
             }
 
-            callback.store(paramMap, dataMap);
+            callback.store(localParams, dataMap);
             crawlerStatsHelper.record(statsKey, StatsAction.FINISHED);
 
             if (logger.isDebugEnabled()) {

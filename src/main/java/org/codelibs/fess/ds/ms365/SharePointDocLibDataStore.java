@@ -291,7 +291,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
         final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
         final StatsKeyObject statsKey = new StatsKeyObject(docLibUrl);
-        paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
+        final DataStoreParams localParams = newStatsParams(paramMap, statsKey);
 
         if (logger.isDebugEnabled()) {
             logger.debug("Processing document library - Name: {}, ID: {}, URL: {}, Created: {}, Modified: {}", drive.getName(),
@@ -366,7 +366,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
                 logger.debug("Storing document library data: {}", dataMap);
             }
 
-            callback.store(paramMap, dataMap);
+            callback.store(localParams, dataMap);
             crawlerStatsHelper.record(statsKey, StatsAction.FINISHED);
 
             if (logger.isDebugEnabled()) {

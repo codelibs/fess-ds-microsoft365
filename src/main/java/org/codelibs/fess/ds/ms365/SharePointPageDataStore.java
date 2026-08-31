@@ -261,7 +261,7 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
         final Map<String, Object> dataMap = new HashMap<>(defaultDataMap);
 
         final StatsKeyObject statsKey = new StatsKeyObject(pageUrl);
-        paramMap.put(Constants.CRAWLER_STATS_KEY, statsKey);
+        final DataStoreParams localParams = newStatsParams(paramMap, statsKey);
 
         try {
             crawlerStatsHelper.begin(statsKey);
@@ -365,7 +365,7 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
                 statsKey.setUrl(statsUrl);
             }
 
-            callback.store(paramMap, dataMap);
+            callback.store(localParams, dataMap);
             crawlerStatsHelper.record(statsKey, StatsAction.FINISHED);
 
             if (logger.isDebugEnabled()) {

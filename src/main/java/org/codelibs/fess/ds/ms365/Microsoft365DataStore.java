@@ -462,6 +462,48 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     }
 
     /**
+     * Returns a per-document copy of {@code paramMap} carrying {@code statsKey} under
+     * {@link Constants#CRAWLER_STATS_KEY}, for the single {@code callback.store} call that
+     * document makes.
+     *
+     * <p>
+     * The stats key identifies one document for statistics and logging; it is not crawl state to
+     * be shared. Every data store in this repository dispatches its per-document work to a pool
+     * of {@code number_of_threads} workers -- see {@link #newFixedThreadPool} -- that all receive
+     * the same {@code paramMap} instance, so writing the key straight onto that instance lets one
+     * worker overwrite another's between the write and the {@code callback.store} that consumes
+     * it. Data stores that declare no executor at all -- {@code CsvDataStore},
+     * {@code DatabaseDataStore}, {@code JsonDataStore}, {@code GitDataStore} -- write the key
+     * directly and are correct doing so; the multi-threaded {@code ConfluenceDataStore} in
+     * fess-ds-atlassian takes this same copy. Every store here is multi-threaded, so all of them
+     * follow the latter.
+     * </p>
+     *
+     * <p>
+     * {@link DataStoreParams#newInstance()} is a genuine shallow copy, not a view, so the copy
+     * still carries every ordinary parameter a callback or an ingester reads while its key stays
+     * invisible to the other workers. One side effect is worth stating: because the key is now
+     * never written to the shared map, the {@code new LinkedHashMap<>(paramMap.asMap())} that
+     * seeds each store's script scope can no longer copy it there. Groovy could not reach it by
+     * name -- {@code "crawler.stats.key"} contains dots, so the name resolves as property
+     * navigation rather than as a binding -- but {@code AbstractDataStore#convertValue} returns a
+     * value verbatim when a script template matches a resultMap key exactly, so a scriptMap entry
+     * of {@code field=crawler.stats.key} did index the object, and under
+     * {@code number_of_threads > 1} the instance it indexed could have belonged to a different
+     * document.
+     * </p>
+     *
+     * @param paramMap the data store parameters shared by every worker thread
+     * @param statsKey the stats key identifying the one document about to be stored
+     * @return a copy of {@code paramMap} carrying {@code statsKey}
+     */
+    protected DataStoreParams newStatsParams(final DataStoreParams paramMap, final StatsKeyObject statsKey) {
+        final DataStoreParams localParams = paramMap.newInstance();
+        localParams.put(Constants.CRAWLER_STATS_KEY, statsKey);
+        return localParams;
+    }
+
+    /**
      * Folds the data config's own Permissions field -- seeded into {@code defaultDataMap} under
      * the role index field -- into a document's role list.
      *
