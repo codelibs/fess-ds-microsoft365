@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365.client;
 
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.Collections;
@@ -24,7 +26,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.util.ComponentUtil;
-import org.codelibs.fess.ds.microsoft365.UnitDsTestCase;
+import org.codelibs.fess.ds.ms365.UnitDsTestCase;
 
 import com.microsoft.graph.models.Channel;
 import com.microsoft.graph.models.Drive;
@@ -71,11 +73,9 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         super.tearDown(testInfo);
     }
 
+    @Test
     public void test_getUsers() {
-        if (client == null) {
-            assertTrue("No client", true);
-            return;
-        }
+        Assumptions.assumeTrue(client != null, "No client");
 
         client.getUsers(Collections.emptyList(), u -> {
             logger.info(ToStringBuilder.reflectionToString(u));
@@ -89,11 +89,9 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         });
     }
 
+    @Test
     public void test_getGroups() {
-        if (client == null) {
-            assertTrue("No client", true);
-            return;
-        }
+        Assumptions.assumeTrue(client != null, "No client");
 
         client.getGroups(Collections.emptyList(), g -> {
             logger.info(ToStringBuilder.reflectionToString(g));
@@ -101,11 +99,9 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         });
     }
 
+    @Test
     public void test_getDrives() {
-        if (client == null) {
-            assertTrue("No client", true);
-            return;
-        }
+        Assumptions.assumeTrue(client != null, "No client");
 
         client.getDrives(d -> {
             logger.info(ToStringBuilder.reflectionToString(d));
@@ -114,11 +110,9 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         });
     }
 
+    @Test
     public void test_getTeams() {
-        if (client == null) {
-            assertTrue("No client", true);
-            return;
-        }
+        Assumptions.assumeTrue(client != null, "No client");
 
         client.getTeams(Collections.emptyList(), g -> {
             logger.info(ToStringBuilder.reflectionToString(g));
@@ -144,11 +138,9 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
         });
     }
 
+    @Test
     public void test_getChats() {
-        if (client == null) {
-            assertTrue("No client", true);
-            return;
-        }
+        Assumptions.assumeTrue(client != null, "No client");
 
         final String chatId = "chat id";
         client.getChatMessages(Collections.emptyList(), m -> {
@@ -161,6 +153,7 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
     /**
      * Test that DEFAULT_CACHE_SIZE is an int constant and has the correct value.
      */
+    @Test
     public void test_defaultCacheSizeConstant() {
         // Verify that DEFAULT_CACHE_SIZE is the expected value
         assertEquals("DEFAULT_CACHE_SIZE should be 10000", 10000, Microsoft365Client.DEFAULT_CACHE_SIZE);
@@ -172,15 +165,13 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
     /**
      * Test that client uses default cache size when no cache_size parameter is provided.
      */
+    @Test
     public void test_clientUsesDefaultCacheSize() {
         String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
         String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
 
-        if (tenant == null || clientId == null || clientSecret == null) {
-            assertTrue("No credentials - skipping test", true);
-            return;
-        }
+        Assumptions.assumeTrue(tenant != null && clientId != null && clientSecret != null, "No credentials - skipping test");
 
         DataStoreParams params = new DataStoreParams();
         params.put(Microsoft365Client.TENANT_PARAM, tenant);
@@ -209,15 +200,13 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
     /**
      * Test that client uses custom cache size when cache_size parameter is provided.
      */
+    @Test
     public void test_clientUsesCustomCacheSize() {
         String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
         String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
 
-        if (tenant == null || clientId == null || clientSecret == null) {
-            assertTrue("No credentials - skipping test", true);
-            return;
-        }
+        Assumptions.assumeTrue(tenant != null && clientId != null && clientSecret != null, "No credentials - skipping test");
 
         DataStoreParams params = new DataStoreParams();
         params.put(Microsoft365Client.TENANT_PARAM, tenant);
@@ -246,15 +235,13 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
      * Test that close() method properly invalidates all caches.
      * This test verifies the fix for the resource leak bug.
      */
+    @Test
     public void test_closeInvalidatesAllCaches() {
         String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
         String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
 
-        if (tenant == null || clientId == null || clientSecret == null) {
-            assertTrue("No credentials - skipping test", true);
-            return;
-        }
+        Assumptions.assumeTrue(tenant != null && clientId != null && clientSecret != null, "No credentials - skipping test");
 
         DataStoreParams params = new DataStoreParams();
         params.put(Microsoft365Client.TENANT_PARAM, tenant);
@@ -294,15 +281,13 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
      * Test that caches work correctly and can be invalidated.
      * This is an integration test that verifies cache behavior.
      */
+    @Test
     public void test_cacheInvalidationPreventsMemoryLeak() {
         String tenant = System.getenv(Microsoft365Client.TENANT_PARAM);
         String clientId = System.getenv(Microsoft365Client.CLIENT_ID_PARAM);
         String clientSecret = System.getenv(Microsoft365Client.CLIENT_SECRET_PARAM);
 
-        if (tenant == null || clientId == null || clientSecret == null) {
-            assertTrue("No credentials - skipping test", true);
-            return;
-        }
+        Assumptions.assumeTrue(tenant != null && clientId != null && clientSecret != null, "No credentials - skipping test");
 
         DataStoreParams params = new DataStoreParams();
         params.put(Microsoft365Client.TENANT_PARAM, tenant);

@@ -8,10 +8,10 @@ on:
     branches:
     - master
     - "*.x"
+  # No branch filter: `branches` here filters on the PR's base, so a stacked PR
+  # whose base is a feature branch would get no CI at all until the branch under
+  # it merged. `push` keeps its filter so feature-branch pushes do not double-build.
   pull_request:
-    branches:
-    - master
-    - "*.x"
 
 jobs:
   build:
@@ -41,5 +41,7 @@ jobs:
       run: |
         cd fess-parent
         mvn install -Dgpg.skip=true
+    - name: Check formatting
+      run: mvn -B formatter:validate --file pom.xml
     - name: Build with Maven
-      run: mvn -B package --file pom.xml
+      run: mvn -B verify --file pom.xml

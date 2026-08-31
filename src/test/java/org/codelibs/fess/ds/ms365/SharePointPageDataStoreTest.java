@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.ArrayList;
@@ -28,7 +29,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.entity.DataStoreParams;
-import org.codelibs.fess.ds.microsoft365.UnitDsTestCase;
 
 import com.microsoft.graph.models.BaseSitePage;
 import com.microsoft.graph.models.CanvasLayout;
@@ -74,10 +74,12 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         super.tearDown(testInfo);
     }
 
+    @Test
     public void test_getName() {
         assertEquals("SharePointPageDataStore", dataStore.getName());
     }
 
+    @Test
     public void test_getSiteId() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("site_id", "test-site-id");
@@ -86,6 +88,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertEquals("test-site-id", siteId);
     }
 
+    @Test
     public void test_isExcludedSite() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_site_id", "site1,site2,site3");
@@ -102,6 +105,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isExcludedSite(paramMap, site2));
     }
 
+    @Test
     public void test_isExcludedSite_byName() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("exclude_site_id", "Test.*");
@@ -118,6 +122,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isExcludedSite(paramMap, site2));
     }
 
+    @Test
     public void test_isSystemPage() {
         final BaseSitePage page1 = createBaseSitePage("page1", "Regular Page", "https://site.sharepoint.com/sitepages/page1.aspx");
         final BaseSitePage page2 = createBaseSitePage("page2", "System Page", "https://site.sharepoint.com/_layouts/15/start.aspx");
@@ -130,6 +135,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isSystemPage(page4));
     }
 
+    @Test
     public void test_determinePageType() {
         final SitePage newsPage = createSitePage("page1", "News Article");
         // newsPage.setPromotionKind(com.microsoft.graph.models.PagePromotionType.NEWS_POST); // Enum value may not exist
@@ -143,6 +149,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertEquals("page", dataStore.determinePageType(basePage));
     }
 
+    @Test
     public void test_isTargetPage_systemPages() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("ignore_system_pages", "true");
@@ -154,6 +161,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isTargetPage(paramMap, systemPage, null, null));
     }
 
+    @Test
     public void test_isTargetPage_pageTypeFilter() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("page_type_filter", "article");
@@ -169,6 +177,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isTargetPage(paramMap, basePage, null, null));
     }
 
+    @Test
     public void test_isTargetPage_urlPatterns() {
         final DataStoreParams paramMap = new DataStoreParams();
 
@@ -184,6 +193,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isTargetPage(paramMap, regularPage, includePattern, excludePattern));
     }
 
+    @Test
     public void test_getPattern() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("include_pattern", ".*\\.aspx$");
@@ -202,6 +212,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(excludePattern.matcher("regular-page.aspx").find());
     }
 
+    @Test
     public void test_getPattern_invalid() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("invalid_pattern", "[invalid");
@@ -210,6 +221,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertNull(pattern);
     }
 
+    @Test
     public void test_extractPageContent_basicFields() {
         final SitePage page = createSitePageWithContent("page1", "Test Title", "Test description");
 
@@ -219,6 +231,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertTrue(content.contains("Test description"));
     }
 
+    @Test
     public void test_extractPageContent_withCanvasLayout() {
         final SitePage page = createSitePageWithCanvasLayout("page1", "Test Title");
 
@@ -229,6 +242,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         // assertTrue(content.contains("Standard web part data")); // Data not set due to type mismatch
     }
 
+    @Test
     public void test_extractWebPartContent_textWebPart() {
         final StringBuilder content = new StringBuilder();
         final TextWebPart textPart = new TextWebPart();
@@ -245,6 +259,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(result.contains("<strong>"));
     }
 
+    @Test
     public void test_extractWebPartContent_standardWebPart() {
         final StringBuilder content = new StringBuilder();
         final StandardWebPart stdPart = new StandardWebPart();
@@ -260,6 +275,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertTrue(result.isEmpty());
     }
 
+    @Test
     public void test_extractDataFromObject_map() {
         final StringBuilder content = new StringBuilder();
         final Map<String, Object> data = new HashMap<>();
@@ -277,6 +293,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(result.contains("550e8400-e29b-41d4-a716-446655440000"));
     }
 
+    @Test
     public void test_extractDataFromObject_list() {
         final StringBuilder content = new StringBuilder();
         final List<Object> data = new ArrayList<>();
@@ -292,6 +309,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(result.contains("123"));
     }
 
+    @Test
     public void test_isGuidOrId() {
         // Test GUID patterns
         assertTrue(dataStore.isGuidOrId("550e8400-e29b-41d4-a716-446655440000"));
@@ -312,6 +330,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isGuidOrId(null));
     }
 
+    @Test
     public void test_isIgnoreError() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("ignore_error", "true");
@@ -326,6 +345,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isIgnoreError(paramMap3)); // default is false
     }
 
+    @Test
     public void test_isIgnoreSystemPages() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("ignore_system_pages", "true");
@@ -340,6 +360,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isIgnoreSystemPages(paramMap3)); // default is true
     }
 
+    @Test
     public void test_threadPoolCreation() {
         final DataStoreParams paramMap1 = new DataStoreParams();
         paramMap1.put("number_of_threads", "1");
@@ -362,6 +383,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_numberOfThreads_threadPoolManagement() {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("number_of_threads", "2");
@@ -465,6 +487,7 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         return page;
     }
 
+    @Test
     public void testStoreData() {
         // This test requires actual Microsoft 365 credentials and would be integration test
         // Uncomment and provide credentials for actual testing

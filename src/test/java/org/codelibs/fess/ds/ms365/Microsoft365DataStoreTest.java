@@ -15,6 +15,7 @@
  */
 package org.codelibs.fess.ds.ms365;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.ArrayList;
@@ -32,7 +33,6 @@ import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
-import org.codelibs.fess.ds.microsoft365.UnitDsTestCase;
 
 import com.microsoft.graph.models.AssignedLicense;
 import com.microsoft.graph.models.User;
@@ -71,6 +71,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
     }
 
     // Test thread pool creation with different thread counts
+    @Test
     public void test_newFixedThreadPool_singleThread() {
         final ExecutorService executor = dataStore.newFixedThreadPool(1);
         assertNotNull("ExecutorService should be created", executor);
@@ -87,6 +88,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_newFixedThreadPool_multipleThreads() {
         final ExecutorService executor = dataStore.newFixedThreadPool(5);
         assertNotNull("ExecutorService should be created", executor);
@@ -115,6 +117,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_newFixedThreadPool_cappedThreads() {
         // Request more threads than system can handle
         final int maxThreads = Runtime.getRuntime().availableProcessors() * 2;
@@ -135,6 +138,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_newFixedThreadPool_minimumThreads() {
         // Test with minimum viable thread count (1)
         final ExecutorService executor = dataStore.newFixedThreadPool(1);
@@ -151,6 +155,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_newFixedThreadPool_threadCapping() {
         // Verify that thread capping logic works
         final int maxThreads = Runtime.getRuntime().availableProcessors() * 2;
@@ -182,6 +187,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_newFixedThreadPool_callerRunsPolicy() {
         // Test that CallerRunsPolicy is applied when queue is full
         final ExecutorService executor = dataStore.newFixedThreadPool(1);
@@ -211,6 +217,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_getUserRoles_structure() {
         // Test that getUserRoles method exists and has correct signature
         // Note: Actual testing of getUserRoles requires SystemHelper to be configured
@@ -228,6 +235,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_isLicensedUser_logic() {
         // Test licensed user detection logic
         final User licensedUser = new User();
@@ -245,6 +253,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         assertTrue("License should have SKU ID", licensedUser.getAssignedLicenses().stream().anyMatch(l -> l.getSkuId() != null));
     }
 
+    @Test
     public void test_unlicensedUser_logic() {
         // Test unlicensed user detection
         final User unlicensedUser1 = new User();
@@ -261,6 +270,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         assertTrue("User with null license list should be detected as unlicensed", unlicensedUser2.getAssignedLicenses() == null);
     }
 
+    @Test
     public void test_userWithInvalidLicense_logic() {
         // Test user with license but no SKU ID
         final User userWithInvalidLicense = new User();
@@ -277,6 +287,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
                 userWithInvalidLicense.getAssignedLicenses().stream().anyMatch(l -> l.getSkuId() != null));
     }
 
+    @Test
     public void test_threadPoolExecutor_shutdownGracefully() {
         final ExecutorService executor = dataStore.newFixedThreadPool(2);
 
@@ -298,6 +309,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_threadPoolExecutor_shutdownNow() {
         final ExecutorService executor = dataStore.newFixedThreadPool(2);
 
@@ -321,6 +333,7 @@ public class Microsoft365DataStoreTest extends UnitDsTestCase {
         }
     }
 
+    @Test
     public void test_constantValues() {
         // Test that important constants are properly defined
         assertEquals("IGNORE_ERROR constant should match", "ignore_error", TestDataStore.getIgnoreErrorConstant());
