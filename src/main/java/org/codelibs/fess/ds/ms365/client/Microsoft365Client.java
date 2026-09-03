@@ -44,11 +44,14 @@ import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.util.ComponentUtil;
 
+import com.azure.core.credential.TokenCredential;
 import com.azure.core.http.HttpClient;
 import com.azure.core.http.ProxyOptions;
 import com.azure.core.http.netty.NettyAsyncHttpClientBuilder;
 import com.azure.identity.ClientSecretCredential;
 import com.azure.identity.ClientSecretCredentialBuilder;
+import com.azure.identity.UsernamePasswordCredential;
+import com.azure.identity.UsernamePasswordCredentialBuilder;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
@@ -112,6 +115,17 @@ public class Microsoft365Client implements Closeable {
     protected static final String CLIENT_ID_PARAM = "client_id";
     /** The parameter name for the Azure AD client secret. */
     protected static final String CLIENT_SECRET_PARAM = "client_secret";
+    /**
+     * The parameter name for the delegated user's principal name. Enables delegated authentication
+     * when set with {@link #PASSWORD_PARAM}. Public because the data stores name it in the advice
+     * they give when Graph refuses an app-only token.
+     */
+    public static final String USERNAME_PARAM = "username";
+    /**
+     * The parameter name for the delegated user's password. Enables delegated authentication when
+     * set with {@link #USERNAME_PARAM}. Public for the same reason as {@link #USERNAME_PARAM}.
+     */
+    public static final String PASSWORD_PARAM = "password";
     /** The parameter name for the access (call) timeout, in seconds. 0 keeps the library default. */
     protected static final String ACCESS_TIMEOUT = "access_timeout";
     /** The parameter name for the connect timeout, in seconds. 0 keeps the library default. */
@@ -167,14 +181,22 @@ public class Microsoft365Client implements Closeable {
     /** The OkHttp client backing the Graph client. Owned by this instance and released in {@link #close()}. */
     protected OkHttpClient httpClient;
     /**
-     * The Azure AD credential backing the Graph client. Held as a field -- rather than only a
-     * constructor-local variable -- so a test can reach {@code credential}'s private
-     * {@code identityClient} field by reflection and assert that
-     * {@link #getAdditionallyAllowedTenants(DataStoreParams)}'s result actually reached
-     * {@link ClientSecretCredentialBuilder#additionallyAllowedTenants(String...)}, not merely
-     * computed and discarded.
+     * The Azure AD credential backing the Graph client: a {@link ClientSecretCredential} for
+     * app-only authentication, or a {@link UsernamePasswordCredential} for delegated
+     * authentication. Held as a field -- rather than only a constructor-local variable -- so a
+     * test can reach {@code credential}'s private {@code identityClient} field by reflection and
+     * assert that {@link #getAdditionallyAllowedTenants(DataStoreParams)}'s result actually
+     * reached the builder's {@code additionallyAllowedTenants(String...)}, not merely computed
+     * and discarded.
      */
-    protected ClientSecretCredential credential;
+    protected TokenCredential credential;
+    /**
+     * Whether {@link #credential} is a delegated (app+user) credential rather than an app-only
+     * one. The Microsoft Graph OneNote API stopped accepting app-only tokens on 2025-03-31, so
+     * {@code OneNoteDataStore} needs to tell the two apart to explain a 401 rather than merely
+     * report it.
+     */
+    protected boolean delegatedAuth;
     /** The data store parameters. */
     protected DataStoreParams params;
     /** A cache for user types. */
@@ -200,11 +222,25 @@ public class Microsoft365Client implements Closeable {
         final String tenant = params.getAsString(TENANT_PARAM, StringUtil.EMPTY);
         final String clientId = params.getAsString(CLIENT_ID_PARAM, StringUtil.EMPTY);
         final String clientSecret = params.getAsString(CLIENT_SECRET_PARAM, StringUtil.EMPTY);
-        if (tenant.isEmpty() || clientId.isEmpty() || clientSecret.isEmpty()) {
+        final String username = params.getAsString(USERNAME_PARAM, StringUtil.EMPTY);
+        final String password = params.getAsString(PASSWORD_PARAM, StringUtil.EMPTY);
+        // Half a delegated credential is a typo, not a request for app-only: falling back to the
+        // client secret here would silently crawl with the wrong identity -- and, for OneNote,
+        // with an identity Microsoft no longer accepts at all.
+        if (username.isEmpty() != password.isEmpty()) {
+            throw new DataStoreException(
+                    "parameter '" + USERNAME_PARAM + "' and '" + PASSWORD_PARAM + "' must be set together to use delegated authentication");
+        }
+        delegatedAuth = !username.isEmpty();
+        if (tenant.isEmpty() || clientId.isEmpty() || (!delegatedAuth && clientSecret.isEmpty())) {
             throw new DataStoreException("parameter '" + //
                     TENANT_PARAM + "', '" + //
                     CLIENT_ID_PARAM + "', '" + //
-                    CLIENT_SECRET_PARAM + "' is required");
+                    CLIENT_SECRET_PARAM + "' is required, or '" + //
+                    TENANT_PARAM + "', '" + //
+                    CLIENT_ID_PARAM + "', '" + //
+                    USERNAME_PARAM + "', '" + //
+                    PASSWORD_PARAM + "' for delegated authentication");
         }
         try {
             maxContentLength = Integer.parseInt(params.getAsString(MAX_CONTENT_LENGTH, Integer.toString(maxContentLength)));
@@ -219,14 +255,12 @@ public class Microsoft365Client implements Closeable {
         final String proxyPassword = params.getAsString(PROXY_PASSWORD_PARAM, StringUtil.EMPTY);
 
         try {
-            final ClientSecretCredentialBuilder credentialBuilder =
-                    new ClientSecretCredentialBuilder().clientId(clientId).clientSecret(clientSecret).tenantId(tenant);
             final List<String> allowedTenants = getAdditionallyAllowedTenants(params);
-            if (!allowedTenants.isEmpty()) {
-                credentialBuilder.additionallyAllowedTenants(allowedTenants.toArray(new String[allowedTenants.size()]));
-            }
+            final String[] allowedTenantArray = allowedTenants.toArray(new String[allowedTenants.size()]);
 
-            // Configure proxy for Azure Identity (OAuth token acquisition)
+            // Proxy for Azure AD token acquisition. Built once and handed to whichever credential
+            // builder is used below; null when no proxy is configured.
+            HttpClient authHttpClient = null;
             if (!proxyHost.isEmpty() && !proxyPortStr.isEmpty()) {
                 final int proxyPort = Integer.parseInt(proxyPortStr);
                 final InetSocketAddress proxyAddress = new InetSocketAddress(proxyHost, proxyPort);
@@ -234,12 +268,35 @@ public class Microsoft365Client implements Closeable {
                 if (!proxyUsername.isEmpty() && !proxyPassword.isEmpty()) {
                     proxyOptions.setCredentials(proxyUsername, proxyPassword);
                 }
-                final HttpClient authHttpClient = new NettyAsyncHttpClientBuilder().proxy(proxyOptions).build();
-                credentialBuilder.httpClient(authHttpClient);
+                authHttpClient = new NettyAsyncHttpClientBuilder().proxy(proxyOptions).build();
                 logger.info("Proxy configured for Azure Identity: {}:{}", proxyHost, proxyPort);
             }
 
-            credential = credentialBuilder.build();
+            if (delegatedAuth) {
+                // Delegated (app+user) authentication. Required by the Microsoft Graph OneNote
+                // API, which stopped accepting app-only tokens on 2025-03-31. This is the
+                // resource-owner-password-credentials flow, so the app registration must have
+                // public client flows enabled and the account must not be subject to MFA.
+                final UsernamePasswordCredentialBuilder credentialBuilder =
+                        new UsernamePasswordCredentialBuilder().clientId(clientId).tenantId(tenant).username(username).password(password);
+                if (allowedTenantArray.length > 0) {
+                    credentialBuilder.additionallyAllowedTenants(allowedTenantArray);
+                }
+                if (authHttpClient != null) {
+                    credentialBuilder.httpClient(authHttpClient);
+                }
+                credential = credentialBuilder.build();
+            } else {
+                final ClientSecretCredentialBuilder credentialBuilder =
+                        new ClientSecretCredentialBuilder().clientId(clientId).clientSecret(clientSecret).tenantId(tenant);
+                if (allowedTenantArray.length > 0) {
+                    credentialBuilder.additionallyAllowedTenants(allowedTenantArray);
+                }
+                if (authHttpClient != null) {
+                    credentialBuilder.httpClient(authHttpClient);
+                }
+                credential = credentialBuilder.build();
+            }
 
             // Initialize GraphServiceClient
             // GraphServiceClient.getGraphClientOptions() (public, static) is included as a
@@ -783,6 +840,21 @@ public class Microsoft365Client implements Closeable {
         if (scope != NotebookScope.USER && StringUtil.isBlank(ownerId)) {
             throw new IllegalArgumentException("ownerId is required for scope " + scope);
         }
+    }
+
+    /**
+     * Whether this client authenticates as a delegated (app+user) identity rather than app-only.
+     *
+     * <p>The Microsoft Graph OneNote API stopped accepting app-only tokens on 2025-03-31 and
+     * answers every {@code /onenote/} request made with one with a 401. A caller that sees a 401
+     * from such a request uses this to tell "your credentials are wrong" apart from "this API no
+     * longer accepts the kind of credential you configured", which have completely different
+     * fixes.</p>
+     *
+     * @return true when the credential is a delegated one, false when it is app-only
+     */
+    public boolean isDelegatedAuth() {
+        return delegatedAuth;
     }
 
     /**

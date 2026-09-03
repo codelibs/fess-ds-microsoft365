@@ -35,6 +35,7 @@ import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.ds.ms365.client.NotebookScope;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
@@ -221,7 +222,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         final List<String> roles = getDefaultPermissions(paramMap);
         final Pattern includePattern = getPattern(paramMap, INCLUDE_PATTERN);
         final Pattern excludePattern = getPattern(paramMap, EXCLUDE_PATTERN);
-        getNotebooks(client, NotebookScope.SITE, root.getId(), notebook -> {
+        getNotebooks(client, paramMap, NotebookScope.SITE, root.getId(), notebook -> {
             if (!isTargetNotebookTracked(filterStats, includePattern, excludePattern, notebook)) {
                 return;
             }
@@ -264,7 +265,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             }
 
             try {
-                getNotebooks(client, NotebookScope.USER, user.getId(), notebook -> {
+                getNotebooks(client, paramMap, NotebookScope.USER, user.getId(), notebook -> {
                     if (!isTargetNotebookTracked(filterStats, includePattern, excludePattern, notebook)) {
                         return;
                     }
@@ -314,7 +315,7 @@ public class OneNoteDataStore extends Microsoft365DataStore {
             }
 
             try {
-                getNotebooks(client, NotebookScope.GROUP, group.getId(), notebook -> {
+                getNotebooks(client, paramMap, NotebookScope.GROUP, group.getId(), notebook -> {
                     if (!isTargetNotebookTracked(filterStats, includePattern, excludePattern, notebook)) {
                         return;
                     }
@@ -324,6 +325,11 @@ public class OneNoteDataStore extends Microsoft365DataStore {
                     executorService.execute(() -> processNotebook(dataConfig, callback, paramMap, scriptMap, defaultDataMap, client,
                             NotebookScope.GROUP, group.getId(), notebook, roles));
                 });
+            } catch (final DataStoreException e) {
+                // getNotebooks throws this to abort the crawl when ignore_error is off. The net
+                // below must not turn that back into a warning, or the crawl would report success
+                // after indexing nothing.
+                throw e;
             } catch (final Exception e) {
                 logger.warn("Failed to retrieve notebooks for group: {} (ID: {})", group.getDisplayName(), group.getId(), e);
             }
@@ -473,12 +479,13 @@ public class OneNoteDataStore extends Microsoft365DataStore {
      * Gets the notebooks.
      *
      * @param client The Microsoft365Client.
+     * @param paramMap The data store parameters, read for {@code ignore_error}.
      * @param scope which Graph root the notebooks live under.
      * @param ownerId The user, site or group ID.
      * @param consumer The consumer to process each notebook.
      */
-    protected void getNotebooks(final Microsoft365Client client, final NotebookScope scope, final String ownerId,
-            final Consumer<Notebook> consumer) {
+    protected void getNotebooks(final Microsoft365Client client, final DataStoreParams paramMap, final NotebookScope scope,
+            final String ownerId, final Consumer<Notebook> consumer) {
         if (logger.isDebugEnabled()) {
             logger.debug("Retrieving notebooks for {} {}", scope, ownerId);
         }
@@ -512,10 +519,53 @@ public class OneNoteDataStore extends Microsoft365DataStore {
                     // these stay visible.
                     logger.warn("No notebooks found for {} {} (404).", scope, ownerId);
                 }
-            } else {
-                logger.warn("Failed to retrieve notebooks for {} {}.", scope, ownerId, e);
+                return;
             }
+            if (e.getResponseStatusCode() == 401) {
+                // The only failure here that is about the crawl rather than about this one owner:
+                // the token was refused, so every site, user and group in the tenant will be
+                // refused too and the crawl can only end with nothing indexed. Every other status
+                // stays a per-owner skip -- see the note below on why that matters.
+                final String message = isAppOnlyRejected(client, e)
+                        ? "Microsoft Graph rejected the app-only token for OneNote (" + scope + " " + ownerId
+                                + "). The OneNote API stopped accepting app-only tokens on 2025-03-31; configure '"
+                                + Microsoft365Client.USERNAME_PARAM + "' and '" + Microsoft365Client.PASSWORD_PARAM
+                                + "' on this data config to crawl OneNote with a delegated (app+user) identity."
+                        : "Microsoft Graph rejected the credentials configured on this data config (" + scope + " " + ownerId + ").";
+                if (!isIgnoreError(paramMap)) {
+                    // Reported without the stack trace: it is the same frames for every owner in
+                    // the tenant, and the message, not the trace, is what an operator has to act on.
+                    throw new DataStoreException(message, e);
+                }
+                logger.warn("{} Skipping it because {} is enabled.", message, IGNORE_ERROR);
+                return;
+            }
+            // Anything else stays a per-owner skip, deliberately, including 403. Under delegated
+            // authentication "this owner is not visible to the signed-in account" is the normal
+            // case, not a fault: user notebooks are only reachable when their owner shared them,
+            // and group and site notebooks only where the account is a member or a reader.
+            // Aborting on those would make the very configuration this data store now recommends
+            // unusable on the first user in the tenant who shared nothing.
+            logger.warn("Failed to retrieve notebooks for {} {}.", scope, ownerId, e);
         }
+    }
+
+    /**
+     * Whether {@code e} is Microsoft Graph refusing an app-only token for the OneNote API.
+     *
+     * <p>The OneNote API stopped accepting app-only tokens on 2025-03-31 and answers every
+     * {@code /onenote/} request made with one with a 401. The status code alone does not say so --
+     * an expired secret or a missing grant is a 401 too -- so this pairs it with the one thing that
+     * distinguishes the two: whether the credential this client authenticates with is app-only at
+     * all. A delegated credential that gets a 401 has an ordinary credential problem and is left to
+     * the generic branch, whose advice ("check the credentials") is the right advice there.</p>
+     *
+     * @param client the client whose credential produced the token
+     * @param e the failure returned by Graph
+     * @return true when this is the app-only retirement rather than an ordinary authentication failure
+     */
+    protected boolean isAppOnlyRejected(final Microsoft365Client client, final ApiException e) {
+        return e.getResponseStatusCode() == 401 && !client.isDelegatedAuth();
     }
 
     /**

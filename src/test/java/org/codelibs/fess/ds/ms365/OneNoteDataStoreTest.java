@@ -1647,4 +1647,153 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         public void commit() {
         }
     }
+
+    /**
+     * An {@link ApiException} carrying a status code. {@code ApiException.setResponseStatusCode}
+     * is {@code protected}, so a status-bearing instance can only be built from a subclass.
+     */
+    private static final class StatusApiException extends ApiException {
+        private static final long serialVersionUID = 1L;
+
+        StatusApiException(final int statusCode, final String message) {
+            super(message);
+            setResponseStatusCode(statusCode);
+        }
+    }
+
+    /**
+     * The Microsoft Graph OneNote API stopped accepting app-only tokens on 2025-03-31 and answers
+     * every {@code /onenote/} request made with one with a 401. {@code getNotebooks} used to log
+     * that at {@code WARN} and return, so the crawl finished reporting success with zero documents
+     * indexed and {@code ignore_error=false} had no effect at all -- exactly what the field report
+     * showed. Pins that the default configuration now aborts the crawl instead.
+     */
+    @Test
+    public void test_getNotebooks_appOnlyRejectionAbortsTheCrawl() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.isDelegatedAuth()).thenReturn(false);
+        when(client.getNotebookPage(NotebookScope.SITE, "site-1"))
+                .thenThrow(new StatusApiException(401, "The request does not contain a valid authentication token."));
+
+        final OneNoteDataStore dataStore = new OneNoteDataStore();
+        final DataStoreException e = assertThrows(DataStoreException.class,
+                () -> dataStore.getNotebooks(client, new DataStoreParams(), NotebookScope.SITE, "site-1", notebook -> {}));
+
+        // The message has to name the way out, not merely report a 401: the fix is a configuration
+        // change, and an operator who only sees "401" will go looking at the client secret.
+        assertTrue("the failure must name the app-only retirement: " + e.getMessage(), e.getMessage().contains("app-only"));
+        assertTrue("the failure must name the username parameter: " + e.getMessage(),
+                e.getMessage().contains(Microsoft365Client.USERNAME_PARAM));
+        assertTrue("the failure must name the password parameter: " + e.getMessage(),
+                e.getMessage().contains(Microsoft365Client.PASSWORD_PARAM));
+    }
+
+    /**
+     * {@code ignore_error=true} is the operator asking for failures to be skipped, so the app-only
+     * rejection must be logged and skipped rather than aborting -- the counterpart to
+     * {@link #test_getNotebooks_appOnlyRejectionAbortsTheCrawl}. Either half regressing (always
+     * throwing, or never throwing) fails exactly one of the two.
+     */
+    @Test
+    public void test_getNotebooks_appOnlyRejectionIsSkippedWhenIgnoreErrorIsOn() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.isDelegatedAuth()).thenReturn(false);
+        when(client.getNotebookPage(NotebookScope.GROUP, "group-1"))
+                .thenThrow(new StatusApiException(401, "The request does not contain a valid authentication token."));
+
+        final DataStoreParams params = new DataStoreParams();
+        params.put("ignore_error", "true");
+
+        final OneNoteDataStore dataStore = new OneNoteDataStore();
+        // Must return normally rather than throw.
+        dataStore.getNotebooks(client, params, NotebookScope.GROUP, "group-1", notebook -> {});
+    }
+
+    /**
+     * A 401 against a delegated credential is an ordinary authentication failure -- a wrong
+     * password, a revoked grant -- not the app-only retirement, and telling an operator to
+     * configure the delegated parameters they already configured is worse than useless. Pins that
+     * the app-only advice is keyed on the credential kind, not on the status code alone.
+     */
+    @Test
+    public void test_getNotebooks_delegated401IsReportedAsAnOrdinaryFailure() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.isDelegatedAuth()).thenReturn(true);
+        when(client.getNotebookPage(NotebookScope.USER, "user-1")).thenThrow(new StatusApiException(401, "invalid credentials"));
+
+        final OneNoteDataStore dataStore = new OneNoteDataStore();
+        final DataStoreException e = assertThrows(DataStoreException.class,
+                () -> dataStore.getNotebooks(client, new DataStoreParams(), NotebookScope.USER, "user-1", notebook -> {}));
+        assertFalse("a delegated 401 must not be blamed on the app-only retirement: " + e.getMessage(),
+                e.getMessage().contains("app-only"));
+    }
+
+    /**
+     * A 404 is routine -- a user with no provisioned personal site, a group with no notebook -- and
+     * must keep skipping the owner rather than aborting the crawl now that other failures do not.
+     * Without this, wiring {@code ignore_error} into {@code getNotebooks} would turn every
+     * notebook-less user in the tenant into a crawl abort.
+     */
+    @Test
+    public void test_getNotebooks_404StillSkipsTheOwner() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.getNotebookPage(NotebookScope.USER, "user-1")).thenThrow(new StatusApiException(404, "not found"));
+
+        final OneNoteDataStore dataStore = new OneNoteDataStore();
+        // Must return normally, with ignore_error left at its default of false.
+        dataStore.getNotebooks(client, new DataStoreParams(), NotebookScope.USER, "user-1", notebook -> {});
+    }
+
+    /**
+     * The configuration this data store now recommends -- a delegated service account -- reaches
+     * owners it cannot see as a matter of course: a user who shared no notebook, a group it is not
+     * a member of, a site it cannot read. Those must stay per-owner skips. Wiring
+     * {@code ignore_error} into every non-404 status would have aborted the whole crawl on the
+     * first such owner, which is worse than the silent green crawl this change set out to fix.
+     */
+    @Test
+    public void test_getNotebooks_403SkipsTheOwnerRatherThanAbortingTheCrawl() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.isDelegatedAuth()).thenReturn(true);
+        when(client.getNotebookPage(NotebookScope.USER, "user-1")).thenThrow(new StatusApiException(403, "accessDenied"));
+
+        final OneNoteDataStore dataStore = new OneNoteDataStore();
+        // Must return normally, with ignore_error left at its default of false.
+        dataStore.getNotebooks(client, new DataStoreParams(), NotebookScope.USER, "user-1", notebook -> {});
+    }
+
+    /**
+     * {@code storeGroupsNotes} wraps its {@code getNotebooks} call in a {@code catch (Exception)}
+     * net. That net swallowed the abort {@code getNotebooks} now raises, so the group scope would
+     * have gone on reporting a successful crawl of zero notebooks while the site scope aborted.
+     * Pins that the abort reaches {@code storeData}'s caller through the group path too.
+     */
+    @Test
+    public void test_storeGroupsNotes_appOnlyRejectionIsNotSwallowed() throws Exception {
+        registerPermissionHelper();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.isDelegatedAuth()).thenReturn(false);
+
+        final Group group = new Group();
+        group.setId("group-1");
+        group.setDisplayName("Group One");
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<Group> consumer = invocation.getArgument(0);
+            consumer.accept(group);
+            return null;
+        }).when(client).getMicrosoft365Groups(any());
+        when(client.getNotebookPage(NotebookScope.GROUP, "group-1"))
+                .thenThrow(new StatusApiException(401, "The request does not contain a valid authentication token."));
+
+        final OneNoteDataStore dataStore = new OneNoteDataStore();
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            assertThrows(DataStoreException.class, () -> dataStore.storeGroupsNotes(new DataConfig(), null, new DataStoreParams(),
+                    new HashMap<>(), new HashMap<>(), executorService, client, new OneNoteDataStore.NotebookFilterStats()));
+        } finally {
+            executorService.shutdownNow();
+        }
+    }
 }

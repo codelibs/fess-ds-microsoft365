@@ -80,6 +80,9 @@ Before using this plugin, create an Azure App registration with the required per
 2. **Add API Permissions** (Microsoft Graph) - see [Required Permissions by DataStore](#required-permissions-by-datastore) below
 3. **Grant Admin Consent** for the permissions
 4. **Create Client Secret** and note the values
+5. **For OneNote only**: also enable *Allow public client flows* and grant the permissions as
+   **delegated** rather than application ones - see
+   [OneNote requires delegated authentication](#onenote-requires-delegated-authentication)
 
 ### Required Permissions by DataStore
 
@@ -88,7 +91,7 @@ Each DataStore requires specific Microsoft Graph API permissions. Grant only the
 | DataStore | Required Permissions | Conditional Permissions |
 |-----------|---------------------|------------------------|
 | OneDriveDataStore | Files.Read.All, User.Read.All, Group.Read.All | Sites.Read.All (*1) |
-| OneNoteDataStore | Notes.Read.All | User.Read.All (*2), Group.Read.All (*3), Sites.Read.All (*4) |
+| OneNoteDataStore (*8) | Notes.Read.All | User.Read.All (*2), Group.Read.All (*3), Sites.Read.All (*4) |
 | TeamsDataStore | Team.ReadBasic.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMember.Read.All, Group.Read.All, User.Read.All | Chat.Read.All (*5), attachment permission (*6) |
 | SharePointDocLibDataStore | Sites.Read.All, User.Read.All, Group.Read.All | - |
 | SharePointListDataStore | Sites.Read.All (*7) | - |
@@ -121,6 +124,11 @@ nothing.
   which skips attachment content entirely and keeps the grant read-only.
 - (*7) Can be replaced with `Sites.Selected` when `site_id` is specified - see
   [Using Sites.Selected Permission](#using-sitesselected-permission) below.
+- (*8) These must be granted as **delegated** permissions, not application ones, and the data
+  config must set `username`/`password`: Microsoft retired app-only tokens for the Microsoft Graph
+  OneNote API on 2025-03-31 and answers every `/onenote/` request made with one with a 401. Every
+  other DataStore listed here keeps using application permissions. See
+  [OneNote requires delegated authentication](#onenote-requires-delegated-authentication).
 
 **Subsites:** `GET /sites/{site-id}/sites` recursion is used by OneDriveDataStore (in
 shared-documents mode), SharePointDocLibDataStore, SharePointListDataStore, and
@@ -257,6 +265,13 @@ client_secret=***********************
 number_of_threads=1
 ignore_error=false
 ```
+
+`oneNoteDataStore` is the exception: it cannot use these credentials, because Microsoft retired
+app-only tokens for the Microsoft Graph OneNote API on 2025-03-31. Its data config needs
+`username`/`password` instead - see
+[OneNote requires delegated authentication](#onenote-requires-delegated-authentication). Configure
+that on the OneNote data config alone; leaving the other data configs on `client_secret` keeps
+their crawls tenant-wide.
 
 ## 📊 Data Store Types
 
@@ -513,7 +528,9 @@ below: existing indexes do not contain the new text until the pages are re-crawl
 |-----------|-------------|----------|
 | `tenant` | Azure AD tenant ID | `contoso.onmicrosoft.com` or GUID |
 | `client_id` | App registration client ID | `12345678-1234-1234-1234-123456789abc` |
-| `client_secret` | App registration client secret | `abcdefghijk...` |
+| `client_secret` | App registration client secret. Required unless `username`/`password` are set | `abcdefghijk...` |
+| `username` | User principal name of the account to sign in as. Set together with `password` to use delegated (app+user) authentication instead of app-only - **required by `oneNoteDataStore`**, see [OneNote requires delegated authentication](#onenote-requires-delegated-authentication) | `crawler@contoso.onmicrosoft.com` |
+| `password` | Password for `username`. Set together with `username`; setting only one of the two is rejected | `********` |
 
 ### Common Crawling Parameters
 
@@ -606,7 +623,7 @@ at either setting.
 | `sharePointDocLibDataStore` | a site whose drives cannot be listed, and a document library that fails to process |
 | `sharePointListDataStore` | a site that fails to process, a list that fails to process, a list item that fails to process, and a failure re-reading a list item's fields (the item is still indexed, with the fields already in hand) |
 | `sharePointPageDataStore` | a site that fails to process and a page that fails to process |
-| `oneNoteDataStore` | nothing - it does not read this parameter; a user or group whose notebooks cannot be listed is logged at `WARN` and skipped either way |
+| `oneNoteDataStore` | Microsoft Graph refusing the configured credentials (HTTP 401) while listing a site's, user's or group's notebooks. Every other listing failure - 403, 404, a server error - skips that one owner at either setting, logged at `WARN` (at `debug` for a user's 404, see "404 Visibility" below), because under delegated authentication "this owner is not visible to the signed-in account" is the normal case rather than a fault |
 | `teamsDataStore` | an unresolvable `team_id`, an unresolvable `channel_id`, a failure listing an explicitly configured team's channels, a failure fetching a channel's messages, and a failure processing a configured `chat_id` |
 
 `ignore_error` never widens a crawl. A `team_id` listed in `exclude_team_ids` that cannot be
@@ -763,6 +780,19 @@ Re-crawl the OneDrive and SharePoint document library crawlers after upgrading t
 corrected ACLs, and re-crawl OneNoteDataStore (with `site_note_crawler` and/or
 `group_note_crawler` enabled) to index the site and group notebooks for the first time. There is
 no ACL correction to pick up for SharePoint lists or SharePoint pages.
+
+#### Re-crawling after upgrading to the OneNote delegated-authentication fix
+
+Microsoft retired app-only tokens for the Microsoft Graph OneNote API on 2025-03-31, so an existing
+OneNote data config has been indexing nothing since then while still reporting a successful crawl.
+Add `username`/`password` to that data config and re-crawl; see
+[OneNote requires delegated authentication](#onenote-requires-delegated-authentication) for the
+app-registration changes and for what a delegated token can reach. Until that is done the crawl now
+fails with a message naming the retirement, instead of reporting success with zero documents.
+
+Leave the other data configs on `client_secret`: no other DataStore in this plugin is affected by
+the OneNote retirement, and giving them a delegated identity would narrow their crawls to what that
+one account can see.
 
 #### Re-crawling after upgrading to the crawl filter fixes
 
@@ -1133,6 +1163,60 @@ one `WARN` summarizing that - a hint that the pattern may be misconfigured, sinc
 otherwise reports success while indexing nothing. The warning names only the parameter (or
 parameters) the configuration actually sets.
 
+#### OneNote requires delegated authentication
+
+Microsoft retired app-only tokens for the Microsoft Graph OneNote API on **2025-03-31**. Every
+`/onenote/` request made with a client-credentials (app-only) token now comes back as HTTP 401
+carrying "this API will no longer support app-only tokens", whatever application permissions the
+app registration holds. No `Notes.Read.All` grant changes this. `oneNoteDataStore` therefore has to
+sign in as a user; every other DataStore in this plugin is unaffected and keeps working app-only.
+
+Set `username` and `password` on the **OneNote data config only**:
+
+```properties
+tenant=********-****-****-****-************
+client_id=********-****-****-****-************
+username=crawler@contoso.onmicrosoft.com
+password=********
+```
+
+`client_secret` is not needed there (the delegated flow is a public-client one) and is ignored when
+`username`/`password` are set. Setting only one of the two is rejected at startup rather than
+falling back to app-only, so a typo cannot silently crawl as the wrong identity.
+
+**App registration:** enable *Allow public client flows* and grant the **delegated** equivalents of
+the permissions in [Required Permissions by DataStore](#required-permissions-by-datastore) -
+`Notes.Read.All`, plus `User.Read.All`, `Group.Read.All` and `Sites.Read.All` for the scopes you
+enable - with admin consent. This is the resource-owner-password-credentials flow, so the account
+must not be subject to MFA or a conditional-access policy that blocks it. Microsoft has deprecated
+this flow; it is the only unattended delegated flow a crawler can use, and Microsoft has not
+announced a retirement date for it.
+
+**What the crawl can reach.** A delegated token sees what the signed-in account sees, so coverage is
+narrower than app-only was and is set by that account's memberships rather than by a tenant-wide
+grant:
+
+| Scope | Delegated token returns |
+|-------|-------------------------|
+| Site notebooks (`site_note_crawler`) | notebooks in the SharePoint sites the account can read |
+| Group notebooks (`group_note_crawler`) | notebooks of the Microsoft 365 groups the account is a **member** of |
+| User notebooks (`user_note_crawler`) | only what each user has **shared with** the account - `/users/{id}/onenote` is documented as returning the content that user shared with the signed-in user, so personal notebooks cannot be crawled exhaustively |
+
+Recommended setup, which keeps site and group notebooks fully covered:
+
+1. Create a dedicated service account, excluded from MFA and with a non-expiring password.
+2. Add it as a **member** of every Microsoft 365 group whose notebooks should be indexed.
+3. Grant it **read** on every SharePoint site whose notebooks should be indexed.
+4. Accept that personal notebooks are only indexed where their owner shared them with the account.
+
+Owners the account cannot see are skipped with a `WARN` and the crawl continues - under this setup
+that is the normal case, not a fault. A 401, by contrast, means the credentials themselves were
+refused and aborts the crawl unless `ignore_error=true`; before this was fixed such a crawl finished
+reporting success with nothing indexed.
+
+ACLs are unaffected: notebooks still carry the roles described above, so query-time permission
+filtering behaves exactly as before. What changes is coverage, not access control.
+
 #### Failure URL rows for notebooks are keyed differently
 
 A notebook that fails to index is recorded in Fess's Failure URL admin screen. That row used to be
@@ -1201,6 +1285,10 @@ plugin issues no `$batch` request anywhere.
   need before they can be listed - only skips the site notebooks; user and group notebook crawling
   continues regardless. `permission_failure_policy` is not involved: OneNoteDataStore never calls
   a Graph permission-fetch endpoint for any notebook type, so that parameter has no effect on it
+- **Credential Rejection**: a 401 while listing notebooks aborts the crawl unless
+  `ignore_error=true`, because the same credentials are used for every site, user and group and
+  the crawl could only end with nothing indexed. When the credential is app-only, the failure
+  names the OneNote app-only retirement and the `username`/`password` parameters that fix it
 
 **Content Metadata Fields:**
 The implementation extracts and indexes the following notebook metadata:
