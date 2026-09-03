@@ -15,6 +15,8 @@
  */
 package org.codelibs.fess.ds.ms365.client;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
@@ -36,10 +38,12 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.util.ComponentUtil;
 import org.codelibs.fess.ds.ms365.UnitDsTestCase;
 
 import com.azure.identity.ClientSecretCredential;
+import com.azure.identity.UsernamePasswordCredential;
 import com.azure.identity.implementation.IdentityClient;
 import com.microsoft.graph.models.Channel;
 import com.microsoft.graph.models.Drive;
@@ -438,7 +442,9 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
      * field lookup needs reflection.
      */
     private static Set<String> allowedTenantsOf(final Microsoft365Client target) throws Exception {
-        final Field identityClientField = ClientSecretCredential.class.getDeclaredField("identityClient");
+        // Resolved off the credential's own class rather than ClientSecretCredential's, so this
+        // reads a UsernamePasswordCredential -- which declares the same field -- just as well.
+        final Field identityClientField = target.credential.getClass().getDeclaredField("identityClient");
         identityClientField.setAccessible(true);
         final IdentityClient identityClient = (IdentityClient) identityClientField.get(target.credential);
         return identityClient.getIdentityClientOptions().getAdditionallyAllowedTenants();
@@ -912,5 +918,101 @@ public class Microsoft365ClientTest extends UnitDsTestCase {
                 .build();
         final Request authenticated = target.httpClient.proxyAuthenticator().authenticate(null, response);
         assertEquals(Credentials.basic("proxyuser", "proxypass"), authenticated.header("Proxy-Authorization"));
+    }
+
+    /**
+     * Params naming a delegated user on top of {@link #minimalParams()}.
+     */
+    private static DataStoreParams delegatedParams() {
+        final DataStoreParams params = minimalParams();
+        params.put(Microsoft365Client.USERNAME_PARAM, "crawler@example.onmicrosoft.com");
+        params.put(Microsoft365Client.PASSWORD_PARAM, "dummy-password");
+        return params;
+    }
+
+    /**
+     * Nothing but a client secret means app-only, which is what every data store other than
+     * OneNote still wants: the OneNote API is the only Microsoft Graph API that stopped accepting
+     * app-only tokens, so this must stay the default rather than become a fallback.
+     */
+    @Test
+    public void test_credential_clientSecretAloneStaysAppOnly() {
+        final Microsoft365Client target = newMinimalClient();
+        assertTrue("a client secret alone must build a ClientSecretCredential, not a delegated one",
+                target.credential instanceof ClientSecretCredential);
+        assertFalse("a client secret alone is app-only", target.isDelegatedAuth());
+    }
+
+    /**
+     * A username and password select delegated (app+user) authentication, the only kind the
+     * Microsoft Graph OneNote API has accepted since 2025-03-31.
+     */
+    @Test
+    public void test_credential_usernameAndPasswordSelectDelegatedAuth() {
+        final Microsoft365Client target = new Microsoft365Client(delegatedParams());
+        assertTrue("a username and password must build a UsernamePasswordCredential",
+                target.credential instanceof UsernamePasswordCredential);
+        assertTrue("a username and password is delegated authentication", target.isDelegatedAuth());
+    }
+
+    /**
+     * The delegated flow is a public-client one and needs no client secret, so requiring one would
+     * force operators to keep a credential the crawl never uses.
+     */
+    @Test
+    public void test_credential_delegatedAuthNeedsNoClientSecret() {
+        // Built from scratch rather than by removing a key: DataStoreParams has no remove().
+        final DataStoreParams params = new DataStoreParams();
+        params.put(Microsoft365Client.TENANT_PARAM, "dummy-tenant");
+        params.put(Microsoft365Client.CLIENT_ID_PARAM, "dummy-client-id");
+        params.put(Microsoft365Client.USERNAME_PARAM, "crawler@example.onmicrosoft.com");
+        params.put(Microsoft365Client.PASSWORD_PARAM, "dummy-password");
+        final Microsoft365Client target = new Microsoft365Client(params);
+        assertTrue("delegated authentication must be accepted without a client secret", target.isDelegatedAuth());
+    }
+
+    /**
+     * Half a delegated credential is a typo. Falling back to app-only there would crawl as the
+     * wrong identity, and for OneNote as an identity Microsoft refuses outright -- a failure the
+     * operator would then have to diagnose from a 401 rather than from the typo itself.
+     */
+    @Test
+    public void test_constructor_rejectsAUsernameWithoutAPassword() {
+        final DataStoreParams params = minimalParams();
+        params.put(Microsoft365Client.USERNAME_PARAM, "crawler@example.onmicrosoft.com");
+        assertThrows(DataStoreException.class, () -> new Microsoft365Client(params));
+    }
+
+    /**
+     * See {@link #test_constructor_rejectsAUsernameWithoutAPassword()}.
+     */
+    @Test
+    public void test_constructor_rejectsAPasswordWithoutAUsername() {
+        final DataStoreParams params = minimalParams();
+        params.put(Microsoft365Client.PASSWORD_PARAM, "dummy-password");
+        assertThrows(DataStoreException.class, () -> new Microsoft365Client(params));
+    }
+
+    /**
+     * The delegated branch is a second, separate credential builder, so it can drop
+     * {@code additionallyAllowedTenants} without any app-only test noticing. The app-only
+     * counterparts are {@link #test_credential_defaultAllowsNoAdditionalTenants()} and
+     * {@link #test_credential_wildcardTenantReachesTheCredential()}.
+     */
+    @Test
+    public void test_credential_additionallyAllowedTenantsReachesTheDelegatedCredential() throws Exception {
+        final DataStoreParams params = delegatedParams();
+        params.put("additionally_allowed_tenants", "*");
+        assertEquals(Set.of("*"), allowedTenantsOf(new Microsoft365Client(params)));
+    }
+
+    /**
+     * See {@link #test_credential_additionallyAllowedTenantsReachesTheDelegatedCredential()}: the
+     * empty default has to survive the delegated branch too, or a hard-coded wildcard there would
+     * pass that test and never be noticed.
+     */
+    @Test
+    public void test_credential_delegatedAuthDefaultAllowsNoAdditionalTenants() throws Exception {
+        assertEquals(Set.of(), allowedTenantsOf(new Microsoft365Client(delegatedParams())));
     }
 }
