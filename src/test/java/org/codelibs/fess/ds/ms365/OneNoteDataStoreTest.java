@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -383,7 +384,9 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         registerPermissionHelper();
         try (GraphMockServer server = new GraphMockServer();
                 MockableMicrosoft365Client client = new MockableMicrosoft365Client(dummyParams())) {
-            server.enqueueJson("{\"id\":\"site-1\",\"displayName\":\"Root\"}"); // GET /sites/root
+            // site_id is set so the crawl stays on one site: with it unset storeSiteNotes
+            // enumerates the whole tenant, and this test is about which requests one site makes.
+            server.enqueueJson("{\"id\":\"site-1\",\"displayName\":\"Team\"}"); // GET /sites/site-1
             server.enqueueJson("{\"value\":[]}"); // GET /sites/site-1/onenote/notebooks
             // Queued defensively, not consumed by the fixed code: if a regression reintroduces a
             // site-permissions request between the two above, this lets it complete (with an
@@ -393,10 +396,13 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
             client.useServer(server.newGraphClient());
 
+            final DataStoreParams params = new DataStoreParams();
+            params.put("site_id", "site-1");
+
             final ExecutorService executorService = Executors.newSingleThreadExecutor();
             try {
-                dataStore.storeSiteNotes(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(), executorService,
-                        client, new OneNoteDataStore.NotebookFilterStats());
+                dataStore.storeSiteNotes(new DataConfig(), null, params, new HashMap<>(), new HashMap<>(), executorService, client,
+                        new OneNoteDataStore.NotebookFilterStats());
             } finally {
                 executorService.shutdown();
                 assertTrue(executorService.awaitTermination(5, TimeUnit.SECONDS));
@@ -406,11 +412,11 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
             for (int i = 0; i < server.requestCount(); i++) {
                 paths.add(server.takePath());
             }
-            // Closes a vacuous-pass gap: client.getSite("root") alone makes zero requests
+            // Closes a vacuous-pass gap: client.getSite(siteId) alone makes zero requests
             // impossible, but without this a regression that also skipped the notebooks-list
-            // request (leaving only the root-site request, still free of "/permissions") would
+            // request (leaving only the site request, still free of "/permissions") would
             // still pass the assertion below.
-            assertEquals("expected exactly the root-site and notebooks-list requests, got: " + paths, 2, paths.size());
+            assertEquals("expected exactly the site and notebooks-list requests, got: " + paths, 2, paths.size());
             assertFalse("no request may end in /permissions, but got: " + paths,
                     paths.stream().anyMatch(path -> path.contains("/permissions")));
         }
@@ -432,7 +438,14 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final Site root = new Site();
         root.setId("site-1");
-        when(client.getSite("root")).thenReturn(root);
+        // storeSiteNotes enumerates the tenant's sites when site_id is unset, so the one site
+        // this test cares about is delivered through getSites rather than getSite("root").
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<Site> consumer = invocation.getArgument(0);
+            consumer.accept(root);
+            return null;
+        }).when(client).getSites(any());
 
         final Notebook notebook = new Notebook();
         notebook.setId("notebook-1");
@@ -605,7 +618,14 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final Site root = new Site();
         root.setId("site-1");
-        when(client.getSite("root")).thenReturn(root);
+        // storeSiteNotes enumerates the tenant's sites when site_id is unset, so the one site
+        // this test cares about is delivered through getSites rather than getSite("root").
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<Site> consumer = invocation.getArgument(0);
+            consumer.accept(root);
+            return null;
+        }).when(client).getSites(any());
 
         final Notebook kept = new Notebook();
         kept.setId("notebook-kept");
@@ -1141,20 +1161,20 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
     }
 
     /**
-     * {@code storeSiteNotes} used to call {@code client.getSite("root")} outside any try block.
-     * {@code storeData} only catches {@link InterruptedException} around
+     * {@code storeSiteNotes} used to resolve its site outside any try block. {@code storeData}
+     * only catches {@link InterruptedException} around
      * {@code storeSiteNotes}/{@code storeUsersNotes}/{@code storeGroupsNotes}, so a failure
-     * resolving the root site used to propagate out of {@code storeData} entirely, aborting user
-     * and group notebook crawling too -- not just the site notebooks the README says are the only
-     * thing a site-ACL failure skips. Pins that a root-site failure lets
+     * listing sites used to propagate out of {@code storeData} entirely, aborting user and group
+     * notebook crawling too -- not just the site notebooks the README says are the only thing a
+     * site-ACL failure skips. Pins that a site-enumeration failure lets
      * {@code storeUsersNotes} and {@code storeGroupsNotes} still run to completion.
      */
     @Test
-    public void test_storeData_rootSiteFailure_doesNotAbortUserAndGroupCrawling() throws Exception {
+    public void test_storeData_siteEnumerationFailure_doesNotAbortUserAndGroupCrawling() throws Exception {
         ComponentUtil.register(new SystemHelper(), "systemHelper");
 
         final Microsoft365Client client = mock(Microsoft365Client.class);
-        when(client.getSite("root")).thenThrow(new ApiException("failed to resolve root site"));
+        doThrow(new ApiException("failed to list sites")).when(client).getSites(any());
         // No licensed users/groups to keep this test focused on whether storeUsersNotes and
         // storeGroupsNotes are reached at all, not on per-notebook processing.
         doAnswer(invocation -> null).when(client).getUsers(any(), any());
@@ -1168,7 +1188,7 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         };
 
         // Must return normally: storeData catches only InterruptedException, so if the
-        // getSite("root") failure escaped storeSiteNotes uncaught, this call would throw instead.
+        // getSites failure escaped storeSiteNotes uncaught, this call would throw instead.
         testDataStore.storeData(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>());
 
         // storeUsersNotes and storeGroupsNotes must have run (reached the client) despite the
@@ -1191,7 +1211,14 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final Site root = new Site();
         root.setId("site-1");
-        when(client.getSite("root")).thenReturn(root);
+        // storeSiteNotes enumerates the tenant's sites when site_id is unset, so the one site
+        // this test cares about is delivered through getSites rather than getSite("root").
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<Site> consumer = invocation.getArgument(0);
+            consumer.accept(root);
+            return null;
+        }).when(client).getSites(any());
 
         final Notebook excluded = new Notebook();
         excluded.setId("notebook-1");
@@ -1234,7 +1261,14 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final Site root = new Site();
         root.setId("site-1");
-        when(client.getSite("root")).thenReturn(root);
+        // storeSiteNotes enumerates the tenant's sites when site_id is unset, so the one site
+        // this test cares about is delivered through getSites rather than getSite("root").
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<Site> consumer = invocation.getArgument(0);
+            consumer.accept(root);
+            return null;
+        }).when(client).getSites(any());
 
         final Notebook kept = new Notebook();
         kept.setId("notebook-1");
@@ -1359,7 +1393,14 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final Site root = new Site();
         root.setId("site-1");
-        when(client.getSite("root")).thenReturn(root);
+        // storeSiteNotes enumerates the tenant's sites when site_id is unset, so the one site
+        // this test cares about is delivered through getSites rather than getSite("root").
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<Site> consumer = invocation.getArgument(0);
+            consumer.accept(root);
+            return null;
+        }).when(client).getSites(any());
 
         final Notebook excluded = new Notebook();
         excluded.setId("notebook-1");
@@ -1408,7 +1449,14 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
 
         final Site root = new Site();
         root.setId("site-1");
-        when(client.getSite("root")).thenReturn(root);
+        // storeSiteNotes enumerates the tenant's sites when site_id is unset, so the one site
+        // this test cares about is delivered through getSites rather than getSite("root").
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<Site> consumer = invocation.getArgument(0);
+            consumer.accept(root);
+            return null;
+        }).when(client).getSites(any());
 
         final Notebook notebook = new Notebook();
         notebook.setId("notebook-1");
@@ -1646,6 +1694,171 @@ public class OneNoteDataStoreTest extends UnitDsTestCase {
         @Override
         public void commit() {
         }
+    }
+
+    /**
+     * Site notebooks used to come from {@code GET /sites/root} and nowhere else, so a notebook on
+     * any other team site was unreachable however the crawl was configured. Pins that an unset
+     * {@code site_id} now covers every site in the tenant, the same way
+     * {@code sharePointPageDataStore} reads the parameter.
+     */
+    @Test
+    public void test_storeSiteNotes_withoutSiteId_crawlsEverySite() throws Exception {
+        registerPermissionHelper();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        final Site first = new Site();
+        first.setId("site-1");
+        final Site second = new Site();
+        second.setId("site-2");
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<Site> consumer = invocation.getArgument(0);
+            consumer.accept(first);
+            consumer.accept(second);
+            return null;
+        }).when(client).getSites(any());
+
+        for (final String siteId : List.of("site-1", "site-2")) {
+            final Notebook notebook = new Notebook();
+            notebook.setId("notebook-" + siteId);
+            notebook.setDisplayName("Notebook " + siteId);
+            final NotebookCollectionResponse response = new NotebookCollectionResponse();
+            response.setValue(List.of(notebook));
+            when(client.getNotebookPage(NotebookScope.SITE, siteId)).thenReturn(response);
+        }
+
+        final List<String> capturedOwnerIds = new ArrayList<>();
+        final OneNoteDataStore captureDataStore = new OneNoteDataStore() {
+            @Override
+            protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+                    final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
+                    final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
+                synchronized (capturedOwnerIds) {
+                    capturedOwnerIds.add(ownerId);
+                }
+            }
+        };
+
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            captureDataStore.storeSiteNotes(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(),
+                    executorService, client, new OneNoteDataStore.NotebookFilterStats());
+        } finally {
+            executorService.shutdown();
+            assertTrue("processNotebook must have run before the test asserts on the captured sites",
+                    executorService.awaitTermination(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals("both sites' notebooks must be processed, got: " + capturedOwnerIds, 2, capturedOwnerIds.size());
+        assertTrue("site-1's notebook must be processed, got: " + capturedOwnerIds, capturedOwnerIds.contains("site-1"));
+        assertTrue("site-2's notebook must be processed, got: " + capturedOwnerIds, capturedOwnerIds.contains("site-2"));
+    }
+
+    /**
+     * The counterpart of {@link #test_storeSiteNotes_withoutSiteId_crawlsEverySite()}: a
+     * {@code site_id} confines the crawl to that one site instead of enumerating the tenant, so an
+     * operator who has one notebook-bearing site does not pay for a full site listing.
+     */
+    @Test
+    public void test_storeSiteNotes_withSiteId_crawlsOnlyThatSite() throws Exception {
+        registerPermissionHelper();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        final Site site = new Site();
+        site.setId("site-1");
+        when(client.getSite("site-1")).thenReturn(site);
+
+        final Notebook notebook = new Notebook();
+        notebook.setId("notebook-1");
+        notebook.setDisplayName("Site Notebook");
+        final NotebookCollectionResponse response = new NotebookCollectionResponse();
+        response.setValue(List.of(notebook));
+        when(client.getNotebookPage(NotebookScope.SITE, "site-1")).thenReturn(response);
+
+        final List<String> capturedOwnerIds = new ArrayList<>();
+        final OneNoteDataStore captureDataStore = new OneNoteDataStore() {
+            @Override
+            protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+                    final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
+                    final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
+                capturedOwnerIds.add(ownerId);
+            }
+        };
+
+        final DataStoreParams params = new DataStoreParams();
+        params.put("site_id", "site-1");
+
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            captureDataStore.storeSiteNotes(new DataConfig(), null, params, new HashMap<>(), new HashMap<>(), executorService, client,
+                    new OneNoteDataStore.NotebookFilterStats());
+        } finally {
+            executorService.shutdown();
+            assertTrue("processNotebook must have run before the test asserts on the captured site",
+                    executorService.awaitTermination(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals("only the configured site must be processed, got: " + capturedOwnerIds, List.of("site-1"), capturedOwnerIds);
+        // Without this, a regression that enumerated the tenant *and* honoured site_id would still
+        // pass the assertion above whenever the tenant happens to hold one site.
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.never()).getSites(any());
+    }
+
+    /**
+     * Now that the site scope enumerates the tenant, one bad site must not take the rest with it:
+     * a site with no id makes {@code Microsoft365Client.getNotebookPage} throw
+     * {@code IllegalArgumentException}, which would escape the {@code getSites} consumer and end
+     * the whole site scope. Pins that the sites after it are still crawled.
+     */
+    @Test
+    public void test_storeSiteNotes_siteWithoutAnIdDoesNotStopTheOtherSites() throws Exception {
+        registerPermissionHelper();
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+
+        final Site broken = new Site();
+        broken.setWebUrl("https://example.sharepoint.com/sites/broken");
+        final Site usable = new Site();
+        usable.setId("site-2");
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            final Consumer<Site> consumer = invocation.getArgument(0);
+            consumer.accept(broken);
+            consumer.accept(usable);
+            return null;
+        }).when(client).getSites(any());
+
+        final Notebook notebook = new Notebook();
+        notebook.setId("notebook-1");
+        notebook.setDisplayName("Site Notebook");
+        final NotebookCollectionResponse response = new NotebookCollectionResponse();
+        response.setValue(List.of(notebook));
+        when(client.getNotebookPage(NotebookScope.SITE, "site-2")).thenReturn(response);
+
+        final List<String> capturedOwnerIds = new ArrayList<>();
+        final OneNoteDataStore captureDataStore = new OneNoteDataStore() {
+            @Override
+            protected void processNotebook(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+                    final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final Microsoft365Client client,
+                    final NotebookScope scope, final String ownerId, final Notebook notebook, final List<String> roles) {
+                capturedOwnerIds.add(ownerId);
+            }
+        };
+
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            captureDataStore.storeSiteNotes(new DataConfig(), null, new DataStoreParams(), new HashMap<>(), new HashMap<>(),
+                    executorService, client, new OneNoteDataStore.NotebookFilterStats());
+        } finally {
+            executorService.shutdown();
+            assertTrue("processNotebook must have run before the test asserts on the captured site",
+                    executorService.awaitTermination(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals("the site after the broken one must still be crawled, got: " + capturedOwnerIds, List.of("site-2"), capturedOwnerIds);
     }
 
     /**

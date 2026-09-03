@@ -191,6 +191,13 @@ public class OneNoteDataStore extends Microsoft365DataStore {
     /**
      * Stores the site notes.
      *
+     * <p>With {@code site_id} set, only that site's notebooks are crawled; with it unset, every
+     * site in the tenant is, the same way {@code sharePointPageDataStore} and
+     * {@code sharePointDocLibDataStore} read the parameter. Before, this crawled the root site and
+     * nothing else, so a notebook on any other team site was unreachable however the crawl was
+     * configured -- and under delegated authentication, where the reachable sites are exactly the
+     * ones the signed-in account was granted, the root site is rarely the interesting one.</p>
+     *
      * @param dataConfig The data configuration.
      * @param callback The index update callback.
      * @param paramMap The data store parameters.
@@ -203,18 +210,51 @@ public class OneNoteDataStore extends Microsoft365DataStore {
     protected void storeSiteNotes(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
             final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
             final Microsoft365Client client, final NotebookFilterStats filterStats) {
-        final Site root;
-        try {
-            root = client.getSite("root");
-        } catch (final ApiException e) {
-            // storeData runs storeSiteNotes, storeUsersNotes and storeGroupsNotes one after
-            // another inside the same try block. Letting this propagate would abort user and
-            // group notebook crawling too, not just site notebooks, so it is caught here and
-            // only site notebooks are skipped.
-            logger.warn("Skipping site notebooks: unable to resolve the root site.", e);
+        final String siteId = paramMap.getAsString(SITE_ID);
+        if (StringUtil.isNotBlank(siteId)) {
+            final Site site;
+            try {
+                site = client.getSite(siteId);
+            } catch (final ApiException e) {
+                // storeData runs storeSiteNotes, storeUsersNotes and storeGroupsNotes one after
+                // another inside the same try block. Letting this propagate would abort user and
+                // group notebook crawling too, not just site notebooks, so it is caught here and
+                // only site notebooks are skipped.
+                logger.warn("Skipping site notebooks: unable to resolve site {}.", siteId, e);
+                return;
+            }
+            storeNotesInSite(dataConfig, callback, paramMap, scriptMap, defaultDataMap, executorService, client, filterStats, site);
             return;
         }
 
+        try {
+            client.getSites(site -> storeNotesInSite(dataConfig, callback, paramMap, scriptMap, defaultDataMap, executorService, client,
+                    filterStats, site));
+        } catch (final DataStoreException e) {
+            // getNotebooks raises this to abort the crawl when the credentials are refused. It has
+            // to reach storeData, not be folded into the "skip the site scope" case below.
+            throw e;
+        } catch (final Exception e) {
+            logger.warn("Skipping site notebooks: unable to enumerate sites.", e);
+        }
+    }
+
+    /**
+     * Stores one site's notebooks.
+     *
+     * @param dataConfig The data configuration.
+     * @param callback The index update callback.
+     * @param paramMap The data store parameters.
+     * @param scriptMap The script map.
+     * @param defaultDataMap The default data map.
+     * @param executorService The executor service.
+     * @param client The Microsoft365Client.
+     * @param filterStats The crawl's notebook include/exclude counters.
+     * @param site The site whose notebooks are crawled.
+     */
+    protected void storeNotesInSite(final DataConfig dataConfig, final IndexUpdateCallback callback, final DataStoreParams paramMap,
+            final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap, final ExecutorService executorService,
+            final Microsoft365Client client, final NotebookFilterStats filterStats, final Site site) {
         // Graph has no user/group role-assignment endpoint for a site that this plugin can call
         // without Sites.FullControl.All (see Microsoft365Client's removed getSitePermissions),
         // so site notebooks carry no owner-derived roles. default_permissions is their only role
@@ -222,12 +262,21 @@ public class OneNoteDataStore extends Microsoft365DataStore {
         final List<String> roles = getDefaultPermissions(paramMap);
         final Pattern includePattern = getPattern(paramMap, INCLUDE_PATTERN);
         final Pattern excludePattern = getPattern(paramMap, EXCLUDE_PATTERN);
-        getNotebooks(client, paramMap, NotebookScope.SITE, root.getId(), notebook -> {
+        final String ownerId = site.getId();
+        if (StringUtil.isBlank(ownerId)) {
+            // Microsoft365Client.getNotebookPage rejects a blank site id with an
+            // IllegalArgumentException, which would escape the getSites consumer and take the
+            // whole site scope down with it. One unusable site is not a reason to stop crawling
+            // the rest of the tenant.
+            logger.warn("Skipping a site with no id: {}", site.getWebUrl());
+            return;
+        }
+        getNotebooks(client, paramMap, NotebookScope.SITE, ownerId, notebook -> {
             if (!isTargetNotebookTracked(filterStats, includePattern, excludePattern, notebook)) {
                 return;
             }
             executorService.execute(() -> processNotebook(dataConfig, callback, paramMap, scriptMap, defaultDataMap, client,
-                    NotebookScope.SITE, root.getId(), notebook, roles));
+                    NotebookScope.SITE, ownerId, notebook, roles));
         });
     }
 

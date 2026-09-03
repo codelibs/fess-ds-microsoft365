@@ -113,8 +113,9 @@ nothing.
   call accepts `Files.Read.All` as an alternative.
 - (*2) Required when `user_note_crawler=true` (default: true)
 - (*3) Required when `group_note_crawler=true` (default: true)
-- (*4) Required when `site_note_crawler=true` (default: true), to resolve the root site
-  (`GET /sites/root`) that site notebooks are enumerated under
+- (*4) Required when `site_note_crawler=true` (default: true), to enumerate the sites
+  (`GET /sites`, or `GET /sites/{site-id}` when `site_id` is set) that site notebooks are
+  enumerated under
 - (*5) Required when `chat_id` is specified
 - (*6) TeamsDataStore fetches attachment content via `GET /shares/{id}/driveItem/content`, whose
   Microsoft-documented Application permissions are `Files.ReadWrite.All` (least privileged) or
@@ -783,12 +784,20 @@ no ACL correction to pick up for SharePoint lists or SharePoint pages.
 
 #### Re-crawling after upgrading to the OneNote delegated-authentication fix
 
-Microsoft retired app-only tokens for the Microsoft Graph OneNote API on 2025-03-31, so an existing
-OneNote data config has been indexing nothing since then while still reporting a successful crawl.
-Add `username`/`password` to that data config and re-crawl; see
-[OneNote requires delegated authentication](#onenote-requires-delegated-authentication) for the
-app-registration changes and for what a delegated token can reach. Until that is done the crawl now
-fails with a message naming the retirement, instead of reporting success with zero documents.
+Two things change for `oneNoteDataStore` in this release, and both need a re-crawl to take effect.
+
+- **It can no longer crawl at all with `client_secret` alone.** Microsoft retired app-only tokens
+  for the Microsoft Graph OneNote API on 2025-03-31, so an existing OneNote data config has been
+  indexing nothing since then while still reporting a successful crawl. Add `username`/`password`
+  to that data config and re-crawl; see
+  [OneNote requires delegated authentication](#onenote-requires-delegated-authentication) for the
+  app-registration changes and for what a delegated token can reach. Until that is done the crawl
+  now fails with a message naming the retirement, instead of reporting success with zero documents.
+- **Site notebooks now cover every site, not just the root site.** `site_note_crawler=true`
+  previously listed notebooks under `GET /sites/root` and nowhere else. It now enumerates every
+  site in the tenant, so a re-crawl can add notebooks from team sites that were never indexed
+  before, and issues one notebook-listing request per site. Set `site_id` to keep the crawl on a
+  single site.
 
 Leave the other data configs on `client_secret`: no other DataStore in this plugin is affected by
 the OneNote retirement, and giving them a delegated identity would narrow their crawls to what that
@@ -1148,7 +1157,8 @@ See the [Teams script key table](#teams) above for the full list of `message.*` 
 
 | Parameter | Description | Default | Notes |
 |-----------|-------------|---------|-------|
-| `site_note_crawler` | Enable crawling of site notebooks | `true` | Crawls notebooks at the root SharePoint site |
+| `site_note_crawler` | Enable crawling of site notebooks | `true` | Crawls notebooks in every SharePoint site in the tenant, or in `site_id` alone when that is set. Earlier releases crawled the root site and nothing else |
+| `site_id` | Restrict site notebooks to one site | - | Site ID as `hostname,siteCollectionId,siteId`. Leave unset to enumerate every site, the same way `sharePointPageDataStore` reads this parameter |
 | `user_note_crawler` | Enable crawling of user notebooks | `true` | Crawls personal OneNote notebooks for licensed users |
 | `group_note_crawler` | Enable crawling of group notebooks | `true` | Crawls shared notebooks in Microsoft 365 groups |
 | `include_pattern` | Regex a notebook name must fully match to be crawled | - | Matched against the notebook's display name with `Matcher.matches()` (full match). A regex that does not compile aborts the crawl at its start |
@@ -1246,7 +1256,7 @@ The OneNoteDataStore provides comprehensive OneNote notebook crawling with the f
   **both** unset and site notebooks are indexed but findable by nobody.
 
 **Crawling Modes (Processing Order):**
-1. **Site Notebooks**: Crawls notebooks at the root SharePoint site level (`/sites/root/onenote/notebooks`)
+1. **Site Notebooks**: Crawls notebooks in every SharePoint site (`/sites/{siteId}/onenote/notebooks`), or in `site_id` alone when that is set
 2. **User Notebooks**: Iterates through all licensed users and crawls their personal notebooks (`/users/{userId}/onenote/notebooks`)
 3. **Group Notebooks**: Crawls shared notebooks associated with Microsoft 365 groups (`/groups/{groupId}/onenote/notebooks`)
 
@@ -1281,10 +1291,12 @@ plugin issues no `$batch` request anywhere.
   tenant with unlicensed-for-OneDrive or never-logged-in users, and the user path was never the
   one this fix repaired, so logging one `WARN` per such user would add volume without adding
   diagnostic value.
-- **Root Site Failures**: a failure resolving the root site - the one Graph call site notebooks
-  need before they can be listed - only skips the site notebooks; user and group notebook crawling
-  continues regardless. `permission_failure_policy` is not involved: OneNoteDataStore never calls
-  a Graph permission-fetch endpoint for any notebook type, so that parameter has no effect on it
+- **Site Enumeration Failures**: a failure listing the tenant's sites - or resolving the one named
+  by `site_id` - only skips the site notebooks; user and group notebook crawling continues
+  regardless. A single site that Graph returns without an id is skipped on its own, leaving the
+  rest of the tenant to be crawled. `permission_failure_policy` is not involved: OneNoteDataStore
+  never calls a Graph permission-fetch endpoint for any notebook type, so that parameter has no
+  effect on it
 - **Credential Rejection**: a 401 while listing notebooks aborts the crawl unless
   `ignore_error=true`, because the same credentials are used for every site, user and group and
   the crawl could only end with nothing indexed. When the credential is app-only, the failure
