@@ -29,12 +29,14 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codelibs.core.CoreLibConstants;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
+import org.codelibs.fess.crawler.entity.ExtractData;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.exception.MaxLengthExceededException;
 import org.codelibs.fess.crawler.filter.UrlFilter;
@@ -44,6 +46,7 @@ import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
+import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
@@ -807,13 +810,14 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         // Only process real DriveItems with file content
         if (item.getFile() != null) {
             try (final InputStream in = client.getDriveContent(driveId, item.getId())) {
-                return ComponentUtil.getExtractorFactory()
+                final ExtractData extractData = ComponentUtil.getExtractorFactory()
                         .builder(in, Collections.emptyMap())
                         .filename(item.getName())
                         .maxContentLength(maxContentLength)
                         .extractorName(extractorName)
-                        .extract()
-                        .getContent();
+                        .extract();
+
+                return buildExtractedContent(extractData, item.getName());
             } catch (final Exception e) {
                 if (!ignoreError && !ComponentUtil.getFessConfig().isCrawlerIgnoreContentException()) {
                     throw new DataStoreCrawlingException(item.getWebUrl(), "Failed to get contents: " + item.getName(), e);
@@ -826,6 +830,50 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             }
         }
         return StringUtil.EMPTY;
+    }
+
+    protected String buildExtractedContent(final ExtractData extractData, final String fileName) {
+        final FessConfig fessConfig = ComponentUtil.getFessConfig();
+
+        String content = extractData.getContent();
+        if (content == null) {
+            content = StringUtil.EMPTY;
+        }
+
+        final StringBuilder contentMetaBuf = new StringBuilder(1000);
+        extractData.getKeySet().stream().filter(key -> extractData.getValues(key) != null).forEach(key -> {
+            if (fessConfig.isCrawlerMetadataContentIncluded(key)) {
+                final String joinedValue = StringUtils.join(extractData.getValues(key), ' ');
+                if (StringUtil.isNotBlank(joinedValue)) {
+                    if (contentMetaBuf.length() > 0) {
+                        contentMetaBuf.append(' ');
+                    }
+                    contentMetaBuf.append(joinedValue.trim());
+                }
+            }
+        });
+
+        final StringBuilder buf = new StringBuilder(content.length() + contentMetaBuf.length() + 100);
+
+        if (fessConfig.isCrawlerDocumentFileAppendBodyContent()) {
+            buf.append(content);
+        }
+
+        if (fessConfig.isCrawlerDocumentFileAppendMetaContent()) {
+            if (buf.length() > 0 && contentMetaBuf.length() > 0) {
+                buf.append(' ');
+            }
+            buf.append(contentMetaBuf);
+        }
+
+        if (StringUtil.isNotBlank(fileName) && fessConfig.isCrawlerDocumentAppendFilename()) {
+            if (buf.length() > 0) {
+                buf.append(' ');
+            }
+            buf.append(fileName);
+        }
+
+        return buf.toString().trim();
     }
 
     /**

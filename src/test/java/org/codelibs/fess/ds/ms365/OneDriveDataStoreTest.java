@@ -43,6 +43,7 @@ import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.SystemHelper;
 import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
+import org.codelibs.fess.crawler.entity.ExtractData;
 
 import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.DriveItem;
@@ -644,6 +645,23 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
                 () -> testDataStore.storeData(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>()));
         assertTrue("the failure must name the parameter, got: " + e.getMessage(), e.getMessage().contains("exclude_pattern"));
         assertEquals("no Graph client may be created for a crawl that cannot honour its own filter", 0, clientsCreated.get());
+    }
+
+    @Test
+    public void test_buildExtractedContent_includesAllowedMetadataAndExcludesTechnicalMetadata() {
+        final ExtractData extractData = new ExtractData("body-text");
+
+        extractData.putValue("dc:creator", "Test Author");
+        extractData.putValue("custom-keywords", "alpha beta gamma");
+        extractData.putValue("X-TIKA:Parsed-By", "should-not-be-searchable");
+        extractData.putValue("resourceName", "should-not-be-searchable.txt");
+
+        final String content = dataStore.buildExtractedContent(extractData, "example.jpg");
+
+        assertTrue(content.contains("body-text"));
+        assertTrue(content.contains("Test Author"));
+        assertTrue(content.contains("alpha beta gamma"));
+        assertFalse(content.contains("should-not-be-searchable"));
     }
 
     static abstract class TestCallback implements IndexUpdateCallback {
