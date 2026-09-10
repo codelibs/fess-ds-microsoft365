@@ -814,6 +814,12 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     /**
      * Checks if a drive is a system library.
      *
+     * <p>A drive's Graph {@code webUrl} is the library's own URL, {@code {siteUrl}/{librarySegment}}
+     * with no trailing slash, so Style Library and Form Templates ({@code FormServerTemplates}) are
+     * identified by that last segment. Comparing only the library's own segment keeps a site whose
+     * path merely contains such a name from having all of its libraries treated as system libraries.
+     * Libraries under {@code /_catalogs/} are matched as before.</p>
+     *
      * @param drive document library drive to check
      * @return true if the drive is a system library, false otherwise
      */
@@ -823,8 +829,11 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         }
 
         final String webUrl = drive.getWebUrl().toLowerCase();
-        return webUrl.contains("/_catalogs/") || webUrl.contains("/forms/") || webUrl.contains("/style%20library/")
-                || webUrl.contains("/style library/") || webUrl.contains("/formservertemplates/");
+        if (webUrl.contains("/_catalogs/")) {
+            return true;
+        }
+        final String librarySegment = webUrl.substring(webUrl.lastIndexOf('/') + 1).replace("%20", " ");
+        return "style library".equals(librarySegment) || "formservertemplates".equals(librarySegment);
     }
 
     /**

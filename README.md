@@ -621,7 +621,7 @@ at either setting.
 | DataStore | What `ignore_error=true` tolerates |
 |-----------|------------------------------------|
 | `oneDriveDataStore` | a failure extracting one file's content (the document is still indexed, without contents) |
-| `sharePointDocLibDataStore` | a site whose drives cannot be listed, and a document library that fails to process |
+| `sharePointDocLibDataStore` | a site whose document libraries cannot be listed while every site is crawled (`site_id` unset); the crawl moves on to the next site. Nothing else: a document library that fails to process is recorded as a failure URL and skipped at either setting, and with `site_id` set a failure to read that site or list its libraries aborts the crawl at either setting |
 | `sharePointListDataStore` | a site that fails to process, a list that fails to process, a list item that fails to process, and a failure re-reading a list item's fields (the item is still indexed, with the fields already in hand) |
 | `sharePointPageDataStore` | a site that fails to process and a page that fails to process |
 | `oneNoteDataStore` | Microsoft Graph refusing the configured credentials (HTTP 401) while listing a site's, user's or group's notebooks. Every other listing failure - 403, 404, a server error - skips that one owner at either setting, logged at `WARN` (at `debug` for a user's 404, see "404 Visibility" below), because under delegated authentication "this owner is not visible to the signed-in account" is the normal case rather than a fault |
@@ -826,16 +826,28 @@ the first place, not just their ACLs, so a re-crawl is needed here too:
   indexes **zero**. If you started using `list_id` as a workaround for `list_template_filter`
   matching nothing in "all lists" mode, double-check that the filter value you left in place still
   matches the template of the list `list_id` points at.
-- **`ignore_system_libraries`** was already enforced in SharePointDocLibDataStore before this
-  release - nothing changes there, and no re-crawl is needed on its account. The bug was isolated
-  to OneDriveDataStore: when it crawls all SharePoint sites' document libraries (Crawling Mode 1,
-  which runs whenever `shared_documents_drive_crawler=true`, the default), no system-library check
-  was made at all, so the default `true` changed nothing there - `_catalogs`, `Forms`, Style
-  Library, and `FormServerTemplates` were crawled like any other library. Mode 1 enforces it now,
-  still by default. Because Mode 1 indexes the files inside those libraries, not just library
-  metadata the way SharePointDocLibDataStore does, the drop in indexed items after a re-crawl can
-  be far larger here. Re-crawl OneDriveDataStore to remove them from the index, or set
-  `ignore_system_libraries=false` first if you want to keep indexing them.
+- **`ignore_system_libraries`** never excluded Style Library or Form Templates
+  (`FormServerTemplates`). The system-library check compared the drive's URL against patterns
+  ending in a slash, such as `/style%20library/`, but a drive's Graph `webUrl` ends with the
+  library's own URL segment (`.../Style%20Library`), so of the libraries it was meant to exclude
+  only those under `/_catalogs/` could match. It also matched `/forms/` anywhere in the URL, so a
+  site whose path contains a `Forms` segment (e.g. a site collection named "Forms") had every one
+  of its libraries treated as a system library. The check now compares the library's own URL
+  segment; `Forms` is no longer part of it, since it is the folder inside every library that holds
+  its view pages rather than a library. Graph does not list a drive that carries the `system`
+  facet unless asked to, and this plugin does not ask, so such a drive is not crawled at either
+  setting.
+  - **SharePointDocLibDataStore:** with the default `true`, Style Library and Form Templates are no
+    longer indexed, and the libraries of a site whose path contains `Forms` now are. Re-crawl to
+    apply both, or set `ignore_system_libraries=false` first if you want to keep indexing the
+    system libraries.
+  - **OneDriveDataStore:** when it crawls all SharePoint sites' document libraries (Crawling Mode
+    1, which runs whenever `shared_documents_drive_crawler=true`, the default), no system-library
+    check was made at all, so the default `true` changed nothing there. Mode 1 enforces it now,
+    still by default. Because Mode 1 indexes the files inside those libraries, not just library
+    metadata the way SharePointDocLibDataStore does, the drop in indexed items after a re-crawl can
+    be far larger here. Re-crawl OneDriveDataStore to remove them from the index, or set
+    `ignore_system_libraries=false` first if you want to keep indexing them.
 
   **The parameter still does nothing in Modes 2 and 3.** A user's personal drive
   (`user_drive_crawler`) and a group's drive (`group_drive_crawler`) are crawled whatever
@@ -1330,7 +1342,7 @@ The implementation extracts and indexes the following notebook metadata:
 | `shared_documents_drive_crawler` | Enable SharePoint document library crawling | `true` | Enumerates every SharePoint site and crawls the files in its document libraries. It does **not** crawl the signed-in user's own OneDrive - no `/me/drive` request is ever issued by this DataStore |
 | `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
-| `ignore_system_libraries` | Skip system libraries (`_catalogs`, `Forms`, Style Library, `FormServerTemplates`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the drive's URL, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below - so a site whose path merely contains a `/Forms/` segment (e.g. a site collection named "Forms") is misdetected as a system library and has all of its files skipped by default, not just an actual Forms system library |
+| `ignore_system_libraries` | Skip system libraries (Style Library, `FormServerTemplates`, and libraries under `_catalogs`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the library's own URL segment, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below |
 
 #### The per-item failure log line changed
 
@@ -1447,21 +1459,20 @@ correct on a non-English tenant too.
 |-----------|-------------|---------|-------|
 | `site_id` | Specific site ID to crawl | All sites | Full site ID format: `hostname,siteCollectionId,siteId` |
 | `exclude_site_id` | Site IDs to exclude | - | See format guide below |
-| `ignore_system_libraries` | Skip system libraries | `true` | Excludes `_catalogs`, `Forms`, Style Library, and `FormServerTemplates` folders (matched case-insensitively against the drive's URL) |
+| `ignore_system_libraries` | Skip system libraries | `true` | Excludes Style Library, `FormServerTemplates` (Form Templates), and libraries under `_catalogs`, matched case-insensitively against the library's own URL segment |
 | `number_of_threads` | Number of processing threads | `1` | Concurrent document library processing |
-| `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed libraries |
+| `ignore_error` | Continue crawling when a site's document libraries cannot be listed | `false` | Applies only while every site is crawled (`site_id` unset). A library that fails to process is skipped at either setting - see [`ignore_error` scope differs by DataStore](#ignore_error-scope-differs-by-datastore) |
 | `include_pattern` | Regex pattern matched against the library's browser URL (`doclib.url`), not its display name | - | e.g. `https://contoso\.sharepoint\.com/sites/allowed/.*` |
 | `exclude_pattern` | Regex pattern matched against the library's browser URL (`doclib.url`), not its display name | - | e.g. `.*/sites/blocked/.*` |
 | `default_permissions` | Default role assignments | - | Additional permissions for all libraries |
 
 > **Behavior changes in this release:**
-> - `ignore_system_libraries` (default `true`) already worked correctly in this DataStore before
->   this release: the check was a real conditional here, not just logged, so nothing changes for
->   SharePointDocLibDataStore and no re-crawl is needed on its account. The bug this release fixes
->   was isolated to OneDriveDataStore, where the same check was only ever passed as an argument to
->   a `debug` log statement - see
+> - `ignore_system_libraries` (default `true`) did not exclude Style Library or Form Templates here
+>   before this release, and treated every library of a site whose path contains a `Forms` segment
+>   as a system library. With the default, Style Library and Form Templates are now skipped and
+>   such a site's libraries are crawled - see
 >   [Re-crawling after upgrading to the crawl filter fixes](#re-crawling-after-upgrading-to-the-crawl-filter-fixes)
->   above for what changes there.
+>   above for what changes on upgrade.
 > - `include_pattern` / `exclude_pattern` were declared but never referenced anywhere in this
 >   DataStore, so configuring them previously did nothing. They are wired to a Fess `UrlFilter` now,
 >   matched against the library's browser URL (`doclib.url`, generated by
