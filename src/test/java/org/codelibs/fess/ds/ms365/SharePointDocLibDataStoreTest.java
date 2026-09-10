@@ -17,7 +17,9 @@ package org.codelibs.fess.ds.ms365;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -27,9 +29,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -37,6 +41,7 @@ import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
+import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.PermissionHelper;
@@ -113,31 +118,28 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
 
     @Test
     public void test_isSystemLibrary() {
+        // Each webUrl has the shape Graph returns for a drive: the library's own URL,
+        // {siteUrl}/{librarySegment}, with no trailing slash.
         final Drive drive1 = new Drive();
         drive1.setName("Documents");
         drive1.setWebUrl("https://contoso.sharepoint.com/sites/test/Shared%20Documents");
 
         final Drive drive2 = new Drive();
         drive2.setName("Style Library");
-        drive2.setWebUrl("https://contoso.sharepoint.com/sites/test/Style%20Library/");
+        drive2.setWebUrl("https://contoso.sharepoint.com/sites/test/Style%20Library");
 
         final Drive drive3 = new Drive();
         drive3.setName("Form Templates");
-        drive3.setWebUrl("https://contoso.sharepoint.com/sites/test/Forms/AllItems.aspx");
+        drive3.setWebUrl("https://contoso.sharepoint.com/sites/test/FormServerTemplates");
 
         final Drive drive4 = new Drive();
         drive4.setName("_catalogs");
         drive4.setWebUrl("https://contoso.sharepoint.com/sites/test/_catalogs/masterpage");
 
-        final Drive drive5 = new Drive();
-        drive5.setName("FormServerTemplates");
-        drive5.setWebUrl("https://contoso.sharepoint.com/sites/test/FormServerTemplates/");
-
         assertFalse(dataStore.isSystemLibrary(drive1));
         assertTrue(dataStore.isSystemLibrary(drive2));
         assertTrue(dataStore.isSystemLibrary(drive3));
         assertTrue(dataStore.isSystemLibrary(drive4));
-        assertTrue(dataStore.isSystemLibrary(drive5));
     }
 
     @Test
@@ -145,15 +147,15 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         // Test with non-English library names but system URLs
         final Drive drive1 = new Drive();
         drive1.setName("スタイル ライブラリ"); // Japanese for "Style Library"
-        drive1.setWebUrl("https://contoso.sharepoint.com/sites/test/Style%20Library/");
+        drive1.setWebUrl("https://contoso.sharepoint.com/sites/test/Style%20Library");
 
         final Drive drive2 = new Drive();
         drive2.setName("Bibliothèque de styles"); // French for "Style Library"
-        drive2.setWebUrl("https://contoso.sharepoint.com/sites/test/Style%20Library/");
+        drive2.setWebUrl("https://contoso.sharepoint.com/sites/test/Style%20Library");
 
         final Drive drive3 = new Drive();
-        drive3.setName("Formulare"); // German for "Forms"
-        drive3.setWebUrl("https://contoso.sharepoint.com/sites/test/Forms/AllItems.aspx");
+        drive3.setName("Formularvorlagen"); // German for "Form Templates"
+        drive3.setWebUrl("https://contoso.sharepoint.com/sites/test/FormServerTemplates");
 
         final Drive drive4 = new Drive();
         drive4.setName("ドキュメント"); // Japanese for "Documents"
@@ -162,8 +164,19 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
         // System libraries should be detected regardless of display name language
         assertTrue("Japanese Style Library should be detected as system", dataStore.isSystemLibrary(drive1));
         assertTrue("French Style Library should be detected as system", dataStore.isSystemLibrary(drive2));
-        assertTrue("German Forms should be detected as system", dataStore.isSystemLibrary(drive3));
+        assertTrue("German Form Templates should be detected as system", dataStore.isSystemLibrary(drive3));
         assertFalse("Japanese Documents should not be detected as system", dataStore.isSystemLibrary(drive4));
+    }
+
+    @Test
+    public void test_isSystemLibrary_siteNamedLikeASystemFolder() {
+        // Only the library's own URL segment is compared. A site collection named "Forms" used to
+        // have every one of its libraries treated as a system library.
+        final Drive drive = new Drive();
+        drive.setName("Documents");
+        drive.setWebUrl("https://contoso.sharepoint.com/sites/Forms/Shared%20Documents");
+
+        assertFalse("A library of a site named Forms is not a system library", dataStore.isSystemLibrary(drive));
     }
 
     @Test
@@ -652,6 +665,135 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
                 () -> testDataStore.storeData(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>()));
         assertTrue("the failure must name the parameter, got: " + e.getMessage(), e.getMessage().contains("exclude_pattern"));
         assertEquals("no Graph client may be created for a crawl that cannot honour its own filter", 0, clientsCreated.get());
+    }
+
+    /**
+     * The site crawl must honour {@code ignore_system_libraries} for the URLs Graph actually
+     * returns. The system-library check used to require a trailing slash that a drive's
+     * {@code webUrl} never has, so both settings crawled the same libraries.
+     */
+    @Test
+    public void test_storeDocumentLibrariesInSite_ignoreSystemLibraries() {
+        final List<Drive> drives = new ArrayList<>();
+        for (final String segment : List.of("Shared%20Documents", "Style%20Library", "FormServerTemplates")) {
+            final Drive drive = new Drive();
+            drive.setId(segment);
+            drive.setDriveType(Microsoft365Constants.DOCUMENT_LIBRARY);
+            drive.setWebUrl("https://contoso.sharepoint.com/sites/test/" + segment);
+            drives.add(drive);
+        }
+
+        assertEquals("the default must skip Style Library and Form Templates",
+                List.of("https://contoso.sharepoint.com/sites/test/Shared%20Documents"), crawlLibraries(drives, "true"));
+        assertEquals("ignore_system_libraries=false must crawl every library",
+                List.of("https://contoso.sharepoint.com/sites/test/FormServerTemplates",
+                        "https://contoso.sharepoint.com/sites/test/Shared%20Documents",
+                        "https://contoso.sharepoint.com/sites/test/Style%20Library"),
+                crawlLibraries(drives, "false"));
+    }
+
+    private List<String> crawlLibraries(final List<Drive> drives, final String ignoreSystemLibraries) {
+        final List<String> crawled = Collections.synchronizedList(new ArrayList<>());
+        final SharePointDocLibDataStore testDataStore = new SharePointDocLibDataStore() {
+            @Override
+            protected void getSiteDrives(final Microsoft365Client client, final String siteId, final Consumer<Drive> consumer) {
+                drives.forEach(consumer);
+            }
+
+            @Override
+            protected void storeDocumentLibrary(final DataConfig dataConfig, final IndexUpdateCallback callback,
+                    final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
+                    final Map<String, Object> defaultDataMap, final Microsoft365Client client, final Site site, final Drive drive) {
+                crawled.add(drive.getWebUrl());
+            }
+        };
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("ignore_system_libraries", ignoreSystemLibraries);
+        final Site site = new Site();
+        site.setId("site-1");
+        site.setDisplayName("Site");
+
+        final Microsoft365DataStore.ReportingExecutor executor = testDataStore.newFixedThreadPool(1);
+        try {
+            testDataStore.storeDocumentLibrariesInSite(new DataConfig(), null, new HashMap<>(), paramMap, new HashMap<>(), new HashMap<>(),
+                    executor, null, site);
+            testDataStore.shutdownExecutor(executor, paramMap);
+        } finally {
+            executor.shutdownNow();
+        }
+        final List<String> sorted = new ArrayList<>(crawled);
+        Collections.sort(sorted);
+        return sorted;
+    }
+
+    /**
+     * Pins the one failure {@code ignore_error} decides in this DataStore: while every site is
+     * crawled, a site whose document libraries cannot be listed aborts the crawl at the default and
+     * is skipped with {@code ignore_error=true}. A document library that fails to process is handled
+     * inside {@code storeDocumentLibrary} at either setting.
+     */
+    @Test
+    public void test_storeData_ignoreErrorSkipsASiteWhoseLibrariesCannotBeListed() {
+        final UrlFilter urlFilter = mock(UrlFilter.class);
+        when(urlFilter.match(anyString())).thenReturn(true);
+        ComponentUtil.register(urlFilter, UrlFilter.class.getCanonicalName());
+
+        final List<String> crawledAtDefault = Collections.synchronizedList(new ArrayList<>());
+        assertThrows(DataStoreCrawlingException.class,
+                () -> crawlTwoSitesWhereTheFirstCannotBeListed(new DataStoreParams(), crawledAtDefault));
+        assertEquals("the default must abort before reaching the second site", List.of(), crawledAtDefault);
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("ignore_error", "true");
+        final List<String> crawledWhenIgnored = Collections.synchronizedList(new ArrayList<>());
+        crawlTwoSitesWhereTheFirstCannotBeListed(paramMap, crawledWhenIgnored);
+        assertEquals("ignore_error=true must skip the first site and crawl the second",
+                List.of("https://contoso.sharepoint.com/sites/second/Shared%20Documents"), crawledWhenIgnored);
+    }
+
+    private void crawlTwoSitesWhereTheFirstCannotBeListed(final DataStoreParams paramMap, final List<String> crawled) {
+        final Site first = new Site();
+        first.setId("first");
+        first.setDisplayName("First");
+        final Site second = new Site();
+        second.setId("second");
+        second.setDisplayName("Second");
+
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        doAnswer(invocation -> {
+            final Consumer<Site> consumer = invocation.getArgument(0);
+            consumer.accept(first);
+            consumer.accept(second);
+            return null;
+        }).when(client).getSites(any());
+
+        final SharePointDocLibDataStore testDataStore = new SharePointDocLibDataStore() {
+            @Override
+            protected Microsoft365Client createClient(final DataStoreParams params) {
+                return client;
+            }
+
+            @Override
+            protected void getSiteDrives(final Microsoft365Client c, final String siteId, final Consumer<Drive> consumer) {
+                if ("first".equals(siteId)) {
+                    throw new IllegalStateException("the first site's document libraries cannot be listed");
+                }
+                final Drive drive = new Drive();
+                drive.setId("drive-2");
+                drive.setDriveType(Microsoft365Constants.DOCUMENT_LIBRARY);
+                drive.setWebUrl("https://contoso.sharepoint.com/sites/second/Shared%20Documents");
+                consumer.accept(drive);
+            }
+
+            @Override
+            protected void storeDocumentLibrary(final DataConfig dataConfig, final IndexUpdateCallback callback,
+                    final Map<String, Object> configMap, final DataStoreParams params, final Map<String, String> scriptMap,
+                    final Map<String, Object> defaultDataMap, final Microsoft365Client c, final Site site, final Drive drive) {
+                crawled.add(drive.getWebUrl());
+            }
+        };
+        testDataStore.storeData(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>());
     }
 
     private static class TestCallback implements IndexUpdateCallback {

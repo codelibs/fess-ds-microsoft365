@@ -356,7 +356,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         final DataStoreParams paramMap = new DataStoreParams();
 
         assertFalse("a style library must be skipped by default",
-                dataStore.isTargetDrive(paramMap, driveWithUrl("https://contoso.sharepoint.com/sites/test/Style%20Library/")));
+                dataStore.isTargetDrive(paramMap, driveWithUrl("https://contoso.sharepoint.com/sites/test/Style%20Library")));
         assertTrue("an ordinary document library must be crawled",
                 dataStore.isTargetDrive(paramMap, driveWithUrl("https://contoso.sharepoint.com/sites/test/Shared%20Documents")));
     }
@@ -367,7 +367,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put("ignore_system_libraries", "false");
 
-        assertTrue(dataStore.isTargetDrive(paramMap, driveWithUrl("https://contoso.sharepoint.com/sites/test/Style%20Library/")));
+        assertTrue(dataStore.isTargetDrive(paramMap, driveWithUrl("https://contoso.sharepoint.com/sites/test/Style%20Library")));
     }
 
     private static Drive driveWithUrl(final String webUrl) {
