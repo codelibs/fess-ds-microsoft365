@@ -1346,6 +1346,34 @@ shared one row per item and still do. Only the log text differs. **An alert or l
 grepping for `Crawling Access Exception at` will stop matching non-access failures on OneDrive**;
 match `Processing exception at` as well, or drop to matching the shared `at : ` suffix.
 
+#### Re-crawling after upgrading to the drive-item URL encoding fix
+
+This affects only items whose Graph `webUrl` is a `/_layouts/` viewer URL, which `getUrl()` rewrites
+into a path-based URL indexed as `file.url`. Two defects in that rewrite are fixed:
+
+- **Parent folder segments were percent-encoded twice.** Graph documents `parentReference.path` as
+  a percent-encoded path (for example `/drive/root:/Documents/my%20file.docx`), but each segment was
+  encoded again, so `My%20Folder` became `My%2520Folder` and a non-ASCII folder name became an
+  unusable `%25E8%25B3%2587...`. Every file inside a folder whose name contains a space or a
+  non-ASCII character got a link that does not resolve. The item's own name was always encoded
+  exactly once and was never affected, which is why the problem only showed up below a folder.
+- **`drive_id` crawls spliced in the drive's display name unencoded.** A display name containing a
+  space produced a URL with a literal space in it, and a drive whose display name differs from its
+  URL segment - a localized default library, or one renamed after creation - produced a link to a
+  path that does not exist. The drive's own `webUrl` is now used, falling back to the encoded
+  display name only when Graph returns no `webUrl`.
+
+Existing documents keep the old URL until OneDriveDataStore is crawled again. Because a Fess
+document ID is derived from the URL, a re-crawl indexes the corrected URL as a **new** document
+rather than updating the old one, and the stale document is not removed by the crawler's own
+cleanup while it still carries an `expires` value (`day.for.cleanup`, 3 days by default). Delete the
+data store's existing documents before re-crawling if you do not want both links in the results in
+the meantime.
+
+`include_pattern` / `exclude_pattern` match `file.url`, so a pattern written against a
+double-encoded path no longer matches. Patterns written against a site or library path are
+unaffected.
+
 #### OneDrive Implementation Details
 
 The OneDriveDataStore provides comprehensive Microsoft 365 file crawling capabilities with the following implementation features:
@@ -1394,11 +1422,18 @@ The implementation extracts and indexes 30+ metadata fields per file:
 - **Permission Data**: role-based access control extracted from Microsoft Graph permissions API
 
 **URL Processing Strategy:**
-The implementation generates user-friendly URLs based on crawling context:
+A `webUrl` that is not a `/_layouts/` viewer URL is indexed as it is. For a `/_layouts/` URL the
+implementation rebuilds a path-based URL from the item's parent path and name:
 - **SharePoint Libraries**: `{siteUrl}/Shared%20Documents/{path}` for shared/group drives
 - **OneDrive Personal**: `{siteUrl}/Documents/{path}` for user drives
-- **Custom Drives**: `{siteUrl}/{driveName}/{path}` for specific drive crawling
-- **URL Encoding**: Proper encoding of file and folder names with space handling
+- **Custom Drives**: `{driveWebUrl}/{path}` for specific drive crawling - the drive's own Graph
+  `webUrl`, not its display name
+- **URL Encoding**: Graph percent-encodes `parentReference.path` but not `DriveItem.name`, so the
+  parent segments are used unchanged and only the item name is encoded
+
+The library segments above are deliberately the English ones. A SharePoint library's URL segment
+does not localize - only its display name does - so `/Shared%20Documents` and `/Documents` are
+correct on a non-English tenant too.
 
 **Content Size Management:**
 - **Configurable Limits**: `max_content_length` parameter with fallback to Fess content length helper

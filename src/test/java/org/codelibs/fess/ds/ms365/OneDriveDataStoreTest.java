@@ -113,6 +113,98 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
                 dataStore.getUrl(configMap, paramMap, item));
     }
 
+    /**
+     * Builds a drive item whose webUrl is a {@code /_layouts/} viewer URL, so {@code getUrl} takes
+     * the branch that rebuilds a path-based URL.
+     *
+     * @param parentPath the Graph {@code parentReference.path}, which Graph percent-encodes
+     * @param name the item's name, which Graph does not encode
+     * @return the drive item
+     */
+    private DriveItem layoutsItem(final String parentPath, final String name) {
+        final DriveItem item = new DriveItem();
+        item.setWebUrl("https://contoso.sharepoint.com/sites/test-site/_layouts/15/Doc.aspx?sourcedoc=%X-X-X%7D&file=x&action=default");
+        final ItemReference parentRef = new ItemReference();
+        parentRef.setPath(parentPath);
+        item.setParentReference(parentRef);
+        item.setName(name);
+        return item;
+    }
+
+    @Test
+    public void test_getUrl_doesNotDoubleEncodeParentPath() {
+        // Graph documents parentReference.path as a percent-encoded path
+        // (e.g. "/drive/root:/Documents/my%20file.docx"), so its segments must be passed through
+        // as they are. Encoding them again turns %20 into %2520 and breaks the link.
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_SHARED);
+
+        assertEquals("A folder name containing a space must not be encoded twice",
+                "https://contoso.sharepoint.com/sites/test-site/Shared%20Documents/My%20Folder/Sub%20Dir/my%20file.docx",
+                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/My%20Folder/Sub%20Dir", "my file.docx")));
+    }
+
+    @Test
+    public void test_getUrl_doesNotDoubleEncodeNonAsciiParentPath() {
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_SHARED);
+
+        // "/drive/root:/資料" as Graph percent-encodes it.
+        assertEquals("A non-ASCII folder name must not be encoded twice",
+                "https://contoso.sharepoint.com/sites/test-site/Shared%20Documents/%E8%B3%87%E6%96%99/%E8%B3%87%E6%96%99.docx",
+                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/%E8%B3%87%E6%96%99", "資料.docx")));
+    }
+
+    @Test
+    public void test_getUrl_encodesItemNameExactlyOnce() {
+        // DriveItem.name is the raw file name, not a percent-encoded one, so it does need encoding.
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_SHARED);
+
+        assertEquals("The item name is raw and must be encoded once",
+                "https://contoso.sharepoint.com/sites/test-site/Shared%20Documents/docs/my%20file.docx",
+                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/docs", "my file.docx")));
+    }
+
+    @Test
+    public void test_getUrl_driveCrawlerUsesDriveWebUrl() {
+        // A drive's URL segment is fixed at creation; Drive.name is a read-write display name.
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_DRIVE);
+        final Drive drive = new Drive();
+        drive.setName("Marketing Assets");
+        drive.setWebUrl("https://contoso.sharepoint.com/sites/test-site/MktAssets");
+        configMap.put(OneDriveDataStore.DRIVE_INFO, drive);
+
+        assertEquals("The drive's own webUrl must be used, not its display name",
+                "https://contoso.sharepoint.com/sites/test-site/MktAssets/docs/a.docx",
+                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/docs", "a.docx")));
+    }
+
+    @Test
+    public void test_getUrl_driveCrawlerEncodesNameWhenWebUrlMissing() {
+        // Without a webUrl the display name is all there is - it must at least be encoded.
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_DRIVE);
+        final Drive drive = new Drive();
+        drive.setName("Marketing Assets");
+        configMap.put(OneDriveDataStore.DRIVE_INFO, drive);
+
+        assertEquals("A drive name spliced into a URL must be encoded",
+                "https://contoso.sharepoint.com/sites/test-site/Marketing%20Assets/docs/a.docx",
+                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/docs", "a.docx")));
+    }
+
+    @Test
+    public void test_getUrl_userDriveKeepsEnglishLibrarySegment() {
+        // A library's URL segment does not localize, so the hardcoded English segment is correct.
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_USER);
+
+        assertEquals("https://contoso.sharepoint.com/sites/test-site/Documents/docs/a.docx",
+                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/docs", "a.docx")));
+    }
+
     @Test
     public void test_getUrlFilter() {
         DataStoreParams paramMap = new DataStoreParams();
