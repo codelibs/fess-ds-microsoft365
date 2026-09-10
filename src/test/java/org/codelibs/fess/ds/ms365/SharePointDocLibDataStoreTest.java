@@ -393,24 +393,91 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
     }
 
     @Test
-    public void test_isTargetLibrary_filtersOnCanonicalUrlNotRawWebUrl() {
+    public void test_isTargetLibrary_filtersOnIndexedUrlNotDisplayName() {
+        final Site site = new Site();
+        site.setWebUrl("https://contoso.sharepoint.com/sites/test");
+
+        // A library whose URL segment does not match its display name: renaming a library in
+        // SharePoint changes the display name and leaves the URL segment as it was at creation.
+        final Drive drive = new Drive();
+        drive.setName("Marketing Assets");
+        drive.setWebUrl("https://contoso.sharepoint.com/sites/test/MktAssets");
+
+        final String indexedUrl = dataStore.generateDocumentLibraryUrl(site, drive);
+        assertEquals("doclib.url must be the Graph webUrl", drive.getWebUrl(), indexedUrl);
+
+        final UrlFilter urlFilter = mock(UrlFilter.class);
+        // Only a URL composed from the display name matches; the indexed URL does not.
+        when(urlFilter.match("https://contoso.sharepoint.com/sites/test/Marketing%20Assets")).thenReturn(true);
+        when(urlFilter.match(indexedUrl)).thenReturn(false);
+
+        assertFalse("isTargetLibrary must filter on the URL indexed as doclib.url, not on the display name",
+                dataStore.isTargetLibrary(urlFilter, site, drive));
+
+        verify(urlFilter).match(indexedUrl);
+    }
+
+    @Test
+    public void test_generateDocumentLibraryUrl_usesGraphWebUrl() {
         final Site site = new Site();
         site.setWebUrl("https://contoso.sharepoint.com/sites/test");
 
         final Drive drive = new Drive();
         drive.setName("Marketing Assets");
-        drive.setWebUrl("https://contoso.sharepoint.com/sites/test/_layouts/15/Doc.aspx?id=1");
+        drive.setWebUrl("https://contoso.sharepoint.com/sites/test/Marketing%20Assets");
 
-        final String canonicalUrl = dataStore.generateDocumentLibraryUrl(site, drive);
-        assertFalse("Test setup should keep the raw webUrl distinct from the canonical URL", drive.getWebUrl().equals(canonicalUrl));
+        assertEquals("Graph's webUrl is the URL that opens the library in a browser",
+                "https://contoso.sharepoint.com/sites/test/Marketing%20Assets", dataStore.generateDocumentLibraryUrl(site, drive));
+    }
 
-        final UrlFilter urlFilter = mock(UrlFilter.class);
-        // Only the raw webUrl matches; the canonical (indexed doclib.url) URL does not.
-        when(urlFilter.match(drive.getWebUrl())).thenReturn(true);
-        when(urlFilter.match(canonicalUrl)).thenReturn(false);
+    @Test
+    public void test_generateDocumentLibraryUrl_localizedDefaultLibrary() {
+        // The default library of a non-English site carries a localized display name but still
+        // lives at /Shared Documents. Composing the URL from the display name yields a 404.
+        final Site site = new Site();
+        site.setWebUrl("https://contoso.sharepoint.com/sites/test");
 
-        assertFalse("isTargetLibrary must filter on the canonical URL indexed as doclib.url, not drive.getWebUrl()",
-                dataStore.isTargetLibrary(urlFilter, site, drive));
+        final Drive drive = new Drive();
+        drive.setName("ドキュメント"); // Japanese for "Documents"
+        drive.setWebUrl("https://contoso.sharepoint.com/sites/test/Shared%20Documents");
+
+        assertEquals("A localized default library must keep its /Shared Documents URL",
+                "https://contoso.sharepoint.com/sites/test/Shared%20Documents", dataStore.generateDocumentLibraryUrl(site, drive));
+    }
+
+    @Test
+    public void test_generateDocumentLibraryUrl_nonAsciiCustomLibrary() {
+        // A custom library whose display name is not part of its URL: the URL segment is fixed
+        // when the library is created, and Drive.name is a read-write display name.
+        final Site site = new Site();
+        site.setWebUrl("https://contoso.sharepoint.com/sites/test");
+
+        final Drive drive = new Drive();
+        drive.setName("クロールテスト"); // Japanese for "Crawl Test"
+        drive.setWebUrl("https://contoso.sharepoint.com/sites/test/Crawl%20Test%20Docs");
+
+        assertEquals("The library's own URL must win over one composed from its display name",
+                "https://contoso.sharepoint.com/sites/test/Crawl%20Test%20Docs", dataStore.generateDocumentLibraryUrl(site, drive));
+    }
+
+    @Test
+    public void test_generateDocumentLibraryUrl_fallsBackWhenWebUrlMissing() {
+        final Site site = new Site();
+        site.setWebUrl("https://contoso.sharepoint.com/sites/test");
+
+        final Drive standard = new Drive();
+        standard.setName("Documents");
+        // webUrl is null
+
+        assertEquals("Without a webUrl the standard library URL is composed as before",
+                "https://contoso.sharepoint.com/sites/test/Shared%20Documents", dataStore.generateDocumentLibraryUrl(site, standard));
+
+        final Drive custom = new Drive();
+        custom.setName("Marketing Assets");
+        // webUrl is null
+
+        assertEquals("Without a webUrl a custom library URL is composed from its encoded name",
+                "https://contoso.sharepoint.com/sites/test/Marketing%20Assets", dataStore.generateDocumentLibraryUrl(site, custom));
     }
 
     @Test
