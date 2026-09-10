@@ -741,6 +741,11 @@ public class OneDriveDataStore extends Microsoft365DataStore {
 
     /**
      * Gets the URL for a drive item.
+     * <p>
+     * A {@code webUrl} that is not a {@code /_layouts/} viewer URL is returned as it is. Otherwise a
+     * path-based URL is rebuilt from the item's parent path and name. Note that the two sources are
+     * encoded differently: Graph percent-encodes {@code parentReference.path} but not
+     * {@link DriveItem#getName()}, so only the name is encoded here.
      *
      * @param configMap The configuration map.
      * @param paramMap The data store parameters.
@@ -760,11 +765,15 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         if (item.getParentReference() != null && item.getParentReference().getPath() != null) {
             final String[] values = item.getParentReference().getPath().split(":", 2);
             if (values.length == 2) {
+                // Graph returns parentReference.path already percent-encoded
+                // (for example "/drive/root:/Documents/my%20file.docx"), so its segments are
+                // appended unchanged. Encoding them again would turn %20 into %2520.
                 for (final String s : values[1].split("/")) {
-                    pathList.add(encodeUrl(s));
+                    pathList.add(s);
                 }
             }
         }
+        // DriveItem.name, in contrast, is the raw name, so it is the one part that needs encoding.
         pathList.add(encodeUrl(item.getName()));
         final String path = pathList.stream().filter(StringUtil::isNotBlank).collect(Collectors.joining("/"));
         if (CRAWLER_TYPE_SHARED.equals(configMap.get(CURRENT_CRAWLER)) || CRAWLER_TYPE_GROUP.equals(configMap.get(CURRENT_CRAWLER))) {
@@ -772,7 +781,13 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         }
         if (CRAWLER_TYPE_DRIVE.equals(configMap.get(CURRENT_CRAWLER))) {
             final Drive drive = (Drive) configMap.get(DRIVE_INFO);
-            return baseUrl + "/" + drive.getName() + "/" + path;
+            // A drive's URL segment is fixed when the drive is created, while Drive.getName() is a
+            // read-write display name that Graph localizes, so prefer the drive's own webUrl.
+            final String driveUrl = drive.getWebUrl();
+            if (StringUtil.isNotBlank(driveUrl)) {
+                return (driveUrl.endsWith("/") ? driveUrl.substring(0, driveUrl.length() - 1) : driveUrl) + "/" + path;
+            }
+            return baseUrl + "/" + encodeUrl(drive.getName()) + "/" + path;
         }
         return baseUrl + "/Documents/" + path;
     }
