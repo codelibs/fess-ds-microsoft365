@@ -78,7 +78,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     protected static final String DOCLIB_SITE_NAME = "site_name";
     /** Field mapping for parent site URL */
     protected static final String DOCLIB_SITE_URL = "site_url";
-    /** Field mapping for canonical URL */
+    /** Field mapping for the URL that opens the library in a browser */
     protected static final String DOCLIB_CANONICAL_URL = "url";
 
     /**
@@ -258,7 +258,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     /**
      * Decides whether a document library should be crawled based on the URL filter built from
      * {@link #INCLUDE_PATTERN}/{@link #EXCLUDE_PATTERN}. The filter is matched against the same
-     * canonical URL that is indexed as {@code doclib.url} (see {@link #generateDocumentLibraryUrl(Site, Drive)}),
+     * URL that is indexed as {@code doclib.url} (see {@link #generateDocumentLibraryUrl(Site, Drive)}),
      * so a pattern that matches the indexed URL behaves as users expect.
      *
      * @param urlFilter the URL filter, or {@code null} if none is configured
@@ -309,7 +309,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
             docLibMap.put(DOCLIB_NAME, drive.getName());
             docLibMap.put(DOCLIB_DESCRIPTION, drive.getDescription());
             docLibMap.put(DOCLIB_URL, docLibUrl); // Original Graph API webUrl
-            docLibMap.put(DOCLIB_CANONICAL_URL, generateDocumentLibraryUrl(site, drive)); // Standardized SharePoint URL
+            docLibMap.put(DOCLIB_CANONICAL_URL, generateDocumentLibraryUrl(site, drive)); // Browser URL for the library
             docLibMap.put(DOCLIB_CREATED, drive.getCreatedDateTime());
             docLibMap.put(DOCLIB_MODIFIED, drive.getLastModifiedDateTime());
             docLibMap.put(DOCLIB_TYPE, drive.getDriveType());
@@ -495,18 +495,35 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Generates a standardized SharePoint URL for a document library.
+     * Returns the URL that opens a document library in a browser, indexed as {@code doclib.url}.
+     * <p>
+     * This is the drive's own {@code webUrl}, which Microsoft Graph defines as the URL that displays
+     * the resource in the browser. It is the only reliable source. A library's URL segment is fixed
+     * when the library is created, whereas {@link Drive#getName()} is a read-write display name: it
+     * is localized by Graph (the default library of a non-English site is displayed under a
+     * translated name while still living at {@code /Shared Documents}) and a site owner can change
+     * it at any time without moving the library. Composing the URL from the display name therefore
+     * produces a link to a path that does not exist.
+     * <p>
+     * Only when Graph returns no {@code webUrl} does this compose a URL from the site URL and the
+     * library name, as this method always did. That composition is a guess and cannot resolve a
+     * library whose URL segment differs from its display name.
      *
      * @param site The SharePoint site containing the document library
      * @param drive The document library drive
-     * @return A standardized SharePoint URL for the document library
+     * @return the URL that opens the document library in a browser
      */
     protected String generateDocumentLibraryUrl(final Site site, final Drive drive) {
+        final String webUrl = drive.getWebUrl();
+        if (StringUtil.isNotBlank(webUrl)) {
+            return webUrl;
+        }
+
         final String siteUrl = site.getWebUrl();
         final String driveName = drive.getName();
 
         if (logger.isDebugEnabled()) {
-            logger.debug("Generating canonical URL for document library - Site: {}, Drive: {}", siteUrl, driveName);
+            logger.debug("No webUrl for document library; composing a URL - Site: {}, Drive: {}", siteUrl, driveName);
         }
 
         // Handle standard document libraries
