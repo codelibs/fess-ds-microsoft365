@@ -1722,7 +1722,7 @@ of the numeric ID.
 | Parameter | Description | Default | Notes |
 | --- | --- | --- | --- |
 | `site_id` | SharePoint site ID containing pages | All sites | Full site ID format: `hostname,siteCollectionId,siteId` |
-| `exclude_site_id` | Comma-separated site IDs to exclude | - | Multiple site IDs separated by commas |
+| `exclude_site_id` | Site IDs to exclude | - | A full site ID as-is; separate multiple IDs with `;` - see [exclude_site_id Format](#exclude_site_id-format) |
 | `ignore_system_pages` | Skip system pages | `true` | Excludes Forms, DevHome, and other system pages |
 | `page_type_filter` | Filter by page type | All types | Comma-separated: `news,article,page` |
 | `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed pages |

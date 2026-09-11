@@ -465,27 +465,10 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
      * @return true if the site should be excluded, false otherwise
      */
     protected boolean isExcludedSite(final DataStoreParams paramMap, final Site site) {
-        final String excludeIds = paramMap.getAsString(EXCLUDE_SITE_ID, null);
-        if (StringUtil.isBlank(excludeIds)) {
-            return false;
-        }
-
-        final String[] ids;
-        if (excludeIds.contains(";")) {
-            ids = excludeIds.split(";");
-        } else if (excludeIds.contains(".sharepoint.com,")
-                && excludeIds.matches(".*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}.*")) {
-            ids = new String[] { excludeIds };
-        } else {
-            ids = excludeIds.split(",");
-        }
-
-        for (final String id : ids) {
-            final String trimmedId = id.trim();
-            if (site.getId().equals(trimmedId)) {
+        for (final String id : getExcludeSiteIds(paramMap)) {
+            if (site.getId().equals(id)) {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("Site excluded - Site: {} (ID: {}) matches exclusion ID: {}", site.getDisplayName(), site.getId(),
-                            trimmedId);
+                    logger.debug("Site excluded - Site: {} (ID: {}) matches exclusion ID: {}", site.getDisplayName(), site.getId(), id);
                 }
                 return true;
             }

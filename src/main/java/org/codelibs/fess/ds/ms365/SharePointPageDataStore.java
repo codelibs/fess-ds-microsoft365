@@ -770,13 +770,10 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
      * @return true if the site is excluded, false otherwise
      */
     protected boolean isExcludedSite(final DataStoreParams paramMap, final Site site) {
-        final String excludeSiteIds = paramMap.getAsString(EXCLUDE_SITE_ID);
-        if (StringUtil.isBlank(excludeSiteIds)) {
+        final List<String> excludeList = getExcludeSiteIds(paramMap);
+        if (excludeList.isEmpty()) {
             return false;
         }
-
-        final List<String> excludeList = StreamUtil.split(excludeSiteIds, ",")
-                .get(stream -> stream.map(String::trim).filter(StringUtil::isNotBlank).collect(Collectors.toList()));
 
         // Check by site ID
         // Check by site name
