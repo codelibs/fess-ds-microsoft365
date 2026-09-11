@@ -135,6 +135,95 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isExcludedSite(paramMap, site2));
     }
 
+    /**
+     * A Graph site ID is {@code hostname,siteCollectionId,webId}, so a comma cannot also separate
+     * the entries of {@code exclude_site_id}: several full site IDs are separated by semicolons.
+     * Splitting on every comma turned each ID into fragments, and the hostname fragment is
+     * contained in the {@code webUrl} of every site on that host, so an unlisted site on the same
+     * host was excluded as well.
+     */
+    @Test
+    public void test_isExcludedSite_siteIdsSeparatedBySemicolon() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("exclude_site_id", "contoso.sharepoint.com,11111111-1111-4111-8111-111111111111,99999999-9999-4999-8999-999999999999;"
+                + "contoso.sharepoint.com,22222222-2222-4222-8222-222222222222,99999999-9999-4999-8999-999999999999");
+
+        final Site listed1 = new Site();
+        listed1.setId("contoso.sharepoint.com,11111111-1111-4111-8111-111111111111,99999999-9999-4999-8999-999999999999");
+        listed1.setDisplayName("site1");
+        listed1.setWebUrl("https://contoso.sharepoint.com/sites/site1");
+
+        final Site listed2 = new Site();
+        listed2.setId("contoso.sharepoint.com,22222222-2222-4222-8222-222222222222,99999999-9999-4999-8999-999999999999");
+        listed2.setDisplayName("site2");
+        listed2.setWebUrl("https://contoso.sharepoint.com/sites/site2");
+
+        final Site unlisted = new Site();
+        unlisted.setId("contoso.sharepoint.com,33333333-3333-4333-8333-333333333333,99999999-9999-4999-8999-999999999999");
+        unlisted.setDisplayName("site3");
+        unlisted.setWebUrl("https://contoso.sharepoint.com/sites/site3");
+
+        assertTrue("the first listed site must be excluded", dataStore.isExcludedSite(paramMap, listed1));
+        assertTrue("the second listed site must be excluded", dataStore.isExcludedSite(paramMap, listed2));
+        assertFalse("an unlisted site on the same host must not be excluded", dataStore.isExcludedSite(paramMap, unlisted));
+    }
+
+    /**
+     * Runs {@code storeData} over the real site enumeration: a {@link Microsoft365Client} wired to a
+     * {@link GraphMockServer} lists two sites on one host, and {@code exclude_site_id} names the
+     * first by its full Graph site ID. Only the second may be crawled. The {@code webUrl} each site
+     * is matched against comes out of Graph's JSON, which is what turned the hostname fragment of a
+     * comma-split ID into a match for every site, so no site was crawled and the job still finished
+     * without an error.
+     */
+    @Test
+    public void test_storeData_excludeSiteIdSkipsOnlyTheListedSite() throws Exception {
+        final String excludedSiteId = "contoso.sharepoint.com,11111111-1111-4111-8111-111111111111,99999999-9999-4999-8999-999999999999";
+        final String crawledSiteId = "contoso.sharepoint.com,22222222-2222-4222-8222-222222222222,99999999-9999-4999-8999-999999999999";
+
+        try (GraphMockServer server = new GraphMockServer()) {
+            // GET /sites, then GET /sites/{id}/sites for each listed site in turn (no sub-sites).
+            server.enqueueJson("{\"value\":[" + siteJson(excludedSiteId, "site1") + "," + siteJson(crawledSiteId, "site2") + "]}");
+            server.enqueueJson("{\"value\":[]}");
+            server.enqueueJson("{\"value\":[]}");
+
+            final List<String> crawledSiteIds = new ArrayList<>();
+            final SharePointPageDataStore testDataStore = new SharePointPageDataStore() {
+                @Override
+                protected Microsoft365Client createClient(final DataStoreParams paramMap) {
+                    // getPageWithContent is never reached: storePagesInSite below records the site
+                    // instead of listing its pages.
+                    final PageContentStubbedMicrosoft365Client client = new PageContentStubbedMicrosoft365Client(dummyParams(), null);
+                    client.useServer(server.newGraphClient());
+                    return client;
+                }
+
+                @Override
+                protected void storePagesInSite(final DataConfig dataConfig, final IndexUpdateCallback callback,
+                        final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
+                        final Map<String, Object> defaultDataMap, final ExecutorService executorService, final Microsoft365Client client,
+                        final Site site) {
+                    crawledSiteIds.add(site.getId());
+                }
+            };
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            paramMap.put("exclude_site_id", excludedSiteId);
+
+            testDataStore.storeData(new DataConfig(), null, paramMap, new HashMap<>(), new HashMap<>());
+
+            assertEquals("exactly the site not named in exclude_site_id must be crawled", List.of(crawledSiteId), crawledSiteIds);
+        }
+    }
+
+    /** One entry of a {@code GET /sites} response, with the properties Graph returns for a site. */
+    private static String siteJson(final String id, final String name) {
+        return "{\"createdDateTime\":\"2026-01-01T00:00:00Z\",\"description\":\"" + name + "\",\"id\":\"" + id
+                + "\",\"lastModifiedDateTime\":\"2026-01-02T00:00:00Z\",\"name\":\"" + name
+                + "\",\"webUrl\":\"https://contoso.sharepoint.com/sites/" + name + "\",\"displayName\":\"" + name
+                + "\",\"root\":{},\"siteCollection\":{\"hostname\":\"contoso.sharepoint.com\"}}";
+    }
+
     @Test
     public void test_isSystemPage() {
         final BaseSitePage page1 = createBaseSitePage("page1", "Regular Page", "https://site.sharepoint.com/sitepages/page1.aspx");

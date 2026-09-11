@@ -84,7 +84,7 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     protected static final String NUMBER_OF_THREADS = "number_of_threads";
     /** Parameter name for the SharePoint site ID to crawl. */
     protected static final String SITE_ID = "site_id";
-    /** Parameter name for the comma-separated list of site IDs to exclude from crawling. */
+    /** Parameter name for the site IDs to exclude from crawling; see {@link #getExcludeSiteIds} for its format. */
     protected static final String EXCLUDE_SITE_ID = "exclude_site_id";
     /** Parameter name for the regular expression content must match to be crawled. What content
      *  it is matched against, and whether the match is full or partial, is decided per DataStore
@@ -577,6 +577,45 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
     protected void validatePatterns(final DataStoreParams paramMap) {
         getPattern(paramMap, INCLUDE_PATTERN);
         getPattern(paramMap, EXCLUDE_PATTERN);
+    }
+
+    /**
+     * Returns the entries of {@link #EXCLUDE_SITE_ID}.
+     *
+     * <p>A Microsoft Graph site ID is itself comma-separated ({@code hostname,siteCollectionId,webId}),
+     * so a comma cannot also separate the entries: several full site IDs are separated by
+     * semicolons, and a value without a semicolon that holds a Graph site ID is taken whole. Only
+     * a value holding neither is split on commas, the format simple IDs have always used. Every
+     * DataStore that honours {@link #EXCLUDE_SITE_ID} parses it here, so they cannot disagree on
+     * what one entry is.</p>
+     *
+     * @param paramMap the data store parameters
+     * @return the trimmed, non-blank entries, or an empty list if the parameter is not set
+     */
+    protected List<String> getExcludeSiteIds(final DataStoreParams paramMap) {
+        final String value = paramMap.getAsString(EXCLUDE_SITE_ID, null);
+        if (StringUtil.isBlank(value)) {
+            return Collections.emptyList();
+        }
+
+        final String[] entries;
+        if (value.contains(";")) {
+            entries = value.split(";");
+        } else if (value.contains(".sharepoint.com,")
+                && value.matches(".*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}.*")) {
+            entries = new String[] { value };
+        } else {
+            entries = value.split(",");
+        }
+
+        final List<String> ids = new ArrayList<>();
+        for (final String entry : entries) {
+            final String id = entry.trim();
+            if (StringUtil.isNotBlank(id)) {
+                ids.add(id);
+            }
+        }
+        return ids;
     }
 
     /**
