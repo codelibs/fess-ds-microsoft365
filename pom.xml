@@ -65,6 +65,9 @@
 									<include>com.microsoft.kiota:microsoft-kiota-abstractions</include>
 									<include>com.microsoft.kiota:microsoft-kiota-authentication-azure</include>
 									<include>com.microsoft.kiota:microsoft-kiota-http-okHttp</include>
+									<include>com.squareup.okhttp3:okhttp-jvm</include>
+									<include>com.squareup.okio:okio-jvm</include>
+									<include>org.jetbrains.kotlin:kotlin-stdlib</include>
 									<include>com.microsoft.kiota:microsoft-kiota-serialization-json</include>
 									<include>com.microsoft.kiota:microsoft-kiota-serialization-text</include>
 									<include>com.microsoft.kiota:microsoft-kiota-serialization-form</include>
@@ -99,6 +102,11 @@
 										<exclude>META-INF/LICENSE</exclude>
 										<exclude>META-INF/*.SF</exclude>
 										<exclude>META-INF/*.RSA</exclude>
+										<exclude>META-INF/*.DSA</exclude>
+										<!-- kotlin-stdlib and okio are modular; a module descriptor from one
+										     of them at the root of this jar would describe the wrong module. -->
+										<exclude>module-info.class</exclude>
+										<exclude>META-INF/versions/*/module-info.class</exclude>
 									</excludes>
 								</filter>
 							</filters>
@@ -242,11 +250,10 @@
 			<artifactId>microsoft-graph</artifactId>
 			<version>${microsoft.graph.version}</version>
 			<exclusions>
-				<!-- Kiota pulls okhttp 4.12.0, but this plugin does not shade okhttp:
-				     at runtime it uses the okhttp-jvm 5.x that Fess supplies. Dropping
-				     the 4.12.0 copy keeps the test classpath on the same okhttp as
-				     production; leaving both causes MockWebServer to fail with
-				     NoSuchMethodError on okhttp3.internal.concurrent.TaskRunner. -->
+				<!-- Kiota asks for okhttp 4.12.0. This plugin runs on okhttp-jvm 5.x, declared
+				     below and shaded into the plugin jar; the two cannot both be on the class
+				     path, and MockWebServer fails with NoSuchMethodError on
+				     okhttp3.internal.concurrent.TaskRunner when they are. -->
 				<exclusion>
 					<groupId>com.squareup.okhttp3</groupId>
 					<artifactId>okhttp</artifactId>
@@ -267,6 +274,16 @@
 			<groupId>com.azure</groupId>
 			<artifactId>azure-core-http-netty</artifactId>
 			<version>${azure.core.http.netty.version}</version>
+		</dependency>
+		<dependency>
+			<!-- Microsoft365Client builds the Graph client from an OkHttpClient.Builder that
+			     GraphClientFactory hands back, so okhttp is part of this plugin's API surface,
+			     not an implementation detail it could hide. Fess carried it in WEB-INF/lib for
+			     this plugin's sake until 15.9; it travels in the plugin jar now, so an
+			     installation that does not crawl Microsoft 365 does not pay for it. -->
+			<groupId>com.squareup.okhttp3</groupId>
+			<artifactId>okhttp-jvm</artifactId>
+			<version>${okhttp.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>com.squareup.okhttp3</groupId>
