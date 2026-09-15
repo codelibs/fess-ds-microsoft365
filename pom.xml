@@ -230,6 +230,18 @@
 			<scope>provided</scope>
 		</dependency>
 		<dependency>
+			<!-- azure-core needs org.reactivestreams.Publisher as soon as it creates a ClientLogger,
+			     which every azure-identity credential builder does in its static initializer. The
+			     shade already includes reactive-streams, but it takes compile and runtime artifacts
+			     only, and without this declaration Maven resolves reactive-streams under the provided
+			     opensearch node above (reactor-core itself is resolved there), so it was never shaded.
+			     Fess carried it in WEB-INF/lib next to the opensearch jar until 15.9. 1.0.4 is the
+			     version reactor-core declares. -->
+			<groupId>org.reactivestreams</groupId>
+			<artifactId>reactive-streams</artifactId>
+			<version>1.0.4</version>
+		</dependency>
+		<dependency>
 			<groupId>org.slf4j</groupId>
 			<artifactId>slf4j-api</artifactId>
 			<version>${slf4j.version}</version>
