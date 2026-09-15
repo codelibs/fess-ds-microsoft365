@@ -45,6 +45,8 @@ import com.microsoft.graph.models.CanvasLayout;
 import com.microsoft.graph.models.HorizontalSection;
 import com.microsoft.graph.models.HorizontalSectionColumn;
 import com.microsoft.graph.models.MetaDataKeyStringPair;
+import com.microsoft.graph.models.PageLayoutType;
+import com.microsoft.graph.models.PagePromotionType;
 import com.microsoft.graph.models.ServerProcessedContent;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.models.SitePage;
@@ -55,7 +57,7 @@ import com.microsoft.graph.models.WebPart;
 import com.microsoft.graph.models.WebPartData;
 
 /**
- * SharePointPageDataStore crawls SharePoint pages (including news, wiki, and article pages).
+ * SharePointPageDataStore crawls SharePoint pages (news posts, article pages and other site pages).
  * It extracts page content, metadata, and permissions for indexing in Fess.
  *
  * @author shinsuke
@@ -67,7 +69,7 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     // Configuration parameters
     /** Flag to ignore system pages */
     protected static final String IGNORE_SYSTEM_PAGES = "ignore_system_pages";
-    /** Page type filter (news, wiki, article) */
+    /** Page type filter (news, article, page) */
     protected static final String PAGE_TYPE_FILTER = "page_type_filter";
 
     // Field mappings for pages
@@ -672,21 +674,21 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Determines the type of the page (news, wiki, article, etc.).
+     * Determines the type of the page from the properties Microsoft Graph returns for it: a news post
+     * ({@code promotionKind} {@code newsPost}) is {@code news}, any other page with the {@code article}
+     * layout is {@code article}, and every other page, such as a site home page, is {@code page}.
      *
      * @param page the SharePoint page to determine type for
      * @return the page type as a string
      */
     protected String determinePageType(final BaseSitePage page) {
-        if (page instanceof final SitePage sitePage) {
-            // Check if it's a news post
-            if (sitePage.getPromotionKind() != null && "newsPost".equalsIgnoreCase(sitePage.getPromotionKind().toString())) {
-                return "news";
-            }
-            // For now, assume it's an article since page layout type is not readily available
+        if (page instanceof final SitePage sitePage && sitePage.getPromotionKind() == PagePromotionType.NewsPost) {
+            return "news";
+        }
+        if (page.getPageLayout() == PageLayoutType.Article) {
             return "article";
         }
-        return "page"; // Default type
+        return "page";
     }
 
     /**

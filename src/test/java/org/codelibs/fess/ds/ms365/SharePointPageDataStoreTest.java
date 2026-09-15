@@ -26,6 +26,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 import org.apache.logging.log4j.LogManager;
@@ -44,6 +46,8 @@ import com.microsoft.graph.models.CanvasLayout;
 import com.microsoft.graph.models.HorizontalSection;
 import com.microsoft.graph.models.HorizontalSectionColumn;
 import com.microsoft.graph.models.MetaDataKeyStringPair;
+import com.microsoft.graph.models.PageLayoutType;
+import com.microsoft.graph.models.PagePromotionType;
 import com.microsoft.graph.models.ServerProcessedContent;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.models.SitePage;
@@ -237,18 +241,21 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isSystemPage(page4));
     }
 
+    /**
+     * Graph describes a page with two independent properties: {@code promotionKind} ({@code page} or
+     * {@code newsPost}) and {@code pageLayout} ({@code article} or {@code home}). The type is
+     * {@code news} for a news post, {@code article} for any other page with the article layout, and
+     * {@code page} for the rest - a home page, or a page Graph reports no layout for.
+     */
     @Test
     public void test_determinePageType() {
-        final SitePage newsPage = createSitePage("page1", "News Article");
-        // newsPage.setPromotionKind(com.microsoft.graph.models.PagePromotionType.NEWS_POST); // Enum value may not exist
-
-        final SitePage regularPage = createSitePage("page2", "Regular Page");
-
-        final BaseSitePage basePage = createBaseSitePage("page3", "Base Page", "https://site.com/page3.aspx");
-
-        assertEquals("article", dataStore.determinePageType(newsPage)); // Without promotion kind, defaults to article
-        assertEquals("article", dataStore.determinePageType(regularPage));
-        assertEquals("page", dataStore.determinePageType(basePage));
+        assertEquals("news",
+                dataStore.determinePageType(createSitePage("page1", "News", PagePromotionType.NewsPost, PageLayoutType.Article)));
+        assertEquals("article",
+                dataStore.determinePageType(createSitePage("page2", "Article", PagePromotionType.Page, PageLayoutType.Article)));
+        assertEquals("page", dataStore.determinePageType(createSitePage("page3", "Home", PagePromotionType.Page, PageLayoutType.Home)));
+        assertEquals("page", dataStore.determinePageType(createSitePage("page4", "No layout", PagePromotionType.Page, null)));
+        assertEquals("page", dataStore.determinePageType(createBaseSitePage("page5", "Base Page", "https://site.com/page5.aspx")));
     }
 
     @Test
@@ -263,20 +270,69 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         assertFalse(dataStore.isTargetPage(paramMap, systemPage, null, null));
     }
 
+    /**
+     * Runs {@code storePagesInSite} over a Graph page listing that holds one page of each kind: a news
+     * post, an article page and a home page. Every page Graph lists is a {@code sitePage}, so a type
+     * derived from {@code promotionKind} alone was never {@code page}: {@code page_type_filter=page}
+     * crawled nothing, and {@code article} also took the home page. The {@code pageLayout} each page
+     * is classified by comes out of Graph's JSON.
+     */
     @Test
-    public void test_isTargetPage_pageTypeFilter() {
-        final DataStoreParams paramMap = new DataStoreParams();
-        paramMap.put("page_type_filter", "article");
+    public void test_storePagesInSite_pageTypeFilter() throws Exception {
+        final String pages = "{\"value\":[" + sitePageJson("1", "News", "article", "newsPost") + ","
+                + sitePageJson("2", "Article", "article", "page") + "," + sitePageJson("3", "Home", "home", "page") + "]}";
 
-        final SitePage newsPage = createSitePage("page1", "News Article");
-        // newsPage.setPromotionKind(com.microsoft.graph.models.PagePromotionType.NEWS_POST); // Enum value may not exist
+        assertEquals("news must select only the news post", List.of("News"), crawledPageTitles(pages, "news"));
+        assertEquals("article must select only the article page", List.of("Article"), crawledPageTitles(pages, "article"));
+        assertEquals("page must select only the home page", List.of("Home"), crawledPageTitles(pages, "page"));
+        assertEquals("a comma-separated filter must select each listed type", List.of("News", "Home"),
+                crawledPageTitles(pages, "news, page"));
+    }
 
-        final SitePage regularPage = createSitePage("page2", "Regular Page");
-        final BaseSitePage basePage = createBaseSitePage("page3", "Base Page", "https://site.com/page3.aspx");
+    /** Titles of the pages {@code storePagesInSite} hands to {@code processPage} for the given filter. */
+    private List<String> crawledPageTitles(final String pagesJson, final String pageTypeFilter) throws Exception {
+        try (GraphMockServer server = new GraphMockServer();
+                PageContentStubbedMicrosoft365Client client = new PageContentStubbedMicrosoft365Client(dummyParams(), null)) {
+            server.enqueueJson(pagesJson);
+            client.useServer(server.newGraphClient());
 
-        assertTrue(dataStore.isTargetPage(paramMap, newsPage, null, null));
-        assertTrue(dataStore.isTargetPage(paramMap, regularPage, null, null));
-        assertFalse(dataStore.isTargetPage(paramMap, basePage, null, null));
+            final List<String> titles = new ArrayList<>();
+            final SharePointPageDataStore testDataStore = new SharePointPageDataStore() {
+                @Override
+                protected void processPage(final DataConfig dataConfig, final IndexUpdateCallback callback,
+                        final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
+                        final Map<String, Object> defaultDataMap, final Microsoft365Client client, final Site site,
+                        final BaseSitePage page) {
+                    titles.add(page.getTitle());
+                }
+            };
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            paramMap.put("page_type_filter", pageTypeFilter);
+            final Site site = new Site();
+            site.setId("contoso.sharepoint.com,11111111-1111-4111-8111-111111111111,99999999-9999-4999-8999-999999999999");
+            site.setDisplayName("site1");
+
+            final ExecutorService executor = Executors.newSingleThreadExecutor();
+            try {
+                testDataStore.storePagesInSite(new DataConfig(), null, new HashMap<>(), paramMap, new HashMap<>(), new HashMap<>(),
+                        executor, client, site);
+            } finally {
+                executor.shutdown();
+                assertTrue("page processing must finish", executor.awaitTermination(10, TimeUnit.SECONDS));
+            }
+            return titles;
+        }
+    }
+
+    /** One entry of a {@code GET /sites/{id}/pages/microsoft.graph.sitePage} response, shaped like Graph's documented example. */
+    private static String sitePageJson(final String id, final String title, final String pageLayout, final String promotionKind) {
+        return "{\"@odata.type\":\"#microsoft.graph.sitePage\",\"@odata.etag\":\"\\\"{" + id + "},1\\\"\",\"eTag\":\"\\\"{" + id
+                + "},1\\\"\",\"id\":\"" + id + "\",\"lastModifiedDateTime\":\"2026-01-02T00:00:00Z\",\"name\":\"" + title
+                + ".aspx\",\"webUrl\":\"https://contoso.sharepoint.com/sites/site1/SitePages/" + title + ".aspx\",\"title\":\"" + title
+                + "\",\"pageLayout\":\"" + pageLayout + "\",\"promotionKind\":\"" + promotionKind
+                + "\",\"showComments\":false,\"showRecommendedPages\":false,\"contentType\":{\"id\":\"0x0101009D1CB255DA76424F860D91F20E6C4118\",\"name\":\"Site Page\"}"
+                + ",\"parentReference\":{\"siteId\":\"11111111-1111-4111-8111-111111111111\"},\"publishingState\":{\"level\":\"published\",\"versionId\":\"1.0\"}}";
     }
 
     @Test
@@ -620,6 +676,14 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         final SitePage page = new SitePage();
         page.setId(id);
         page.setTitle(title);
+        return page;
+    }
+
+    private SitePage createSitePage(final String id, final String title, final PagePromotionType promotionKind,
+            final PageLayoutType pageLayout) {
+        final SitePage page = createSitePage(id, title);
+        page.setPromotionKind(promotionKind);
+        page.setPageLayout(pageLayout);
         return page;
     }
 

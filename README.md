@@ -511,10 +511,14 @@ role=page.roles
   free-form `properties` object is **not** read; Microsoft Graph exposes it as an untyped node with
   no published schema
 
-**Page Types**: The plugin automatically detects and categorizes pages:
-- `news`: News posts and announcements
-- `article`: Article pages and documentation
-- `page`: Standard site pages
+**Page Types**: The plugin classifies each page from the `promotionKind` and `pageLayout` properties Microsoft Graph returns for it:
+- `news`: a news post (`promotionKind` is `newsPost`)
+- `article`: any other page with the article layout (`pageLayout` is `article`)
+- `page`: every other page, such as a site home page (`pageLayout` is `home`)
+
+**Note**: Before this release every page was typed `news` or `article`, so `page_type_filter=page` crawled
+nothing and `article` also took site home pages. Home pages are now `page`, in both `page_type_filter` and
+`page.type`.
 
 **Note**: Standard web parts contributed **nothing** to `page.content` before this release - the
 extractor received a typed `WebPartData` object it could not read and appended no characters. See
