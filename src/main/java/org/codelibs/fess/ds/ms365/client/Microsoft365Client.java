@@ -64,6 +64,8 @@ import com.microsoft.graph.models.ChannelCollectionResponse;
 import com.microsoft.graph.models.ChatMessage;
 import com.microsoft.graph.models.ChatMessageAttachment;
 import com.microsoft.graph.models.ChatMessageCollectionResponse;
+import com.microsoft.graph.models.ColumnDefinition;
+import com.microsoft.graph.models.ColumnDefinitionCollectionResponse;
 import com.microsoft.graph.models.ConversationMember;
 import com.microsoft.graph.models.ConversationMemberCollectionResponse;
 import com.microsoft.graph.models.Drive;
@@ -1256,6 +1258,19 @@ public class Microsoft365Client implements Closeable {
             requestConfiguration.queryParameters.select = new String[] { "id", "name", "displayName", "description", "webUrl", "list",
                     "system", "createdDateTime", "lastModifiedDateTime", "createdBy", "lastModifiedBy" };
         });
+    }
+
+    /**
+     * Retrieves the column definitions of a specific list with pagination support.
+     *
+     * @param siteId The ID of the site.
+     * @param listId The ID of the list.
+     * @param consumer A consumer to process each ColumnDefinition object.
+     */
+    public void getListColumns(final String siteId, final String listId, final Consumer<ColumnDefinition> consumer) {
+        final ColumnDefinitionCollectionResponse response = client.sites().bySiteId(siteId).lists().byListId(listId).columns().get();
+        paginate(response, ColumnDefinitionCollectionResponse::getValue,
+                nextLink -> client.sites().bySiteId(siteId).lists().byListId(listId).columns().withUrl(nextLink).get(), consumer::accept);
     }
 
     /**

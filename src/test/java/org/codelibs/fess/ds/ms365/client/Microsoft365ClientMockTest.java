@@ -26,6 +26,7 @@ import java.util.List;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.junit.jupiter.api.Test;
 
+import com.microsoft.graph.models.ColumnDefinition;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
 import com.microsoft.graph.models.UserCollectionResponse;
@@ -65,6 +66,25 @@ public class Microsoft365ClientMockTest {
             assertEquals(2, mock.requestCount());
             assertTrue(mock.takePath().startsWith("/users"));
             assertEquals("/users?$skiptoken=PAGE2", mock.takePath());
+        }
+    }
+
+    @Test
+    public void test_getListColumns_followsNextLink() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            final String nextLink = mock.url("/sites/site-1/lists/list-1/columns?$skiptoken=PAGE2");
+            mock.enqueueJson("{\"@odata.nextLink\":\"" + nextLink + "\",\"value\":[{\"name\":\"Title\",\"readOnly\":false}]}");
+            mock.enqueueJson("{\"value\":[{\"name\":\"Memo\",\"readOnly\":false,\"hidden\":false}]}");
+
+            client.client = mock.newGraphClient();
+
+            final List<ColumnDefinition> columns = new ArrayList<>();
+            client.getListColumns("site-1", "list-1", columns::add);
+
+            assertEquals(List.of("Title", "Memo"), columns.stream().map(ColumnDefinition::getName).toList(),
+                    "second page must be collected");
+            assertEquals("/sites/site-1/lists/list-1/columns", mock.takePath());
+            assertEquals("/sites/site-1/lists/list-1/columns?$skiptoken=PAGE2", mock.takePath());
         }
     }
 

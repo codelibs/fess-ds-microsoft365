@@ -20,6 +20,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -40,6 +41,7 @@ import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.ListItem;
 import com.microsoft.graph.models.Site;
+import com.microsoft.kiota.serialization.UntypedArray;
 import com.microsoft.kiota.serialization.UntypedNode;
 import com.microsoft.kiota.serialization.UntypedObject;
 import com.microsoft.kiota.serialization.UntypedString;
@@ -84,6 +86,8 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     protected static final String LIST_ITEM_FIELDS = "fields";
     /** The field name for list item roles. */
     protected static final String LIST_ITEM_ROLES = "roles";
+    /** The editable columns that do not hold a list item's content. */
+    protected static final Set<String> NON_CONTENT_COLUMNS = Set.of("Title", "ContentType", "FileLeafRef");
 
     // Field mappings for list metadata
     /** The field name for list name. */
@@ -286,6 +290,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         if (logger.isDebugEnabled()) {
             logger.debug("Processing list: {} in site: {}", list.getDisplayName(), site.getDisplayName());
         }
+        final List<String> contentColumns = getContentColumns(paramMap, client, site, list);
         client.getListItems(site.getId(), list.getId(), item -> {
             if (isTargetItem(paramMap, item)) {
                 executorService.execute(() -> {
@@ -293,7 +298,8 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                         logger.debug("Processing item ID: {} in list: {}", item.getId(), list.getDisplayName());
                     }
                     try {
-                        processListItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site, list, item);
+                        processListItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, site, list, item,
+                                contentColumns);
                     } catch (final Exception e) {
                         logger.warn("Failed to process list item: {} in list: {}", item.getId(), list.getDisplayName(), e);
                         if (!isIgnoreError(paramMap)) {
@@ -318,10 +324,13 @@ public class SharePointListDataStore extends Microsoft365DataStore {
      * @param site the SharePoint site
      * @param list the SharePoint list
      * @param item the list item to process
+     * @param contentColumns the columns the content is taken from when the item has none of the fixed content fields, see
+     *            {@link #getContentColumns}
      */
     protected void processListItem(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
-            final Microsoft365Client client, final Site site, final com.microsoft.graph.models.List list, final ListItem item) {
+            final Microsoft365Client client, final Site site, final com.microsoft.graph.models.List list, final ListItem item,
+            final List<String> contentColumns) {
 
         final String listTemplate;
         if (list.getList() == null || list.getList().getTemplate() == null) {
@@ -452,8 +461,11 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                     }
                 }
 
-                // Try to extract content from various content fields
-                final String content = extractFieldValue(fields, "Body", "Description", "Comments", "Notes");
+                // Try to extract content from various content fields, then from the list's own columns
+                String content = extractFieldValue(fields, "Body", "Description", "Comments", "Notes");
+                if (content == null) {
+                    content = extractColumnValues(fields, contentColumns);
+                }
                 if (StringUtil.isNotBlank(content)) {
                     listItemMap.put(LIST_ITEM_CONTENT, content);
                     if (logger.isDebugEnabled()) {
@@ -574,6 +586,75 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             }
         }
         return null;
+    }
+
+    /**
+     * Gets the columns a list item's content is taken from when it has none of {@code Body},
+     * {@code Description}, {@code Comments} or {@code Notes}.
+     *
+     * <p>A survey keeps each answer in a column named after its question, and a custom list keeps its
+     * text in columns the list owner added, so no fixed field name finds either. These are the columns
+     * Graph reports as neither read-only nor hidden - the ones a user fills in - other than
+     * {@code Title}, {@code ContentType} and {@code FileLeafRef}, which Graph reports as editable too,
+     * and date and time columns, whose value is a UTC timestamp rather than the date the user entered.
+     * They are read once per list, and only for a list whose items are indexed.</p>
+     *
+     * @param paramMap the data store parameters
+     * @param client the Microsoft365 client
+     * @param site the SharePoint site
+     * @param list the SharePoint list
+     * @return the internal names of the columns, in the order Graph returns them
+     */
+    protected List<String> getContentColumns(final DataStoreParams paramMap, final Microsoft365Client client, final Site site,
+            final com.microsoft.graph.models.List list) {
+        final String listTemplate = list.getList() != null ? list.getList().getTemplate() : null;
+        if (listTemplate == null || !isProcessableListItemType(paramMap, listTemplate)) {
+            return List.of();
+        }
+        final List<String> columns = new ArrayList<>();
+        client.getListColumns(site.getId(), list.getId(), column -> {
+            final String name = column.getName();
+            if (StringUtil.isNotBlank(name) && !Boolean.TRUE.equals(column.getReadOnly()) && !Boolean.TRUE.equals(column.getHidden())
+                    && column.getDateTime() == null && !NON_CONTENT_COLUMNS.contains(name)) {
+                columns.add(name);
+            }
+        });
+        if (logger.isDebugEnabled()) {
+            logger.debug("Content columns for list {} (ID: {}): {}", list.getDisplayName(), list.getId(), columns);
+        }
+        return columns;
+    }
+
+    /**
+     * Joins the text values of the given columns, one per line, in the given order.
+     *
+     * <p>A text or choice column holds a string and a multi-choice column an array of strings. Any
+     * other value - a number, a yes/no, or an object such as a hyperlink - is skipped.</p>
+     *
+     * @param fields the map of field values
+     * @param columns the internal names of the columns
+     * @return the joined values or null if none of the columns holds text
+     */
+    protected String extractColumnValues(final Map<String, Object> fields, final List<String> columns) {
+        if (fields == null || columns == null) {
+            return null;
+        }
+
+        final List<String> values = new ArrayList<>();
+        for (final String column : columns) {
+            final Object value = fields.get(column);
+            if (value instanceof final String text) {
+                values.add(text);
+            } else if (value instanceof final UntypedArray array) {
+                for (final UntypedNode element : array.getValue()) {
+                    if (element instanceof final UntypedString text) {
+                        values.add(text.getValue());
+                    }
+                }
+            }
+        }
+        final String content = values.stream().filter(StringUtil::isNotBlank).map(String::trim).collect(Collectors.joining("\n"));
+        return content.isEmpty() ? null : content;
     }
 
     // Configuration helper methods

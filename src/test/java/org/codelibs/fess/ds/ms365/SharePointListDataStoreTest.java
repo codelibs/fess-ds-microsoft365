@@ -853,7 +853,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
 
             final TestCallback callback = new TestCallback();
             roleAwareDataStore.processListItem(new DataConfig(), callback, configMap, paramMap, scriptMap, new HashMap<>(), client, site,
-                    list, item);
+                    list, item, java.util.List.of());
 
             assertEquals("processListItem must index the item despite there being no site-permission source", 1, callback.getCount());
 
@@ -1037,7 +1037,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         // The client is only reached to refresh empty fields; this item already carries them, so
         // null is never dereferenced and no Graph transport is needed.
         roleAwareDataStore.processListItem(new DataConfig(), callback, configMap, paramMap, scriptMap, defaultDataMap, null, site, list,
-                item);
+                item, java.util.List.of());
 
         assertEquals("processListItem must have indexed the item exactly once", 1, callback.getCount());
 
@@ -1165,6 +1165,198 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
     }
 
     /**
+     * A survey (template 102) keeps each answer in a column named after its question, so none of
+     * {@code Body}, {@code Description}, {@code Comments} or {@code Notes} exists and its responses
+     * were indexed with no content. storeList reads the list's columns once and hands the ones a
+     * user fills in to processListItem.
+     */
+    @Test
+    public void test_storeList_passesEditableVisibleColumnsAsContentColumns() throws Exception {
+        final String columnsJson = "{\"value\":[" //
+                + "{\"name\":\"ContentType\",\"displayName\":\"Content Type\",\"columnGroup\":\"_Hidden\",\"hidden\":false,\"readOnly\":false},"
+                + "{\"name\":\"Title\",\"displayName\":\"Title\",\"hidden\":false,\"readOnly\":false,\"text\":{}},"
+                + "{\"name\":\"_x8cea__x554f__x0031_\",\"displayName\":\"Question 1\",\"hidden\":false,\"readOnly\":false,\"text\":{}},"
+                + "{\"name\":\"Created\",\"displayName\":\"Created\",\"hidden\":false,\"readOnly\":true,\"dateTime\":{}},"
+                + "{\"name\":\"DisplayResponse\",\"displayName\":\"View Response\",\"hidden\":false,\"readOnly\":true},"
+                + "{\"name\":\"Completed\",\"displayName\":\"Completed\",\"hidden\":true,\"readOnly\":true},"
+                + "{\"name\":\"HiddenNote\",\"displayName\":\"Hidden Note\",\"hidden\":true,\"readOnly\":false,\"text\":{}},"
+                + "{\"name\":\"_x8cea__x554f__x0033_\",\"displayName\":\"Question 3\",\"hidden\":false,\"readOnly\":false,"
+                + "\"dateTime\":{\"displayAs\":\"default\",\"format\":\"dateOnly\"}},"
+                + "{\"name\":\"_x8cea__x554f__x0032_\",\"displayName\":\"Question 2\",\"readOnly\":false,\"choice\":{}}]}";
+        final String itemsJson = "{\"value\":[{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/Survey/1_.000\","
+                + "\"fields\":{\"id\":\"1\",\"_x8cea__x554f__x0031_\":\"Answer one\"}}]}";
+
+        final java.util.List<java.util.List<String>> passedColumns = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final ExecutorService executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try (GraphMockServer server = new GraphMockServer();
+                MockableMicrosoft365Client client = new MockableMicrosoft365Client(dummyParams())) {
+            client.useServer(server.newGraphClient());
+            server.enqueueJson(columnsJson);
+            server.enqueueJson(itemsJson);
+
+            final DataStoreParams paramMap = new DataStoreParams();
+            paramMap.put("list_template_filter", "102");
+            columnRecordingDataStore(passedColumns).storeList(new DataConfig(), new TestCallback(), new LinkedHashMap<>(), paramMap,
+                    new HashMap<>(), new HashMap<>(), executor, client, site(), surveyList());
+            executor.shutdown();
+            assertTrue("the list item must have been processed", executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS));
+
+            assertEquals("/sites/site-1/lists/list-1/columns", server.takePath());
+            assertTrue(server.takePath().startsWith("/sites/site-1/lists/list-1/items"));
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertEquals(java.util.List.of(java.util.List.of("_x8cea__x554f__x0031_", "_x8cea__x554f__x0032_")), passedColumns);
+    }
+
+    /**
+     * A list whose items processListItem skips - here a document library without
+     * {@code list_template_filter} - costs no columns request.
+     */
+    @Test
+    public void test_storeList_doesNotReadColumnsOfAListWhoseItemsAreNotIndexed() throws Exception {
+        final java.util.List<java.util.List<String>> passedColumns = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final ExecutorService executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        final java.util.List<String> paths = new ArrayList<>();
+        try (GraphMockServer server = new GraphMockServer();
+                MockableMicrosoft365Client client = new MockableMicrosoft365Client(dummyParams())) {
+            client.useServer(server.newGraphClient());
+            server.enqueueJson(
+                    "{\"value\":[{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Shared%20Documents/a.docx\","
+                            + "\"fields\":{\"id\":\"1\",\"FileLeafRef\":\"a.docx\"}}]}");
+            // Queued defensively: a columns request made anyway completes instead of blocking.
+            server.enqueueJson("{\"value\":[]}");
+
+            final List list = listWithTemplate("documentLibrary");
+            list.setId("list-1");
+            list.setDisplayName("Documents");
+            columnRecordingDataStore(passedColumns).storeList(new DataConfig(), new TestCallback(), new LinkedHashMap<>(),
+                    new DataStoreParams(), new HashMap<>(), new HashMap<>(), executor, client, site(), list);
+            executor.shutdown();
+            assertTrue("the list item must have been handed over", executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS));
+
+            for (int i = 0; i < server.requestCount(); i++) {
+                paths.add(server.takePath());
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertFalse("no columns request may be made, but got: " + paths, paths.stream().anyMatch(path -> path.contains("/columns")));
+        assertEquals(java.util.List.of(java.util.List.of()), passedColumns);
+    }
+
+    /**
+     * A survey response's content is its answers, one per line, in column order.
+     */
+    @Test
+    public void test_processListItem_surveyResponseContentIsItsAnswers() {
+        final ListItem item = parseListItem("{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/Survey/1_.000\","
+                + "\"fields\":{\"id\":\"1\",\"ContentType\":\"Survey\",\"_x8cea__x554f__x0031_\":\"Answer one\","
+                + "\"_x8cea__x554f__x0032_\":\"Choice B\",\"AuthorLookupId\":\"12\",\"_UIVersionString\":\"1.0\",\"DisplayResponse\":\"1\","
+                + "\"ItemChildCount\":\"0\",\"Completed\":\"1\"}}");
+
+        assertEquals("Answer one\nChoice B",
+                indexListItemContent(item, java.util.List.of("_x8cea__x554f__x0031_", "_x8cea__x554f__x0032_")));
+    }
+
+    /**
+     * The columns are only a fallback: an item that has one of the fixed content fields keeps it as
+     * its content.
+     */
+    @Test
+    public void test_processListItem_fixedContentFieldWinsOverColumns() {
+        final ListItem item = parseListItem("{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/Survey/1_.000\","
+                + "\"fields\":{\"id\":\"1\",\"Comments\":\"A comment\",\"Memo\":\"A memo\"}}");
+
+        assertEquals("A comment", indexListItemContent(item, java.util.List.of("Memo")));
+    }
+
+    /**
+     * Only text is taken: a string, and the strings of a multi-choice array. Numbers, yes/no values,
+     * objects such as a hyperlink, blank strings and absent columns contribute nothing.
+     */
+    @Test
+    public void test_extractColumnValues_takesTextValuesOnly() {
+        final ListItem item =
+                parseListItem("{\"id\":\"1\",\"fields\":{\"Memo\":\" A memo \",\"Tags\":[\"Red\",\" \",\"Blue\"],\"Quantity\":5,"
+                        + "\"Approved\":true,\"Link\":{\"Description\":\"Home\",\"Url\":\"https://example.com/\"},\"Empty\":\"\"}}");
+        final Map<String, Object> fields = item.getFields().getAdditionalData();
+
+        assertEquals("A memo\nRed\nBlue", dataStore.extractColumnValues(fields,
+                java.util.List.of("Quantity", "Memo", "Approved", "Tags", "Link", "Empty", "Absent")));
+        assertNull(dataStore.extractColumnValues(fields, java.util.List.of("Quantity", "Approved", "Link", "Empty")));
+        assertNull(dataStore.extractColumnValues(fields, java.util.List.of()));
+    }
+
+    private String indexListItemContent(final ListItem item, final java.util.List<String> contentColumns) {
+        final org.codelibs.fess.helper.SystemHelper systemHelper = new org.codelibs.fess.helper.SystemHelper();
+        ComponentUtil.register(systemHelper, "systemHelper");
+        final org.codelibs.fess.helper.CrawlerStatsHelper crawlerStatsHelper = new org.codelibs.fess.helper.CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(systemHelper);
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put("content", "item.content");
+
+        // Same convertValue seam as test_processListItem_doesNotRequestSitePermissions.
+        final SharePointListDataStore contentAwareDataStore = new SharePointListDataStore() {
+            @Override
+            protected Object convertValue(final String scriptType, final String template, final Map<String, Object> resultMap) {
+                if ("item.content".equals(template) && resultMap.get(LIST_ITEM) instanceof final Map<?, ?> itemMap) {
+                    return itemMap.get(LIST_ITEM_CONTENT);
+                }
+                return super.convertValue(scriptType, template, resultMap);
+            }
+        };
+
+        final Map<String, Object> configMap = new LinkedHashMap<>();
+        configMap.put(SharePointListDataStore.IGNORE_ERROR, Boolean.FALSE);
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "102");
+
+        final TestCallback callback = new TestCallback();
+        contentAwareDataStore.processListItem(new DataConfig(), callback, configMap, paramMap, scriptMap, new HashMap<>(), null, site(),
+                surveyList(), item, contentColumns);
+
+        assertEquals("processListItem must have indexed the item exactly once", 1, callback.getCount());
+        return (String) callback.getLastDataMap().get("content");
+    }
+
+    private static SharePointListDataStore columnRecordingDataStore(final java.util.List<java.util.List<String>> passedColumns) {
+        return new SharePointListDataStore() {
+            @Override
+            protected void processListItem(final DataConfig dataConfig, final IndexUpdateCallback callback,
+                    final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
+                    final Map<String, Object> defaultDataMap, final Microsoft365Client client, final Site site, final List list,
+                    final ListItem item, final java.util.List<String> contentColumns) {
+                passedColumns.add(contentColumns);
+            }
+        };
+    }
+
+    private static Site site() {
+        final Site site = new Site();
+        site.setId("site-1");
+        site.setDisplayName("Site");
+        site.setWebUrl("https://example.sharepoint.com/sites/site-1");
+        return site;
+    }
+
+    private static List surveyList() {
+        final List list = listWithTemplate("survey");
+        list.setId("list-1");
+        list.setDisplayName("Survey");
+        list.setWebUrl("https://example.sharepoint.com/sites/site-1/Lists/Survey");
+        return list;
+    }
+
+    /**
      * Deserializes a list item with Kiota's own JSON parser, so complex field values such as a
      * hyperlink column carry the runtime type Graph responses produce rather than a hand-built one.
      */
@@ -1215,7 +1407,7 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
 
         final TestCallback callback = new TestCallback();
         titleAwareDataStore.processListItem(new DataConfig(), callback, configMap, paramMap, scriptMap, new HashMap<>(), null, site, list,
-                item);
+                item, java.util.List.of());
 
         assertEquals("processListItem must have indexed the item exactly once", 1, callback.getCount());
         return (String) callback.getLastDataMap().get("title");
