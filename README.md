@@ -455,7 +455,7 @@ role=item.roles
 | Key | Value |
 | --- | --- |
 | item.title | The title of the list item (extracted from Title, LinkTitle, or FileLeafRef fields). A Links list item has none of them and takes the description of its URL field instead, or the address itself when the description is blank. |
-| item.content | The text contents of the list item (extracted from Body, Description, Comments, or Notes fields) |
+| item.content | The text contents of the list item (the first of the Body, Description, Comments, or Notes fields that has a value). An item with none of them - a survey response, or an item whose text is in columns the list owner added - takes the text values of the list's columns that Graph reports as neither read-only nor hidden instead, one per line; `Title`, `ContentType`, `FileLeafRef` and date and time columns are left out. |
 | item.id | The unique identifier of the list item |
 | item.created | The time at which the list item was created. |
 | item.modified | The last time the list item was modified. |
@@ -475,6 +475,10 @@ role=item.roles
 **Note**: Before this release a Links list item was indexed with no title, because a Links list hides its `Title` field, and it
 bypassed `include_pattern` and `exclude_pattern`. Re-crawl to fill in those titles; with either pattern set, Links list items are
 now filtered by that title as well.
+
+**Note**: Before this release an item with none of `Body`, `Description`, `Comments` or `Notes` was indexed with no content, which
+left every survey response empty. Re-crawl to fill it in. Each list whose items are indexed now costs one more request,
+`GET /sites/{site-id}/lists/{list-id}/columns`, under the same permission as its items.
 
 **Note**: The plugin automatically expands SharePoint list item fields to ensure content extraction. If fields are not initially available, it performs an individual API call with `$expand=fields` to retrieve the complete field data.
 
@@ -1644,10 +1648,10 @@ The SharePointListDataStore provides comprehensive crawling and indexing of Shar
 **Content Extraction Strategy:**
 The implementation intelligently extracts content from list items:
 - **Title Extraction**: Searches for title in common fields (Title, LinkTitle, FileLeafRef), then in the `URL` field of a Links list item (its description, or the address when the description is blank)
-- **Content Building**: Aggregates text from content fields (Body, Description, Comments, Notes)
+- **Content Building**: Takes the first content field that has a value (Body, Description, Comments, Notes); an item with none of them takes the text values of the list's columns that Graph reports as neither read-only nor hidden, other than `Title`, `ContentType`, `FileLeafRef` and date and time columns
 - **Dynamic Field Mapping**: Captures every field Graph returns for the item in the `item.fields` map, verbatim - SharePoint's own internal fields are **not** stripped
 - **Field Expansion**: Automatically re-reads the item with `$expand=fields` when the fields were not returned the first time
-- **Content aggregation is a positive selection**: only `Body`, `Description`, `Comments` and `Notes` feed `item.content`; nothing is excluded by name
+- **Content columns are read once per list**: `GET /sites/{site-id}/lists/{list-id}/columns` is requested before a list's items, and only for a list whose items are indexed. Only strings and arrays of strings (multi-choice) are taken; numbers, yes/no values, objects such as a hyperlink, and date and time columns, which Graph returns as UTC timestamps, are not
 
 **Multi-Threading Support:**
 - Configurable concurrent processing using `number_of_threads` parameter

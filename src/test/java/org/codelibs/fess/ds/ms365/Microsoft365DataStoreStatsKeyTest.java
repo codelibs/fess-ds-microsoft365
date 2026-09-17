@@ -291,7 +291,7 @@ public class Microsoft365DataStoreStatsKeyTest extends UnitDsTestCase {
             item.setFields(fields);
             // The client is only reached to refresh empty fields; these items carry theirs.
             dataStore.processListItem(new DataConfig(), callback, configMap, paramMap, leakScriptMap(), new HashMap<>(), null, site, list,
-                    item);
+                    item, List.of());
         }
 
         assertPerDocumentStatsKey(paramMap, callback, List.of("https://example.sharepoint.com/sites/site-1/Lists/List/item-1",
