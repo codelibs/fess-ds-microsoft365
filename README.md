@@ -857,6 +857,14 @@ the first place, not just their ACLs, so a re-crawl is needed here too:
   (`user_drive_crawler`) and a group's drive (`group_drive_crawler`) are crawled whatever
   `ignore_system_libraries` says; those two paths evaluate `isSystemLibrary` only to fill in a
   `debug` log line, exactly as they did before this release. Nothing changes there on upgrade.
+- **`ignore_system_lists`** (SharePointListDataStore) did not exclude hidden lists. The crawl
+  asks Graph for system-managed lists as well (`system` is in its `$select`), but the check only
+  matched URL patterns and never read Graph's `system` facet or `list.hidden`. A hidden list whose
+  URL is an ordinary `/Lists/...` path and whose template is `genericList` - such as
+  `TaxonomyHiddenList`, the site's cache of managed metadata terms - was therefore indexed like a
+  list a user created. With the default `true`, a list carrying either flag is now skipped, whether
+  it is found by enumerating a site's lists or named by `list_id`. Re-crawl to remove its items, or
+  set `ignore_system_lists=false` first if you want to keep indexing them.
 - **`include_pattern` / `exclude_pattern`** (SharePointDocLibDataStore) were declared as constants
   but never read anywhere, so configuring either one had no effect at all. They now filter document
   libraries by their browser URL (`doclib.url`) - see
@@ -1610,7 +1618,7 @@ The implementation creates rich, searchable content by combining:
 | `list_id` | Specific list ID to crawl | All lists | If specified, only this list will be crawled |
 | `exclude_list_id` | Comma-separated list IDs to exclude | - | Multiple list IDs separated by commas |
 | `list_template_filter` | Filter which lists - and, since this fix, which of their items - are processed, by template type | - | Comma-separated numeric IDs and/or Graph template names, e.g. `100,101` or `genericList,documentLibrary`; see [List Template Types](#list-template-types) below |
-| `ignore_system_lists` | Skip system lists | `true` | Excludes lists like User Information, Workflow Tasks |
+| `ignore_system_lists` | Skip system lists | `true` | Excludes lists Graph marks as system-managed (`system` facet) or hidden (`list.hidden`, e.g. `TaxonomyHiddenList`), plus lists like User Information, Workflow Tasks |
 | `ignore_error` | Continue crawling on errors | `false` | Set to `true` to skip failed items |
 | `include_pattern` | Regex pattern for item titles to include | - | Filter items by title matching |
 | `exclude_pattern` | Regex pattern for item titles to exclude | - | Skip items with matching titles |

@@ -1033,9 +1033,18 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
      * @return true if the list is a system list, false otherwise
      */
     protected boolean isSystemList(final com.microsoft.graph.models.List list) {
+        final boolean hidden = list.getList() != null && Boolean.TRUE.equals(list.getList().getHidden());
         if (logger.isDebugEnabled()) {
-            logger.debug("Checking if list is system list - Name: {}, ID: {}, Template: {}, WebUrl: {}", list.getDisplayName(),
-                    list.getId(), list.getList() != null ? list.getList().getTemplate() : "unknown", list.getWebUrl());
+            logger.debug("Checking if list is system list - Name: {}, ID: {}, Template: {}, WebUrl: {}, Hidden: {}, SystemFacet: {}",
+                    list.getDisplayName(), list.getId(), list.getList() != null ? list.getList().getTemplate() : "unknown",
+                    list.getWebUrl(), hidden, list.getSystem() != null);
+        }
+
+        // Microsoft365Client puts "system" in $select, without which Graph omits system-managed
+        // lists, and hidden lists such as TaxonomyHiddenList are returned too. Their URLs are
+        // ordinary /Lists/... paths, so only Graph's own flags identify them.
+        if (hidden || list.getSystem() != null) {
+            return true;
         }
 
         // Use URL-based detection for better reliability when available

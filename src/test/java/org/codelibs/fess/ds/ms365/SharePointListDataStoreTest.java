@@ -872,6 +872,64 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         }
     }
 
+    /**
+     * {@code Microsoft365Client#getSiteLists} puts {@code system} in {@code $select}, which is what
+     * makes Graph return system-managed lists at all, and hidden lists such as
+     * {@code TaxonomyHiddenList} are returned too. Their URLs are ordinary {@code /Lists/...} paths
+     * and their template is {@code genericList}, so only Graph's own flags - the {@code system}
+     * facet and {@code list.hidden} - tell them apart. Runs {@code storeListBySite} on the
+     * deserialized Graph response and records which lists reach {@code storeList}.
+     */
+    @Test
+    public void test_storeListBySite_skipsHiddenAndSystemManagedLists() throws Exception {
+        final String listsJson = "{\"value\":[" //
+                + "{\"id\":\"list-1\",\"displayName\":\"TestGenericList\",\"system\":null,"
+                + "\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/TestGenericList\","
+                + "\"list\":{\"contentTypesEnabled\":false,\"hidden\":false,\"template\":\"genericList\"}}," //
+                + "{\"id\":\"list-2\",\"displayName\":\"TaxonomyHiddenList\","
+                + "\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/TaxonomyHiddenList\","
+                + "\"list\":{\"contentTypesEnabled\":false,\"hidden\":true,\"template\":\"genericList\"}}," //
+                + "{\"id\":\"list-3\",\"displayName\":\"SystemManagedList\",\"system\":{},"
+                + "\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/SystemManagedList\","
+                + "\"list\":{\"contentTypesEnabled\":false,\"hidden\":false,\"template\":\"genericList\"}}" //
+                + "]}";
+        final String siteJson = "{\"id\":\"site-1\",\"displayName\":\"Site\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1\"}";
+
+        final java.util.List<String> defaultStored = new ArrayList<>();
+        final java.util.List<String> allStored = new ArrayList<>();
+        try (GraphMockServer server = new GraphMockServer();
+                MockableMicrosoft365Client client = new MockableMicrosoft365Client(dummyParams())) {
+            client.useServer(server.newGraphClient());
+
+            server.enqueueJson(siteJson);
+            server.enqueueJson(listsJson);
+            recordingDataStore(defaultStored).storeListBySite(new DataConfig(), new TestCallback(), new DataStoreParams(), new HashMap<>(),
+                    new HashMap<>(), new LinkedHashMap<>(), null, client, "site-1");
+
+            final DataStoreParams includeSystem = new DataStoreParams();
+            includeSystem.put("ignore_system_lists", "false");
+            server.enqueueJson(siteJson);
+            server.enqueueJson(listsJson);
+            recordingDataStore(allStored).storeListBySite(new DataConfig(), new TestCallback(), includeSystem, new HashMap<>(),
+                    new HashMap<>(), new LinkedHashMap<>(), null, client, "site-1");
+        }
+
+        assertEquals("hidden and system-managed lists must be skipped by default", java.util.List.of("TestGenericList"), defaultStored);
+        assertEquals("ignore_system_lists=false must still crawl them",
+                java.util.List.of("TestGenericList", "TaxonomyHiddenList", "SystemManagedList"), allStored);
+    }
+
+    private static SharePointListDataStore recordingDataStore(final java.util.List<String> stored) {
+        return new SharePointListDataStore() {
+            @Override
+            protected void storeList(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
+                    final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
+                    final ExecutorService executorService, final Microsoft365Client client, final Site site, final List list) {
+                stored.add(list.getDisplayName());
+            }
+        };
+    }
+
     /** Credentials are never used: GraphMockServer does not authenticate, and ClientSecretCredential
      *  acquires tokens lazily, so construction is offline. */
     private static DataStoreParams dummyParams() {
