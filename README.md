@@ -454,7 +454,7 @@ role=item.roles
 
 | Key | Value |
 | --- | --- |
-| item.title | The title of the list item (extracted from Title, LinkTitle, or FileLeafRef fields). |
+| item.title | The title of the list item (extracted from Title, LinkTitle, or FileLeafRef fields). A Links list item has none of them and takes the description of its URL field instead, or the address itself when the description is blank. |
 | item.content | The text contents of the list item (extracted from Body, Description, Comments, or Notes fields) |
 | item.id | The unique identifier of the list item |
 | item.created | The time at which the list item was created. |
@@ -471,6 +471,10 @@ role=item.roles
 - `item.site` - Contains site metadata (site.id, site.name, site.url)
 - `item.list` - Contains list metadata (list.name, list.description, list.url, list.template_type)
 - `item.fields` - Dynamic map of all SharePoint list fields and their values
+
+**Note**: Before this release a Links list item was indexed with no title, because a Links list hides its `Title` field, and it
+bypassed `include_pattern` and `exclude_pattern`. Re-crawl to fill in those titles; with either pattern set, Links list items are
+now filtered by that title as well.
 
 **Note**: The plugin automatically expands SharePoint list item fields to ensure content extraction. If fields are not initially available, it performs an individual API call with `$expand=fields` to retrieve the complete field data.
 
@@ -571,7 +575,7 @@ that is visible from the table above:
 |-----------|------------------|------------------|
 | `oneDriveDataStore` | the generated drive-item URL (indexed as `file.url`) - **not** the raw Graph `webUrl` (`file.web_url`); the two usually agree, but diverge for `/_layouts/` paths, which `getUrl()` rewrites | Fess `UrlFilter` - full match (`Matcher.matches()`) |
 | `sharePointDocLibDataStore` | the document library's browser URL (indexed as `doclib.url`) - the drive's Graph `webUrl`, **not** the library's display name | Fess `UrlFilter` - full match (`Matcher.matches()`) |
-| `sharePointListDataStore` | the list item's title (`Title`/`LinkTitle`/`FileLeafRef`, whichever resolves first) | `Matcher.matches()` - full match |
+| `sharePointListDataStore` | the list item's title (`Title`/`LinkTitle`/`FileLeafRef`, whichever resolves first, then the description or address in the `URL` field of a Links list item) | `Matcher.matches()` - full match |
 | `sharePointPageDataStore` | the page's `webUrl` | `Matcher.find()` - **partial** match |
 | `oneNoteDataStore` | the notebook's display name | `Matcher.matches()` - full match |
 | `teamsDataStore` | not supported - both parameters are silently ignored | - |
@@ -597,11 +601,12 @@ excluded unless that pattern matches `""`, and with only `exclude_pattern` set i
 that pattern matches `""`. A name with any other character is matched verbatim, surrounding
 whitespace included.
 
-`sharePointListDataStore` answers the same question the other way: a list item whose `Title`,
-`LinkTitle` and `FileLeafRef` are all blank skips both patterns entirely and is crawled, even under
-an `include_pattern` that matches nothing about it. Neither behaviour changed in this release; they
-are noted here because a pattern moved between the two DataStores will treat unnamed content
-differently.
+`sharePointListDataStore` answers the same question the other way: a list item with no title - its
+`Title`, `LinkTitle` and `FileLeafRef` all blank, and no `URL` field description or address - skips
+both patterns entirely and is crawled, even under an `include_pattern` that matches nothing about
+it. Neither behaviour changed in this release; they are noted here because a pattern moved between
+the two DataStores will treat unnamed content differently. What did change is that a Links list
+item is no longer unnamed: its title is now the description or address in its `URL` field.
 
 Note that `oneNoteDataStore` ignored both parameters in earlier releases - a configuration that
 set them expecting them to be a no-op will start filtering notebooks after upgrading.
@@ -1630,7 +1635,7 @@ The SharePointListDataStore provides comprehensive crawling and indexing of Shar
 
 **Content Extraction Strategy:**
 The implementation intelligently extracts content from list items:
-- **Title Extraction**: Searches for title in common fields (Title, LinkTitle, FileLeafRef)
+- **Title Extraction**: Searches for title in common fields (Title, LinkTitle, FileLeafRef), then in the `URL` field of a Links list item (its description, or the address when the description is blank)
 - **Content Building**: Aggregates text from content fields (Body, Description, Comments, Notes)
 - **Dynamic Field Mapping**: Captures every field Graph returns for the item in the `item.fields` map, verbatim - SharePoint's own internal fields are **not** stripped
 - **Field Expansion**: Automatically re-reads the item with `$expand=fields` when the fields were not returned the first time
@@ -1673,8 +1678,8 @@ The implementation intelligently extracts content from list items:
 - **Exclude Pattern**: Regex-based filtering to exclude items by title
 - Both are compiled once at crawl start to validate them; a pattern that does not compile aborts
   the crawl there. The per-item check itself recompiles the pattern - there is no pattern cache
-- An item whose `Title`, `LinkTitle` and `FileLeafRef` are all blank bypasses both patterns and is
-  crawled. This differs from `oneNoteDataStore`, which matches a nameless notebook as the empty
+- An item with no title (`Title`, `LinkTitle` and `FileLeafRef` all blank, and no `URL` field
+  description or address) bypasses both patterns and is crawled. This differs from `oneNoteDataStore`, which matches a nameless notebook as the empty
   string
 
 **Use Cases:**
