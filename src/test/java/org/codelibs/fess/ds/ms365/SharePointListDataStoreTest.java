@@ -20,6 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -47,6 +49,7 @@ import com.microsoft.graph.models.ListInfo;
 import com.microsoft.graph.models.ListItem;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
+import com.microsoft.kiota.serialization.JsonParseNodeFactory;
 
 public class SharePointListDataStoreTest extends UnitDsTestCase {
 
@@ -1114,6 +1117,108 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         paramMap.put("include_pattern", ".*Report.*");
         paramMap.put("exclude_pattern", ".*Draft.*");
         dataStore.validatePatterns(paramMap);
+    }
+
+    /**
+     * A Links list (template 103) hides the {@code Title} column, so Graph returns none of
+     * {@code Title}, {@code LinkTitle} or {@code FileLeafRef} for its items and they were indexed
+     * with a null title. SharePoint shows such an item under its {@code URL} column instead.
+     */
+    @Test
+    public void test_processListItem_linksListItemTitleIsUrlDescription() {
+        final ListItem item = parseListItem(
+                "{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/Links/1_.000\",\"fields\":{\"id\":\"1\",\"ContentType\":\"Link\",\"Attachments\":false,"
+                        + "\"URL\":{\"Description\":\"Contoso home\",\"Url\":\"https://contoso.example.com/\"},\"Comments\":\"memo\","
+                        + "\"URLwMenu\":\"https://contoso.example.com/, Contoso home\",\"URLNoMenu\":\"https://contoso.example.com/, Contoso home\"}}");
+
+        assertEquals("Contoso home", indexLinksListItemTitle(item));
+    }
+
+    /**
+     * SharePoint displays the address itself for a link saved without a description.
+     */
+    @Test
+    public void test_processListItem_linksListItemTitleIsUrlWithoutDescription() {
+        final ListItem item = parseListItem(
+                "{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/Links/1_.000\",\"fields\":{\"id\":\"1\",\"ContentType\":\"Link\","
+                        + "\"URL\":{\"Description\":\" \",\"Url\":\"https://contoso.example.com/\"}}}");
+
+        assertEquals("https://contoso.example.com/", indexLinksListItemTitle(item));
+    }
+
+    /**
+     * include_pattern/exclude_pattern match the same title the item is indexed with; a Links list
+     * item used to bypass both because its title resolved to nothing.
+     */
+    @Test
+    public void test_isTargetItem_linksListItemIsMatchedByUrlDescription() {
+        final ListItem item = parseListItem(
+                "{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/Links/1_.000\",\"fields\":{\"id\":\"1\",\"ContentType\":\"Link\","
+                        + "\"URL\":{\"Description\":\"Fabrikam portal\",\"Url\":\"https://fabrikam.example.com/\"}}}");
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("include_pattern", "Contoso.*");
+        assertFalse(dataStore.isTargetItem(paramMap, item));
+
+        paramMap.put("include_pattern", "Fabrikam.*");
+        assertTrue(dataStore.isTargetItem(paramMap, item));
+    }
+
+    /**
+     * Deserializes a list item with Kiota's own JSON parser, so complex field values such as a
+     * hyperlink column carry the runtime type Graph responses produce rather than a hand-built one.
+     */
+    private static ListItem parseListItem(final String json) {
+        return new JsonParseNodeFactory().getParseNode("application/json", new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)))
+                .getObjectValue(ListItem::createFromDiscriminatorValue);
+    }
+
+    private String indexLinksListItemTitle(final ListItem item) {
+        final org.codelibs.fess.helper.SystemHelper systemHelper = new org.codelibs.fess.helper.SystemHelper();
+        ComponentUtil.register(systemHelper, "systemHelper");
+        final org.codelibs.fess.helper.CrawlerStatsHelper crawlerStatsHelper = new org.codelibs.fess.helper.CrawlerStatsHelper();
+        crawlerStatsHelper.init();
+        ComponentUtil.register(crawlerStatsHelper, "crawlerStatsHelper");
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(systemHelper);
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put("title", "item.title");
+
+        // Same convertValue seam as test_processListItem_doesNotRequestSitePermissions.
+        final SharePointListDataStore titleAwareDataStore = new SharePointListDataStore() {
+            @Override
+            protected Object convertValue(final String scriptType, final String template, final Map<String, Object> resultMap) {
+                if ("item.title".equals(template) && resultMap.get(LIST_ITEM) instanceof final Map<?, ?> itemMap) {
+                    return itemMap.get(LIST_ITEM_TITLE);
+                }
+                return super.convertValue(scriptType, template, resultMap);
+            }
+        };
+
+        final Site site = new Site();
+        site.setId("site-1");
+        site.setDisplayName("Site");
+        site.setWebUrl("https://example.sharepoint.com/sites/site-1");
+
+        final List list = listWithTemplate("links");
+        list.setId("list-1");
+        list.setDisplayName("Links");
+        list.setWebUrl("https://example.sharepoint.com/sites/site-1/Lists/Links");
+
+        final Map<String, Object> configMap = new LinkedHashMap<>();
+        configMap.put(SharePointListDataStore.IGNORE_ERROR, Boolean.FALSE);
+
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "103");
+
+        final TestCallback callback = new TestCallback();
+        titleAwareDataStore.processListItem(new DataConfig(), callback, configMap, paramMap, scriptMap, new HashMap<>(), null, site, list,
+                item);
+
+        assertEquals("processListItem must have indexed the item exactly once", 1, callback.getCount());
+        return (String) callback.getLastDataMap().get("title");
     }
 
     private static com.microsoft.graph.models.List listWithTemplate(final String template) {

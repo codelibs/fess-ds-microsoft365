@@ -40,6 +40,9 @@ import org.codelibs.fess.util.ComponentUtil;
 
 import com.microsoft.graph.models.ListItem;
 import com.microsoft.graph.models.Site;
+import com.microsoft.kiota.serialization.UntypedNode;
+import com.microsoft.kiota.serialization.UntypedObject;
+import com.microsoft.kiota.serialization.UntypedString;
 
 /**
  * SharePointListDataStore crawls SharePoint lists and their items.
@@ -441,7 +444,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                 }
 
                 // Extract common fields
-                final String title = extractFieldValue(fields, "Title", "LinkTitle", "FileLeafRef");
+                final String title = extractTitle(fields);
                 if (StringUtil.isNotBlank(title)) {
                     listItemMap.put(LIST_ITEM_TITLE, title);
                     if (logger.isDebugEnabled()) {
@@ -522,6 +525,30 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         } finally {
             crawlerStatsHelper.done(statsKey);
         }
+    }
+
+    /**
+     * Extracts the title of a SharePoint list item.
+     *
+     * <p>A Links list hides the {@code Title} column, so Graph returns none of {@code Title},
+     * {@code LinkTitle} or {@code FileLeafRef} for its items. SharePoint shows such an item under
+     * its {@code URL} hyperlink column instead: the link's description, or the address itself when
+     * the description is blank.</p>
+     *
+     * @param fields the map of field values
+     * @return the item title or null if not found
+     */
+    protected String extractTitle(final Map<String, Object> fields) {
+        final String title = extractFieldValue(fields, "Title", "LinkTitle", "FileLeafRef");
+        if (title == null && fields != null && fields.get("URL") instanceof final UntypedObject link) {
+            final Map<String, UntypedNode> properties = link.getValue();
+            for (final String name : new String[] { "Description", "Url" }) {
+                if (properties.get(name) instanceof final UntypedString value && StringUtil.isNotBlank(value.getValue())) {
+                    return value.getValue().trim();
+                }
+            }
+        }
+        return title;
     }
 
     /**
@@ -700,7 +727,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         if (item.getFields() != null) {
             final com.microsoft.graph.models.FieldValueSet fieldValueSet = item.getFields();
             final Map<String, Object> fields = fieldValueSet != null ? fieldValueSet.getAdditionalData() : null;
-            final String title = extractFieldValue(fields, "Title", "LinkTitle", "FileLeafRef");
+            final String title = extractTitle(fields);
             if (StringUtil.isNotBlank(title)) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("List item title for filtering: {}", title);
