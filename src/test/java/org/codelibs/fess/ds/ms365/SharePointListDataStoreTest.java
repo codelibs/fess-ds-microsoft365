@@ -1047,6 +1047,31 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
                 java.util.List.of(permissionHelper.encode("{role}admin"), "1config-role"), roles);
     }
 
+    /**
+     * A library keeps its display form under {@code Forms/}; linking to
+     * {@code <library>/DispForm.aspx} was a 404 for every picture and document library item.
+     */
+    @Test
+    public void test_getItemUrl_libraryFormsLiveUnderForms() {
+        final ListItem item = new ListItem();
+        item.setId("3");
+        item.setWebUrl("https://example.sharepoint.com/sites/site-1/Pictures/photo.png");
+
+        assertEquals("https://example.sharepoint.com/sites/site-1/Pictures/Forms/DispForm.aspx?ID=3",
+                dataStore.getItemUrl("https://example.sharepoint.com/sites/site-1/Pictures", "pictureLibrary", item));
+        assertEquals("https://example.sharepoint.com/sites/site-1/Shared%20Documents/Forms/DispForm.aspx?ID=3",
+                dataStore.getItemUrl("https://example.sharepoint.com/sites/site-1/Shared%20Documents", "documentLibrary", item));
+        assertEquals("https://example.sharepoint.com/sites/site-1/SitePages/Forms/DispForm.aspx?ID=3",
+                dataStore.getItemUrl("https://example.sharepoint.com/sites/site-1/SitePages", "webPageLibrary", item));
+
+        assertEquals("https://example.sharepoint.com/sites/site-1/Lists/List/DispForm.aspx?ID=3",
+                dataStore.getItemUrl("https://example.sharepoint.com/sites/site-1/Lists/List", "genericList", item));
+        assertEquals("https://example.sharepoint.com/sites/site-1/Events/DispForm.aspx?ID=3",
+                dataStore.getItemUrl("https://example.sharepoint.com/sites/site-1/Events", "events", item));
+
+        assertEquals(item.getWebUrl(), dataStore.getItemUrl(null, "pictureLibrary", item));
+    }
+
     private static final class TestablePermissionHelper extends org.codelibs.fess.helper.PermissionHelper {
         void useSystemHelper(final org.codelibs.fess.helper.SystemHelper systemHelper) {
             this.systemHelper = systemHelper;

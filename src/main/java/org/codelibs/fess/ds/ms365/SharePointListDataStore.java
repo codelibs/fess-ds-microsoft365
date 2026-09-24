@@ -352,12 +352,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         // Create URL for the item first for stats tracking
         final String listUrl = list.getWebUrl();
         final String itemUrl = item.getWebUrl();
-        final String url;
-        if (listUrl != null) {
-            url = listUrl + "/DispForm.aspx?ID=" + item.getId();
-        } else {
-            url = itemUrl;
-        }
+        final String url = getItemUrl(listUrl, listTemplate, item);
 
         if (logger.isDebugEnabled()) {
             logger.debug("Processing list item - ID: {}, URL: {}, List: {} ({}), Site: {} ({}), Created: {}, Modified: {}", item.getId(),
@@ -697,6 +692,25 @@ public class SharePointListDataStore extends Microsoft365DataStore {
             }
         }
         return false;
+    }
+
+    /**
+     * Builds the link that opens a list item's display form in SharePoint.
+     *
+     * <p>A list keeps its forms at its own root, but a library keeps them under {@code Forms/},
+     * so {@code <library>/DispForm.aspx} is a 404.</p>
+     *
+     * @param listUrl the list's {@code webUrl}, or {@code null} if Graph returned none
+     * @param listTemplate the Graph template name of the list
+     * @param item the list item
+     * @return the display form URL, or the item's own {@code webUrl} when the list has none
+     */
+    protected String getItemUrl(final String listUrl, final String listTemplate, final ListItem item) {
+        if (listUrl == null) {
+            return item.getWebUrl();
+        }
+        final String formsPath = Microsoft365Constants.isLibraryTemplate(listTemplate) ? "/Forms" : StringUtil.EMPTY;
+        return listUrl + formsPath + "/DispForm.aspx?ID=" + item.getId();
     }
 
     /**

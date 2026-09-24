@@ -16,6 +16,7 @@
 package org.codelibs.fess.ds.ms365;
 
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Constants used across Microsoft 365 data store implementations.
@@ -36,6 +37,12 @@ public final class Microsoft365Constants {
     /** SharePoint list template type for generic lists. */
     public static final String GENERIC_LIST = "genericList";
 
+    /**
+     * Graph template names of the libraries a list crawl can reach, i.e. the lists whose forms live
+     * under {@code Forms/}. Limited to names Graph has been seen to report.
+     */
+    private static final Set<String> LIBRARY_TEMPLATES = Set.of(DOCUMENT_LIBRARY, "pictureLibrary", "webPageLibrary");
+
     /** SharePoint list template type IDs mapped to the template names Graph reports. */
     private static final Map<String, String> TEMPLATE_NAMES_BY_ID = Map.of("100", GENERIC_LIST, "101", DOCUMENT_LIBRARY, "102", "survey",
             "103", "links", "104", "announcements", "105", "contacts");
@@ -53,5 +60,16 @@ public final class Microsoft365Constants {
      */
     public static String templateNameForId(final String id) {
         return TEMPLATE_NAMES_BY_ID.get(id);
+    }
+
+    /**
+     * Checks if a Graph template name is that of a document library, picture library or site pages
+     * library.
+     *
+     * @param template the Graph template name
+     * @return true if lists of this template are libraries
+     */
+    public static boolean isLibraryTemplate(final String template) {
+        return LIBRARY_TEMPLATES.contains(template);
     }
 }
