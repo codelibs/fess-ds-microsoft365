@@ -455,7 +455,7 @@ role=item.roles
 | Key | Value |
 | --- | --- |
 | item.title | The title of the list item (extracted from Title, LinkTitle, or FileLeafRef fields). A Links list item has none of them and takes the description of its URL field instead, or the address itself when the description is blank. |
-| item.content | The text contents of the list item (the first of the Body, Description, Comments, or Notes fields that has a value). An item with none of them - a survey response, or an item whose text is in columns the list owner added - takes the text values of the list's columns that Graph reports as neither read-only nor hidden instead, one per line; `Title`, `ContentType`, `FileLeafRef` and date and time columns are left out. |
+| item.content | The text contents of the list item (the first of the Body, Description, Comments, or Notes fields that has a value). An item with none of them - a survey response, or an item whose text is in columns the list owner added - takes the text values of the list's columns that Graph reports as neither read-only nor hidden instead, one per line; `Title`, `ContentType`, `FileLeafRef` and date and time columns are left out. A rich text value, such as an Announcements list's `Body`, is indexed as its text with the HTML markup stripped. |
 | item.id | The unique identifier of the list item |
 | item.created | The time at which the list item was created. |
 | item.modified | The last time the list item was modified. |
@@ -479,6 +479,9 @@ now filtered by that title as well.
 **Note**: Before this release an item with none of `Body`, `Description`, `Comments` or `Notes` was indexed with no content, which
 left every survey response empty. Re-crawl to fill it in. Each list whose items are indexed now costs one more request,
 `GET /sites/{site-id}/lists/{list-id}/columns`, under the same permission as its items.
+
+**Note**: Before this release a rich text field, such as an Announcements list's `Body`, was indexed as raw HTML, tags and
+style attributes included. Re-crawl to replace it with the text.
 
 **Note**: The plugin automatically expands SharePoint list item fields to ensure content extraction. If fields are not initially available, it performs an individual API call with `$expand=fields` to retrieve the complete field data.
 

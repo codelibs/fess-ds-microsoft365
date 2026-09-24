@@ -17,6 +17,8 @@ package org.codelibs.fess.ds.ms365;
 
 import static org.codelibs.fess.ds.ms365.Microsoft365Constants.UNKNOWN_TEMPLATE;
 
+import java.io.IOException;
+import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -32,6 +34,7 @@ import java.util.regex.PatternSyntaxException;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.analysis.charfilter.HTMLStripCharFilter;
 import org.codelibs.core.exception.InterruptedRuntimeException;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
@@ -43,6 +46,7 @@ import org.codelibs.fess.ds.AbstractDataStore;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreException;
+import org.codelibs.fess.exception.FessSystemException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsKeyObject;
@@ -1077,5 +1081,33 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
             return list.getList().getTemplate();
         }
         return UNKNOWN_TEMPLATE;
+    }
+
+    /**
+     * Strips HTML tags from the given value using Lucene's HTML strip filter.
+     *
+     * @param value The HTML content to strip tags from.
+     * @return The text content with HTML tags removed.
+     */
+    protected String stripHtmlTags(final String value) {
+        if (value == null) {
+            return "";
+        }
+
+        if (!value.contains("<") || !value.contains(">")) {
+            return value;
+        }
+
+        final StringBuilder builder = new StringBuilder();
+        try (HTMLStripCharFilter filter = new HTMLStripCharFilter(new StringReader(value))) {
+            int ch;
+            while ((ch = filter.read()) != -1) {
+                builder.append((char) ch);
+            }
+        } catch (final IOException e) {
+            throw new FessSystemException(e);
+        }
+
+        return builder.toString();
     }
 }
