@@ -459,7 +459,7 @@ role=item.roles
 | item.id | The unique identifier of the list item |
 | item.created | The time at which the list item was created. |
 | item.modified | The last time the list item was modified. |
-| item.url | A link for opening the list item in SharePoint - the list's `webUrl` plus `/DispForm.aspx?ID=<id>`, falling back to the item's own `webUrl` when the list has none. |
+| item.url | A link for opening the list item in SharePoint - the list's `webUrl` plus `/DispForm.aspx?ID=<id>` (`/Forms/DispForm.aspx?ID=<id>` for a document library, picture library or site pages library), falling back to the item's own `webUrl` when the list has none. |
 | item.web_url | The item's raw Graph `webUrl`, unmodified. Usually differs from `item.url`. |
 | item.content_type | The name of the item's SharePoint content type, or an empty string when the item has none. |
 | item.fields | All fields and values from the SharePoint list item as a map, exactly as Graph returns them - SharePoint's own internal fields included. |
