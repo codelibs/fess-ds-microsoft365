@@ -633,6 +633,22 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
     }
 
     @Test
+    public void test_isTargetListType_acceptsEventsTasksDiscussionPictureIds() {
+        // Template names Graph reported for these lists on a SharePoint Online tenant. A Tasks
+        // list created there is 171 (tasksWithTimelineAndHierarchy), not the legacy 107.
+        final SharePointListDataStore dataStore = new SharePointListDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "106,108,109,171");
+
+        assertTrue("106 must select events", dataStore.isTargetListType(paramMap, listWithTemplate("events")));
+        assertTrue("108 must select discussionBoard", dataStore.isTargetListType(paramMap, listWithTemplate("discussionBoard")));
+        assertTrue("109 must select pictureLibrary", dataStore.isTargetListType(paramMap, listWithTemplate("pictureLibrary")));
+        assertTrue("171 must select tasksWithTimelineAndHierarchy",
+                dataStore.isTargetListType(paramMap, listWithTemplate("tasksWithTimelineAndHierarchy")));
+        assertFalse(dataStore.isTargetListType(paramMap, listWithTemplate("genericList")));
+    }
+
+    @Test
     public void test_isTargetListType_stillAcceptsTemplateNames() {
         final SharePointListDataStore dataStore = new SharePointListDataStore();
         final DataStoreParams paramMap = new DataStoreParams();
@@ -685,12 +701,12 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
 
     @Test
     public void test_unknownListTemplateFilterTokenWarnsOnceNotPerItem() {
-        // list_template_filter=106,100 against a genericList: "106" has no documented mapping,
+        // list_template_filter=107,100 against a genericList: "107" has no documented mapping,
         // so evaluating it used to warn - and c01b81f made isTargetListType run once per list
         // item via isProcessableListItemType, so that warning used to repeat once per item.
         final SharePointListDataStore dataStore = new SharePointListDataStore();
         final DataStoreParams paramMap = new DataStoreParams();
-        paramMap.put("list_template_filter", "106,100");
+        paramMap.put("list_template_filter", "107,100");
 
         final AtomicInteger warnCount = new AtomicInteger();
         final org.apache.logging.log4j.core.Logger coreLogger =

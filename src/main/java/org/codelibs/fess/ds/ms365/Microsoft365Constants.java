@@ -44,16 +44,17 @@ public final class Microsoft365Constants {
     private static final Set<String> LIBRARY_TEMPLATES = Set.of(DOCUMENT_LIBRARY, "pictureLibrary", "webPageLibrary");
 
     /** SharePoint list template type IDs mapped to the template names Graph reports. */
-    private static final Map<String, String> TEMPLATE_NAMES_BY_ID = Map.of("100", GENERIC_LIST, "101", DOCUMENT_LIBRARY, "102", "survey",
-            "103", "links", "104", "announcements", "105", "contacts");
+    private static final Map<String, String> TEMPLATE_NAMES_BY_ID =
+            Map.of("100", GENERIC_LIST, "101", DOCUMENT_LIBRARY, "102", "survey", "103", "links", "104", "announcements", "105", "contacts",
+                    "106", "events", "108", "discussionBoard", "109", "pictureLibrary", "171", "tasksWithTimelineAndHierarchy");
 
     /**
      * Translates a SharePoint list template ID to the template name Graph reports.
      *
-     * <p>Only the IDs Microsoft documents against Graph's {@code list.template} are mapped.
-     * Higher IDs exist in SharePoint's own SPListTemplateType enumeration, but Graph's
-     * documented names for them are not published, and guessing at them would recreate the
-     * silent no-match this mapping exists to fix.</p>
+     * <p>Only the IDs Microsoft documents against Graph's {@code list.template}, and those whose
+     * name Graph has been seen to report, are mapped. Other IDs exist in SharePoint's own
+     * SPListTemplateType enumeration (e.g. 107, the legacy Tasks list), but guessing at their
+     * names would recreate the silent no-match this mapping exists to fix.</p>
      *
      * @param id the numeric template ID
      * @return the Graph template name, or null if the ID has no documented mapping

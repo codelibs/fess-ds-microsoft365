@@ -1705,10 +1705,9 @@ The implementation intelligently extracts content from list items:
 
 `list_template_filter` accepts a comma-separated mix of numeric SharePoint template IDs and
 Microsoft Graph template name strings - for example `list_template_filter=100,documentLibrary` is
-valid, and either form of `100` or `genericList` matches the same lists. Only the IDs Microsoft
-documents against Graph's `list.template` property are mapped to a name internally, so only those
-IDs can be given numerically; the rest exist only as legacy `SPListTemplateType` IDs and have no
-published Graph name to map to:
+valid, and either form of `100` or `genericList` matches the same lists. The filter value is the
+Graph name in the last column - not the display name in the *Name* column (e.g. `Picture Library`
+matches nothing; `109` or `pictureLibrary` does):
 
 | ID | Name | Filter value to use |
 |----|------|----------------------|
@@ -1718,19 +1717,19 @@ published Graph name to map to:
 | `103` | Links | `103` or `links` |
 | `104` | Announcements | `104` or `announcements` |
 | `105` | Contacts | `105` or `contacts` |
-| `106` | Events | name only - not published, see below |
-| `107` | Tasks | name only - not published, see below |
-| `108` | Discussion Board | name only - not published, see below |
-| `109` | Picture Library | name only - not published, see below |
+| `106` | Events | `106` or `events` |
+| `108` | Discussion Board | `108` or `discussionBoard` |
+| `109` | Picture Library | `109` or `pictureLibrary` |
+| `171` | Tasks | `171` or `tasksWithTimelineAndHierarchy` |
 
-For `106`-`109`, Microsoft has not published what string value Graph's `list.template` reports, so
-this plugin cannot map the numeric ID to it, and guessing would silently reintroduce the same
-no-match problem this mapping exists to fix. Passing one of these IDs numerically (e.g.
-`list_template_filter=106`) logs a `WARN` ("Unknown list template ID ...; use the Graph template
-name instead") and matches nothing. To filter on one of these types, enable `DEBUG` logging for
-`org.codelibs.fess.ds.ms365` (see [Debug Mode](#debug-mode) below), run a crawl, and read the
-`Template:` value logged for that list - then use that literal string as the filter value instead
-of the numeric ID.
+A Tasks list created in SharePoint Online is template `171`, not the legacy Tasks template `107`,
+so select it with `171` or `tasksWithTimelineAndHierarchy`. `107` itself is not mapped: Graph's name
+for it has not been observed, and guessing would silently reintroduce the no-match problem this
+mapping exists to fix. Passing an unmapped ID numerically (e.g. `list_template_filter=107`) logs a
+`WARN` ("Unknown list template ID ...; use the Graph template name instead") and matches nothing.
+To filter on a list type not in the table, enable `DEBUG` logging for `org.codelibs.fess.ds.ms365`
+(see [Debug Mode](#debug-mode) below), run a crawl, and read the `Template:` value logged for that
+list - then use that literal string as the filter value.
 
 **Performance Optimizations:**
 - Site, list and list-item listings are paged by following Graph's `@odata.nextLink` directly;
