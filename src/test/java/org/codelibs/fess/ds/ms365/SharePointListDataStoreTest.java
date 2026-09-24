@@ -1236,6 +1236,35 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
     }
 
     /**
+     * A picture library reports FileType, ImageSize and PreviewOnForm as editable and visible, but
+     * SharePoint fills them in from the image. An image with no description was indexed with its
+     * file type and width as content, so those columns are not content columns.
+     */
+    @Test
+    public void test_getContentColumns_skipsPictureLibraryComputedColumns() throws Exception {
+        final String columnsJson = "{\"value\":[" //
+                + "{\"name\":\"PreviewOnForm\",\"displayName\":\"Preview\",\"hidden\":false,\"readOnly\":false},"
+                + "{\"name\":\"FileType\",\"displayName\":\"File Type\",\"hidden\":false,\"readOnly\":false},"
+                + "{\"name\":\"ImageSize\",\"displayName\":\"Picture Size\",\"hidden\":false,\"readOnly\":false},"
+                + "{\"name\":\"Description\",\"displayName\":\"Description\",\"hidden\":false,\"readOnly\":false,\"text\":{}},"
+                + "{\"name\":\"Keywords\",\"displayName\":\"Keywords\",\"hidden\":false,\"readOnly\":false,\"text\":{}}]}";
+
+        final List list = listWithTemplate("pictureLibrary");
+        list.setId("list-1");
+        list.setDisplayName("Pictures");
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put("list_template_filter", "pictureLibrary");
+        try (GraphMockServer server = new GraphMockServer();
+                MockableMicrosoft365Client client = new MockableMicrosoft365Client(dummyParams())) {
+            client.useServer(server.newGraphClient());
+            server.enqueueJson(columnsJson);
+
+            assertEquals(java.util.List.of("Description", "Keywords"), dataStore.getContentColumns(paramMap, client, site(), list));
+            assertEquals("/sites/site-1/lists/list-1/columns", server.takePath());
+        }
+    }
+
+    /**
      * A list whose items processListItem skips - here a document library without
      * {@code list_template_filter} - costs no columns request.
      */
