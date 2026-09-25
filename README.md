@@ -516,11 +516,17 @@ role=page.roles
 - **Page Title**: The main page title
 - **Page Description**: Page description or summary text
 - **Text web parts**: the web part's `innerHtml`, converted to plain text
-- **Standard web parts** (everything else - Quick Links, Hero, Events, News and so on): the web
-  part's `title` and `description`, plus SharePoint's own indexable projection of it -
-  `serverProcessedContent.searchablePlainTexts`, `.htmlStrings` and `.links`. The web part's
-  free-form `properties` object is **not** read; Microsoft Graph exposes it as an untyped node with
-  no published schema
+- **Standard web parts** (everything else - Quick Links, Hero, Events, News and so on): the text
+  the author entered, from SharePoint's own indexable projection of the web part -
+  `serverProcessedContent.searchablePlainTexts` and `.htmlStrings`. The web part's `title` and
+  `description` are **not** read: they are the web part type's toolbox name and description
+  (for example "Quick links"), the same on every page. `serverProcessedContent.links` is not read
+  either: it holds URLs (the site's base URL, link targets, image URLs) that are not shown as text
+  on the page. The web part's free-form `properties` object is **not** read; Microsoft Graph
+  exposes it as an untyped node with no published schema. Items a web part pulls in at render
+  time - the posts a News web part lists, the events an Events web part lists - are not part of
+  the page: news posts are crawled as pages of their own, and events are list items
+  (SharePointListDataStore)
 
 **Page Types**: The plugin classifies each page from the `promotionKind` and `pageLayout` properties Microsoft Graph returns for it:
 - `news`: a news post (`promotionKind` is `newsPost`)
@@ -1765,9 +1771,9 @@ list - then use that literal string as the filter value.
 
 Standard web parts (everything except plain text web parts - Quick Links, Hero, Events, News,
 and so on) previously contributed **nothing** to `page.content`: the extractor received a typed
-`WebPartData` object it could not read, so it appended no characters. It now extracts the web
-part's `title`, `description` and SharePoint's own indexable projection
-(`serverProcessedContent.searchablePlainTexts`, `htmlStrings` and `links`).
+`WebPartData` object it could not read, so it appended no characters. It now extracts
+SharePoint's own indexable projection of the web part (`serverProcessedContent.searchablePlainTexts`
+and `htmlStrings`).
 
 It also walks the web part's `additionalData` map - a forward-compatibility read for any Graph
 field the SDK's typed `WebPartData` model does not (yet) declare, not a source of text today. On

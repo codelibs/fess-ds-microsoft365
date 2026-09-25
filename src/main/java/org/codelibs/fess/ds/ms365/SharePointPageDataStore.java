@@ -518,13 +518,14 @@ public class SharePointPageDataStore extends Microsoft365DataStore {
             final WebPartData data = stdPart.getData();
             if (data != null) {
                 final int beforeLength = content.length();
-                appendWebPartText(content, data.getTitle());
-                appendWebPartText(content, data.getDescription());
+                // data.getTitle()/getDescription() are not read: they are the web part type's own
+                // toolbox name and description (e.g. "Quick links"), not text the author entered.
+                // serverProcessedContent.links is not read either: it holds URLs (site base URL,
+                // link targets, image URLs), none of which is displayed as text on the page.
                 final ServerProcessedContent processedContent = data.getServerProcessedContent();
                 if (processedContent != null) {
                     appendMetaDataPairs(content, processedContent.getSearchablePlainTexts());
                     appendMetaDataPairs(content, processedContent.getHtmlStrings());
-                    appendMetaDataPairs(content, processedContent.getLinks());
                 }
                 // getAdditionalData() is a Map<String, Object>, the one shape extractDataFromObject
                 // can walk. getProperties() is deliberately not read: it is a Kiota UntypedNode with
