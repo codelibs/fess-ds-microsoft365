@@ -405,8 +405,9 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         }
 
         if (driveId != null) {
+            final Drive drive = (Drive) configMap.get(DRIVE_INFO);
             getDriveItemsInDrive(client, driveId, item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap,
-                    paramMap, scriptMap, defaultDataMap, client, driveId, item, Collections.emptyList())));
+                    paramMap, scriptMap, defaultDataMap, client, drive, item, Collections.emptyList())));
         } else {
             client.getSites(site -> {
                 if (logger.isDebugEnabled()) {
@@ -434,8 +435,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                                 if (logger.isDebugEnabled()) {
                                     logger.debug("Starting to process drive item: {} - Name: {}", item.getWebUrl(), item.getName());
                                 }
-                                processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client,
-                                        drive.getId(), item, Collections.emptyList());
+                                processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, drive, item,
+                                        Collections.emptyList());
                             });
                         });
                     });
@@ -498,8 +499,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                         if (logger.isDebugEnabled()) {
                             logger.debug("Starting to process drive item: {} - Name: {}", item.getWebUrl(), item.getName());
                         }
-                        processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, userDrive.getId(),
-                                item, getUserRoles(user));
+                        processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, userDrive, item,
+                                getUserRoles(user));
                     });
                 });
 
@@ -553,8 +554,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                         if (logger.isDebugEnabled()) {
                             logger.debug("Starting to process drive item: {} - Name: {}", item.getWebUrl(), item.getName());
                         }
-                        processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, groupDrive.getId(),
-                                item, getGroupRoles(group));
+                        processDriveItem(dataConfig, callback, configMap, paramMap, scriptMap, defaultDataMap, client, groupDrive, item,
+                                getGroupRoles(group));
                     });
                 });
 
@@ -577,13 +578,14 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      * @param scriptMap The script map.
      * @param defaultDataMap The default data map.
      * @param client The Microsoft365Client.
-     * @param driveId The drive ID.
+     * @param drive The drive that holds the item.
      * @param item The drive item.
      * @param roles The roles.
      */
     protected void processDriveItem(final DataConfig dataConfig, final IndexUpdateCallback callback, final Map<String, Object> configMap,
             final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
-            final Microsoft365Client client, final String driveId, final DriveItem item, final List<String> roles) {
+            final Microsoft365Client client, final Drive drive, final DriveItem item, final List<String> roles) {
+        final String driveId = drive.getId();
         final boolean isFolder = item.getFolder() != null;
         final CrawlerStatsHelper crawlerStatsHelper = ComponentUtil.getCrawlerStatsHelper();
         final String mimetype;
@@ -618,7 +620,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 return;
             }
 
-            final String url = getUrl(configMap, paramMap, item);
+            final String url = getUrl(configMap, paramMap, drive, item);
             final UrlFilter urlFilter = (UrlFilter) configMap.get(URL_FILTER);
             if (urlFilter != null && !urlFilter.match(url)) {
                 if (logger.isDebugEnabled()) {
@@ -743,16 +745,17 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      * Gets the URL for a drive item.
      * <p>
      * A {@code webUrl} that is not a {@code /_layouts/} viewer URL is returned as it is. Otherwise a
-     * path-based URL is rebuilt from the item's parent path and name. Note that the two sources are
-     * encoded differently: Graph percent-encodes {@code parentReference.path} but not
-     * {@link DriveItem#getName()}, so only the name is encoded here.
+     * path-based URL is rebuilt from the item's parent path and name, under the drive's own
+     * {@code webUrl}. Note that the two sources are encoded differently: Graph percent-encodes
+     * {@code parentReference.path} but not {@link DriveItem#getName()}, so only the name is encoded here.
      *
      * @param configMap The configuration map.
      * @param paramMap The data store parameters.
+     * @param drive The drive that holds the item.
      * @param item The drive item.
      * @return The URL.
      */
-    protected String getUrl(final Map<String, Object> configMap, final DataStoreParams paramMap, final DriveItem item) {
+    protected String getUrl(final Map<String, Object> configMap, final DataStoreParams paramMap, final Drive drive, final DriveItem item) {
         if (item.getWebUrl() == null) {
             return null;
         }
@@ -776,17 +779,17 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         // DriveItem.name, in contrast, is the raw name, so it is the one part that needs encoding.
         pathList.add(encodeUrl(item.getName()));
         final String path = pathList.stream().filter(StringUtil::isNotBlank).collect(Collectors.joining("/"));
+        // A site can hold several document libraries, so the library segment comes from the drive
+        // itself. Its URL segment is fixed when the drive is created, while Drive.getName() is a
+        // read-write display name that Graph localizes, so the drive's webUrl is preferred.
+        final String driveUrl = drive != null ? drive.getWebUrl() : null;
+        if (StringUtil.isNotBlank(driveUrl)) {
+            return (driveUrl.endsWith("/") ? driveUrl.substring(0, driveUrl.length() - 1) : driveUrl) + "/" + path;
+        }
         if (CRAWLER_TYPE_SHARED.equals(configMap.get(CURRENT_CRAWLER)) || CRAWLER_TYPE_GROUP.equals(configMap.get(CURRENT_CRAWLER))) {
             return baseUrl + "/Shared%20Documents/" + path;
         }
-        if (CRAWLER_TYPE_DRIVE.equals(configMap.get(CURRENT_CRAWLER))) {
-            final Drive drive = (Drive) configMap.get(DRIVE_INFO);
-            // A drive's URL segment is fixed when the drive is created, while Drive.getName() is a
-            // read-write display name that Graph localizes, so prefer the drive's own webUrl.
-            final String driveUrl = drive.getWebUrl();
-            if (StringUtil.isNotBlank(driveUrl)) {
-                return (driveUrl.endsWith("/") ? driveUrl.substring(0, driveUrl.length() - 1) : driveUrl) + "/" + path;
-            }
+        if (CRAWLER_TYPE_DRIVE.equals(configMap.get(CURRENT_CRAWLER)) && drive != null) {
             return baseUrl + "/" + encodeUrl(drive.getName()) + "/" + path;
         }
         return baseUrl + "/Documents/" + path;

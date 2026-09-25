@@ -96,7 +96,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         DataStoreParams paramMap = new DataStoreParams();
         DriveItem item = new DriveItem();
 
-        assertNull(dataStore.getUrl(configMap, paramMap, item));
+        assertNull(dataStore.getUrl(configMap, paramMap, null, item));
 
         configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_SHARED);
         item.setWebUrl(
@@ -106,11 +106,11 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         item.setParentReference(parentRef);
         item.setName("test.doc");
         assertEquals("https://n2sm.sharepoint.com/sites/test-site/Shared%20Documents/fess-testdata-master/msoffice/test.doc",
-                dataStore.getUrl(configMap, paramMap, item));
+                dataStore.getUrl(configMap, paramMap, null, item));
 
         item.setWebUrl("https://n2sm.sharepoint.com/sites/test-site/Shared%20Documents/fess-testdata-master/msoffice/test.doc");
         assertEquals("https://n2sm.sharepoint.com/sites/test-site/Shared%20Documents/fess-testdata-master/msoffice/test.doc",
-                dataStore.getUrl(configMap, paramMap, item));
+                dataStore.getUrl(configMap, paramMap, null, item));
     }
 
     /**
@@ -121,6 +121,12 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
      * @param name the item's name, which Graph does not encode
      * @return the drive item
      */
+    private static Drive drive(final String id) {
+        final Drive drive = new Drive();
+        drive.setId(id);
+        return drive;
+    }
+
     private DriveItem layoutsItem(final String parentPath, final String name) {
         final DriveItem item = new DriveItem();
         item.setWebUrl("https://contoso.sharepoint.com/sites/test-site/_layouts/15/Doc.aspx?sourcedoc=%X-X-X%7D&file=x&action=default");
@@ -140,8 +146,8 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_SHARED);
 
         assertEquals("A folder name containing a space must not be encoded twice",
-                "https://contoso.sharepoint.com/sites/test-site/Shared%20Documents/My%20Folder/Sub%20Dir/my%20file.docx",
-                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/My%20Folder/Sub%20Dir", "my file.docx")));
+                "https://contoso.sharepoint.com/sites/test-site/Shared%20Documents/My%20Folder/Sub%20Dir/my%20file.docx", dataStore
+                        .getUrl(configMap, new DataStoreParams(), null, layoutsItem("/drive/root:/My%20Folder/Sub%20Dir", "my file.docx")));
     }
 
     @Test
@@ -152,7 +158,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         // "/drive/root:/資料" as Graph percent-encodes it.
         assertEquals("A non-ASCII folder name must not be encoded twice",
                 "https://contoso.sharepoint.com/sites/test-site/Shared%20Documents/%E8%B3%87%E6%96%99/%E8%B3%87%E6%96%99.docx",
-                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/%E8%B3%87%E6%96%99", "資料.docx")));
+                dataStore.getUrl(configMap, new DataStoreParams(), null, layoutsItem("/drive/root:/%E8%B3%87%E6%96%99", "資料.docx")));
     }
 
     @Test
@@ -163,7 +169,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
 
         assertEquals("The item name is raw and must be encoded once",
                 "https://contoso.sharepoint.com/sites/test-site/Shared%20Documents/docs/my%20file.docx",
-                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/docs", "my file.docx")));
+                dataStore.getUrl(configMap, new DataStoreParams(), null, layoutsItem("/drive/root:/docs", "my file.docx")));
     }
 
     @Test
@@ -174,11 +180,10 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         final Drive drive = new Drive();
         drive.setName("Marketing Assets");
         drive.setWebUrl("https://contoso.sharepoint.com/sites/test-site/MktAssets");
-        configMap.put(OneDriveDataStore.DRIVE_INFO, drive);
 
         assertEquals("The drive's own webUrl must be used, not its display name",
                 "https://contoso.sharepoint.com/sites/test-site/MktAssets/docs/a.docx",
-                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/docs", "a.docx")));
+                dataStore.getUrl(configMap, new DataStoreParams(), drive, layoutsItem("/drive/root:/docs", "a.docx")));
     }
 
     @Test
@@ -188,11 +193,26 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_DRIVE);
         final Drive drive = new Drive();
         drive.setName("Marketing Assets");
-        configMap.put(OneDriveDataStore.DRIVE_INFO, drive);
 
         assertEquals("A drive name spliced into a URL must be encoded",
                 "https://contoso.sharepoint.com/sites/test-site/Marketing%20Assets/docs/a.docx",
-                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/docs", "a.docx")));
+                dataStore.getUrl(configMap, new DataStoreParams(), drive, layoutsItem("/drive/root:/docs", "a.docx")));
+    }
+
+    @Test
+    public void test_getUrl_sharedCrawlerUsesEachLibrarysWebUrl() {
+        // The shared crawler walks every document library of every site, not only
+        // "Shared Documents", so an Office file in another library must keep that library's segment.
+        // Otherwise include_pattern=.*/DocLib/.* rejects it and the item is indexed under a URL
+        // that belongs to a file in "Shared Documents".
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_SHARED);
+        final Drive drive = new Drive();
+        drive.setName("Crawl Test");
+        drive.setWebUrl("https://contoso.sharepoint.com/sites/test-site/DocLib");
+
+        assertEquals("https://contoso.sharepoint.com/sites/test-site/DocLib/msoffice/test.docx",
+                dataStore.getUrl(configMap, new DataStoreParams(), drive, layoutsItem("/drives/b!abc/root:/msoffice", "test.docx")));
     }
 
     @Test
@@ -202,7 +222,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_USER);
 
         assertEquals("https://contoso.sharepoint.com/sites/test-site/Documents/docs/a.docx",
-                dataStore.getUrl(configMap, new DataStoreParams(), layoutsItem("/drive/root:/docs", "a.docx")));
+                dataStore.getUrl(configMap, new DataStoreParams(), null, layoutsItem("/drive/root:/docs", "a.docx")));
     }
 
     @Test
@@ -610,8 +630,8 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
             }
         };
 
-        roleAwareDataStore.processDriveItem(new DataConfig(), callback, configMap, paramMap, scriptMap, defaultDataMap, null, "drive-1",
-                item, List.of("1drive-role"));
+        roleAwareDataStore.processDriveItem(new DataConfig(), callback, configMap, paramMap, scriptMap, defaultDataMap, null,
+                drive("drive-1"), item, List.of("1drive-role"));
 
         assertEquals("processDriveItem must have indexed the item exactly once", 1, captured.size());
 
@@ -656,7 +676,8 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
     private void processFailingDriveItem(final RuntimeException failure) {
         final OneDriveDataStore failingDataStore = new OneDriveDataStore() {
             @Override
-            protected String getUrl(final Map<String, Object> configMap, final DataStoreParams paramMap, final DriveItem item) {
+            protected String getUrl(final Map<String, Object> configMap, final DataStoreParams paramMap, final Drive drive,
+                    final DriveItem item) {
                 throw failure;
             }
         };
@@ -671,7 +692,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         item.setWebUrl("https://example.com/item-1");
 
         failingDataStore.processDriveItem(new DataConfig(), null, configMap, new DataStoreParams(), Collections.emptyMap(), new HashMap<>(),
-                null, "drive-1", item, Collections.emptyList());
+                null, drive("drive-1"), item, Collections.emptyList());
     }
 
     /**
