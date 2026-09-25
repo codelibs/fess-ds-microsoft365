@@ -457,7 +457,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
                 }
 
                 // Try to extract content from various content fields, then from the list's own columns
-                String content = extractFieldValue(fields, "Body", "Description", "Comments", "Notes");
+                String content = extractTextValue(fields, "Body", "Description", "Comments", "Notes");
                 if (content == null) {
                     content = extractColumnValues(fields, contentColumns);
                 }
@@ -584,6 +584,33 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     }
 
     /**
+     * Extracts the text of the first of the given fields that holds any.
+     *
+     * <p>A multiple-lines-of-text column set to rich text, such as an Announcements list's
+     * {@code Body}, holds HTML, so the value is taken with its markup stripped.</p>
+     *
+     * @param fields the map of field values
+     * @param fieldNames the field names to extract (in order of preference)
+     * @return the extracted text or null if none of the fields holds text
+     */
+    protected String extractTextValue(final Map<String, Object> fields, final String... fieldNames) {
+        if (fields == null || fieldNames == null) {
+            return null;
+        }
+
+        for (final String fieldName : fieldNames) {
+            final Object value = fields.get(fieldName);
+            if (value != null) {
+                final String text = stripHtmlTags(value.toString()).trim();
+                if (StringUtil.isNotBlank(text)) {
+                    return text;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * Gets the columns a list item's content is taken from when it has none of {@code Body},
      * {@code Description}, {@code Comments} or {@code Notes}.
      *
@@ -624,7 +651,8 @@ public class SharePointListDataStore extends Microsoft365DataStore {
      * Joins the text values of the given columns, one per line, in the given order.
      *
      * <p>A text or choice column holds a string and a multi-choice column an array of strings. Any
-     * other value - a number, a yes/no, or an object such as a hyperlink - is skipped.</p>
+     * other value - a number, a yes/no, or an object such as a hyperlink - is skipped. A rich text
+     * value is taken with its HTML markup stripped.</p>
      *
      * @param fields the map of field values
      * @param columns the internal names of the columns
@@ -639,7 +667,7 @@ public class SharePointListDataStore extends Microsoft365DataStore {
         for (final String column : columns) {
             final Object value = fields.get(column);
             if (value instanceof final String text) {
-                values.add(text);
+                values.add(stripHtmlTags(text));
             } else if (value instanceof final UntypedArray array) {
                 for (final UntypedNode element : array.getValue()) {
                     if (element instanceof final UntypedString text) {

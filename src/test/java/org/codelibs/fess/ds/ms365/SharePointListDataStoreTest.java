@@ -1299,6 +1299,40 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
     }
 
     /**
+     * An Announcements list keeps its text in the rich text {@code Body} column, which Graph returns
+     * as HTML: the content is its text, without the markup.
+     */
+    @Test
+    public void test_processListItem_announcementBodyIsIndexedWithoutMarkup() {
+        final ListItem item = parseListItem("{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/News/1_.000\","
+                + "\"fields\":{\"id\":\"1\",\"ContentType\":\"Announcement\",\"Title\":\"News\","
+                + "\"Body\":\"<div class=\\\"ExternalClass3DDE414457044EB683C2C3AFFFEABE3C\\\"><div style=\\\"font-family&#58;Calibri, Arial, "
+                + "Helvetica, sans-serif;font-size&#58;11pt;\\\">First line<br>Tom &amp; Jerry<br></div></div>\"}}");
+
+        final String content = indexListItemContent(item, java.util.List.of("Body"));
+        assertNotNull(content);
+        assertFalse(content, content.contains("<"));
+        assertFalse(content, content.contains("ExternalClass"));
+        assertTrue(content, content.startsWith("First line"));
+        assertTrue(content, content.endsWith("Tom & Jerry"));
+    }
+
+    /**
+     * A rich text field left empty still holds its wrapping markup; it holds no text, so the next
+     * content field is used.
+     */
+    @Test
+    public void test_extractTextValue_skipsFieldWithOnlyMarkup() {
+        final Map<String, Object> fields = new java.util.HashMap<>();
+        fields.put("Body", "<div class=\"ExternalClassABC\"><div><br></div></div>");
+        fields.put("Comments", "A comment");
+
+        assertEquals("A comment", dataStore.extractTextValue(fields, "Body", "Description", "Comments", "Notes"));
+        assertNull(dataStore.extractTextValue(fields, "Body", "Description"));
+        assertEquals("5 < 10", dataStore.extractTextValue(Map.of("Notes", "5 < 10"), "Notes"));
+    }
+
+    /**
      * Only text is taken: a string, and the strings of a multi-choice array. Numbers, yes/no values,
      * objects such as a hyperlink, blank strings and absent columns contribute nothing.
      */
@@ -1312,6 +1346,8 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertEquals("A memo\nRed\nBlue", dataStore.extractColumnValues(fields,
                 java.util.List.of("Quantity", "Memo", "Approved", "Tags", "Link", "Empty", "Absent")));
         assertNull(dataStore.extractColumnValues(fields, java.util.List.of("Quantity", "Approved", "Link", "Empty")));
+        assertEquals("Rich memo", dataStore.extractColumnValues(Map.of("Memo", "<div class=\"ExternalClassABC\"><p>Rich memo</p></div>"),
+                java.util.List.of("Memo")));
         assertNull(dataStore.extractColumnValues(fields, java.util.List.of()));
     }
 
