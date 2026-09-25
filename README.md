@@ -889,6 +889,13 @@ the first place, not just their ACLs, so a re-crawl is needed here too:
   [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below for what
   that means in practice. If you had already configured either parameter for this DataStore
   expecting it to work, re-crawl to have it apply for the first time.
+- **`shared_documents_drive_crawler`** (OneDriveDataStore) also crawled every user's personal
+  OneDrive. `GET /sites` returns personal sites (`https://{tenant}-my.sharepoint.com/personal/...`)
+  alongside SharePoint sites, and Mode 1 crawled every drive they had, so a configuration with
+  `user_drive_crawler=false` still indexed personal files. Mode 1 now crawls only drives whose
+  `driveType` is `documentLibrary`, the same check SharePointDocLibDataStore already made; a
+  personal site's drive is `business` and is skipped. Personal OneDrive is crawled only by Mode 2
+  (`user_drive_crawler`). Re-crawl to remove the personal files from the index.
 
 #### Graph client timeouts and retries
 
@@ -1369,7 +1376,7 @@ The implementation extracts and indexes the following notebook metadata:
 | `ignore_folder` | Skip folder documents | `true` | Process files only, ignore folders |
 | `supported_mimetypes` | Supported MIME types pattern | `.*` | Regex pattern for supported file types |
 | `drive_id` | Additional specific drive ID to crawl | - | Adds a fourth crawl of that one drive. It does **not** restrict the others: the three `*_drive_crawler` modes still run according to their own flags (all default to `true`), so setting only `drive_id` crawls that drive *in addition to* everything else. To crawl one drive and nothing else, also set `shared_documents_drive_crawler`, `user_drive_crawler` and `group_drive_crawler` to `false` |
-| `shared_documents_drive_crawler` | Enable SharePoint document library crawling | `true` | Enumerates every SharePoint site and crawls the files in its document libraries. It does **not** crawl the signed-in user's own OneDrive - no `/me/drive` request is ever issued by this DataStore |
+| `shared_documents_drive_crawler` | Enable SharePoint document library crawling | `true` | Enumerates every SharePoint site and crawls the files in its document libraries (drives whose `driveType` is `documentLibrary`). Personal sites, which `GET /sites` also returns, are skipped: their drive is the user's OneDrive (`business`), crawled only by `user_drive_crawler`. It does **not** crawl the signed-in user's own OneDrive - no `/me/drive` request is ever issued by this DataStore |
 | `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
 | `ignore_system_libraries` | Skip system libraries (Style Library, `FormServerTemplates`, and libraries under `_catalogs`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the library's own URL segment, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below |
@@ -1427,7 +1434,7 @@ The OneDriveDataStore provides comprehensive Microsoft 365 file crawling capabil
 - **Permission Integration**: Extracts and maps Microsoft 365 access permissions to Fess role-based access control
 
 **Crawling Modes (Processing Order):**
-1. **Shared Documents Drive**: Enumerates every SharePoint site (`GET /sites`) and crawls the files in each site's document libraries (honoring `ignore_system_libraries`, see the parameters table above). Despite the mode's name it never touches the signed-in user's own OneDrive: the Graph client does have a `/me/drive` call path, but it is reachable only when a null drive ID is passed, and this DataStore's only caller is guarded to pass a non-blank one. Runs whenever `shared_documents_drive_crawler=true` (default), regardless of whether `drive_id` is also set for Mode 4 below - the two crawls run independently, not exclusively
+1. **Shared Documents Drive**: Enumerates every SharePoint site (`GET /sites`) and crawls the files in each site's document libraries (drives whose `driveType` is `documentLibrary`, so personal sites' OneDrive drives are skipped; honoring `ignore_system_libraries`, see the parameters table above). Despite the mode's name it never touches the signed-in user's own OneDrive: the Graph client does have a `/me/drive` call path, but it is reachable only when a null drive ID is passed, and this DataStore's only caller is guarded to pass a non-blank one. Runs whenever `shared_documents_drive_crawler=true` (default), regardless of whether `drive_id` is also set for Mode 4 below - the two crawls run independently, not exclusively
 2. **User Drives**: Iterates through all licensed users and crawls their personal OneDrive (`/users/{userId}/drive`)
 3. **Group Drives**: Crawls Microsoft 365 group-associated drives (`/groups/{groupId}/drive`)
 4. **Specific Drive**: Targets a single drive by ID when `drive_id` parameter is specified (`/drives/{driveId}`)
