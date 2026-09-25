@@ -86,8 +86,13 @@ public class SharePointListDataStore extends Microsoft365DataStore {
     protected static final String LIST_ITEM_FIELDS = "fields";
     /** The field name for list item roles. */
     protected static final String LIST_ITEM_ROLES = "roles";
-    /** The editable columns that do not hold a list item's content. */
-    protected static final Set<String> NON_CONTENT_COLUMNS = Set.of("Title", "ContentType", "FileLeafRef");
+    /**
+     * The columns Graph reports as editable that do not hold a list item's content: the title, the
+     * content type and file name, and a picture library's file type and image size, which SharePoint
+     * computes from the file itself.
+     */
+    protected static final Set<String> NON_CONTENT_COLUMNS =
+            Set.of("Title", "ContentType", "FileLeafRef", "FileType", "ImageSize", "PreviewOnForm");
 
     // Field mappings for list metadata
     /** The field name for list name. */
@@ -616,9 +621,9 @@ public class SharePointListDataStore extends Microsoft365DataStore {
      *
      * <p>A survey keeps each answer in a column named after its question, and a custom list keeps its
      * text in columns the list owner added, so no fixed field name finds either. These are the columns
-     * Graph reports as neither read-only nor hidden - the ones a user fills in - other than
-     * {@code Title}, {@code ContentType} and {@code FileLeafRef}, which Graph reports as editable too,
-     * and date and time columns, whose value is a UTC timestamp rather than the date the user entered.
+     * Graph reports as neither read-only nor hidden - the ones a user fills in - other than the
+     * {@link #NON_CONTENT_COLUMNS}, which Graph reports as editable too, and date and time columns,
+     * whose value is a UTC timestamp rather than the date the user entered.
      * They are read once per list, and only for a list whose items are indexed.</p>
      *
      * @param paramMap the data store parameters
