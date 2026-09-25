@@ -17,6 +17,7 @@ package org.codelibs.fess.ds.ms365;
 
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -749,8 +750,11 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      * <p>
      * A {@code webUrl} that is not a {@code /_layouts/} viewer URL is returned as it is. Otherwise a
      * path-based URL is rebuilt from the item's parent path and name, under the drive's own
-     * {@code webUrl}. Note that the two sources are encoded differently: Graph percent-encodes
-     * {@code parentReference.path} but not {@link DriveItem#getName()}, so only the name is encoded here.
+     * {@code webUrl}, each segment percent-encoded exactly once so that it matches the encoding of
+     * the path-based {@code webUrl} of the item's siblings. {@link DriveItem#getName()} is always the
+     * raw name. {@code parentReference.path} is documented as percent-encoded, but Graph returns it
+     * raw in practice (for example {@code /drive/root:/Test Folder}), so its segments are decoded
+     * before being encoded.
      *
      * @param configMap The configuration map.
      * @param paramMap The data store parameters.
@@ -771,15 +775,15 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         if (item.getParentReference() != null && item.getParentReference().getPath() != null) {
             final String[] values = item.getParentReference().getPath().split(":", 2);
             if (values.length == 2) {
-                // Graph returns parentReference.path already percent-encoded
-                // (for example "/drive/root:/Documents/my%20file.docx"), so its segments are
-                // appended unchanged. Encoding them again would turn %20 into %2520.
+                // Graph documents parentReference.path as percent-encoded but returns it raw
+                // (for example "/drive/root:/Test Folder"), so accept either form: decode each
+                // segment, then encode it once. Appending it unchanged left a raw space or
+                // non-ASCII name in the URL, which include_pattern then failed to match.
                 for (final String s : values[1].split("/")) {
-                    pathList.add(s);
+                    pathList.add(encodeUrl(decodeUrl(s)));
                 }
             }
         }
-        // DriveItem.name, in contrast, is the raw name, so it is the one part that needs encoding.
         pathList.add(encodeUrl(item.getName()));
         final String path = pathList.stream().filter(StringUtil::isNotBlank).collect(Collectors.joining("/"));
         // A site can hold several document libraries, so the library segment comes from the drive
@@ -796,6 +800,24 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             return baseUrl + "/" + encodeUrl(drive.getName()) + "/" + path;
         }
         return baseUrl + "/Documents/" + path;
+    }
+
+    /**
+     * Decodes a percent-encoded URL path segment. A {@code +} is kept as it is, and a segment that
+     * is not valid percent-encoding, such as a raw name containing {@code %}, is returned unchanged.
+     *
+     * @param s The string to decode.
+     * @return The decoded string.
+     */
+    protected String decodeUrl(final String s) {
+        if (StringUtil.isEmpty(s)) {
+            return s;
+        }
+        try {
+            return URLDecoder.decode(s.replace("+", "%2B"), CoreLibConstants.UTF_8);
+        } catch (final IllegalArgumentException | UnsupportedEncodingException e) {
+            return s;
+        }
     }
 
     /**

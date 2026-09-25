@@ -117,7 +117,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
      * Builds a drive item whose webUrl is a {@code /_layouts/} viewer URL, so {@code getUrl} takes
      * the branch that rebuilds a path-based URL.
      *
-     * @param parentPath the Graph {@code parentReference.path}, which Graph percent-encodes
+     * @param parentPath the Graph {@code parentReference.path}, raw or percent-encoded
      * @param name the item's name, which Graph does not encode
      * @return the drive item
      */
@@ -138,10 +138,36 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
     }
 
     @Test
+    public void test_getUrl_encodesRawParentPath() {
+        // Graph returns parentReference.path raw in practice. The rebuilt URL must be encoded like
+        // the path-based webUrl of a .txt in the same folder, or one include_pattern cannot match
+        // both files.
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_GROUP);
+
+        assertEquals("A raw folder name containing a space must be encoded",
+                "https://contoso.sharepoint.com/sites/test-site/Shared%20Documents/Test%20Folder/a.docx",
+                dataStore.getUrl(configMap, new DataStoreParams(), null, layoutsItem("/drive/root:/Test Folder", "a.docx")));
+        assertEquals("A raw non-ASCII folder name must be encoded",
+                "https://contoso.sharepoint.com/sites/test-site/Shared%20Documents/%E8%B3%87%E6%96%99/a.docx",
+                dataStore.getUrl(configMap, new DataStoreParams(), null, layoutsItem("/drive/root:/資料", "a.docx")));
+    }
+
+    @Test
+    public void test_getUrl_rawParentPathWithPlusAndPercent() {
+        // A raw "+" is not a space, and a raw "%" that is not an escape must survive decoding.
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_SHARED);
+
+        assertEquals("https://contoso.sharepoint.com/sites/test-site/Shared%20Documents/A%2BB/100%25/a.docx",
+                dataStore.getUrl(configMap, new DataStoreParams(), null, layoutsItem("/drive/root:/A+B/100%", "a.docx")));
+    }
+
+    @Test
     public void test_getUrl_doesNotDoubleEncodeParentPath() {
         // Graph documents parentReference.path as a percent-encoded path
-        // (e.g. "/drive/root:/Documents/my%20file.docx"), so its segments must be passed through
-        // as they are. Encoding them again turns %20 into %2520 and breaks the link.
+        // (e.g. "/drive/root:/Documents/my%20file.docx"). Encoding such a segment again turns %20
+        // into %2520 and breaks the link.
         final Map<String, Object> configMap = new HashMap<>();
         configMap.put(OneDriveDataStore.CURRENT_CRAWLER, OneDriveDataStore.CRAWLER_TYPE_SHARED);
 
