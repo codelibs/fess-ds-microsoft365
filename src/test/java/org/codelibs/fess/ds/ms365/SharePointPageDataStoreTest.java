@@ -435,8 +435,8 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         final StandardWebPart stdPart = new StandardWebPart();
 
         final WebPartData data = new WebPartData();
-        data.setTitle("Standard Web Part Title");
-        data.setDescription("This is a description");
+        data.setTitle("Quick links");
+        data.setDescription("Organize the main links to documents and pages.");
 
         final ServerProcessedContent processedContent = new ServerProcessedContent();
 
@@ -461,12 +461,14 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         dataStore.extractWebPartContent(stdPart, content);
 
         final String result = content.toString();
-        assertTrue("expected the title, got: " + result, result.contains("Standard Web Part Title"));
-        assertTrue("expected the description, got: " + result, result.contains("This is a description"));
+        assertFalse("the web part type's toolbox title must not be indexed, got: " + result, result.contains("Quick links"));
+        assertFalse("the web part type's toolbox description must not be indexed, got: " + result,
+                result.contains("Organize the main links"));
         assertTrue("expected searchablePlainTexts, got: " + result, result.contains("Searchable plain text body"));
         assertTrue("expected htmlStrings text, got: " + result, result.contains("Html string"));
         assertTrue("expected htmlStrings text, got: " + result, result.contains("body"));
-        assertTrue("expected links, got: " + result, result.contains("https://contoso.sharepoint.com/sites/marketing"));
+        assertFalse("serverProcessedContent.links must not be indexed, got: " + result,
+                result.contains("https://contoso.sharepoint.com/sites/marketing"));
         assertFalse("html markup must be stripped, got: " + result, result.contains("<strong>"));
         assertFalse("html markup must be stripped, got: " + result, result.contains("<p>"));
     }
@@ -490,19 +492,24 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
     }
 
     @Test
-    public void test_extractWebPartContent_standardWebPart_shortTypedTitleIsKept() {
-        // The typed sources are explicitly named fields, so the >5-character and isGuidOrId
-        // heuristics that extractDataFromObject applies to the untyped bag must NOT apply here:
-        // a three-letter web-part title is real content.
+    public void test_extractWebPartContent_standardWebPart_shortSearchableTextIsKept() {
+        // searchablePlainTexts values are explicitly named, typed fields, so the >5-character and
+        // isGuidOrId heuristics that extractDataFromObject applies to the untyped bag must NOT
+        // apply here: a three-letter web-part heading is real content.
         final StringBuilder content = new StringBuilder();
         final StandardWebPart stdPart = new StandardWebPart();
         final WebPartData data = new WebPartData();
-        data.setTitle("FAQ");
+        final ServerProcessedContent processedContent = new ServerProcessedContent();
+        final MetaDataKeyStringPair plainText = new MetaDataKeyStringPair();
+        plainText.setKey("title");
+        plainText.setValue("FAQ");
+        processedContent.setSearchablePlainTexts(List.of(plainText));
+        data.setServerProcessedContent(processedContent);
         stdPart.setData(data);
 
         dataStore.extractWebPartContent(stdPart, content);
 
-        assertTrue("a short typed title must survive, got: " + content, content.toString().contains("FAQ"));
+        assertTrue("a short searchable text must survive, got: " + content, content.toString().contains("FAQ"));
     }
 
     @Test
@@ -714,7 +721,12 @@ public class SharePointPageDataStoreTest extends UnitDsTestCase {
         // Add standard web part
         final StandardWebPart stdPart = new StandardWebPart();
         final WebPartData data = new WebPartData();
-        data.setTitle("Standard web part data");
+        final ServerProcessedContent processedContent = new ServerProcessedContent();
+        final MetaDataKeyStringPair plainText = new MetaDataKeyStringPair();
+        plainText.setKey("title");
+        plainText.setValue("Standard web part data");
+        processedContent.setSearchablePlainTexts(List.of(plainText));
+        data.setServerProcessedContent(processedContent);
         stdPart.setData(data);
         webParts.add(stdPart);
 
