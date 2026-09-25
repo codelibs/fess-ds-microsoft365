@@ -174,13 +174,15 @@ public class Microsoft365DataStoreStatsKeyTest extends UnitDsTestCase {
         final DataStoreParams paramMap = sharedParams();
         final RecordingCallback callback = new RecordingCallback();
 
+        final Drive drive = new Drive();
+        drive.setId("drive-1");
         for (final String id : List.of("item-1", "item-2")) {
             final DriveItem item = new DriveItem();
             item.setId(id);
             item.setName(id + ".txt");
             item.setWebUrl("https://example.com/" + id);
-            dataStore.processDriveItem(new DataConfig(), callback, configMap, paramMap, leakScriptMap(), new HashMap<>(), null, "drive-1",
-                    item, new ArrayList<>());
+            dataStore.processDriveItem(new DataConfig(), callback, configMap, paramMap, leakScriptMap(), new HashMap<>(), null, drive, item,
+                    new ArrayList<>());
         }
 
         assertPerDocumentStatsKey(paramMap, callback, List.of("https://example.com/item-1", "https://example.com/item-2"));
