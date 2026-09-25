@@ -420,8 +420,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                         }
                         if (!isTargetDrive(paramMap, drive)) {
                             if (logger.isDebugEnabled()) {
-                                logger.debug("Skipping system library drive in site {} - Name: {}, WebUrl: {}", site.getName(),
-                                        drive.getName(), drive.getWebUrl());
+                                logger.debug("Skipping drive in site {} - Name: {}, DriveType: {}, WebUrl: {}", site.getName(),
+                                        drive.getName(), drive.getDriveType(), drive.getWebUrl());
                             }
                             return;
                         }
@@ -448,13 +448,16 @@ public class OneDriveDataStore extends Microsoft365DataStore {
 
     /**
      * Decides whether a site's drive should be crawled.
+     * <p>{@code GET /sites} also returns every user's personal site, whose drive is that user's
+     * OneDrive ({@code business}); only document libraries belong to this crawl.</p>
      *
      * @param paramMap the data store parameters
      * @param drive the drive to evaluate
      * @return true if the drive should be crawled
      */
     protected boolean isTargetDrive(final DataStoreParams paramMap, final Drive drive) {
-        return !isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive);
+        return Microsoft365Constants.DOCUMENT_LIBRARY.equals(drive.getDriveType())
+                && (!isIgnoreSystemLibraries(paramMap) || !isSystemLibrary(drive));
     }
 
     /**

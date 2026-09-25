@@ -370,9 +370,23 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertTrue(dataStore.isTargetDrive(paramMap, driveWithUrl("https://contoso.sharepoint.com/sites/test/Style%20Library")));
     }
 
+    @Test
+    public void test_isTargetDrive_skipsPersonalOneDrive() {
+        // GET /sites also lists every user's personal site; its drive is that user's OneDrive.
+        final OneDriveDataStore dataStore = new OneDriveDataStore();
+        final DataStoreParams paramMap = new DataStoreParams();
+        final Drive drive = driveWithUrl("https://contoso-my.sharepoint.com/personal/user_contoso_com/Documents");
+        drive.setDriveType("business");
+
+        assertFalse(dataStore.isTargetDrive(paramMap, drive));
+        paramMap.put("ignore_system_libraries", "false");
+        assertFalse(dataStore.isTargetDrive(paramMap, drive));
+    }
+
     private static Drive driveWithUrl(final String webUrl) {
         final Drive drive = new Drive();
         drive.setWebUrl(webUrl);
+        drive.setDriveType("documentLibrary");
         return drive;
     }
 
