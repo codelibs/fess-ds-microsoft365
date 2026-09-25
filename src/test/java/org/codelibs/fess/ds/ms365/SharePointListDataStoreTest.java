@@ -1396,6 +1396,38 @@ public class SharePointListDataStoreTest extends UnitDsTestCase {
         assertNull(dataStore.extractColumnValues(fields, java.util.List.of()));
     }
 
+    /**
+     * Tasks and Discussion Board keep an item's text in the rich text {@code Body} column and Events
+     * in {@code Description}; Graph returns them as HTML, which was indexed tags and all.
+     */
+    @Test
+    public void test_processListItem_richTextContentIsPlainText() {
+        final ListItem task = parseListItem("{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/Tasks/1_.000\","
+                + "\"fields\":{\"id\":\"1\",\"ContentType\":\"Task\",\"Body\":\"<p>Task one<br></p>\"}}");
+        assertEquals("Task one", indexListItemContent(task, java.util.List.of()));
+
+        final ListItem discussion =
+                parseListItem("{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/Discussion/Discussion1\","
+                        + "\"fields\":{\"id\":\"1\",\"ContentType\":\"Discussion\","
+                        + "\"Body\":\"<div class=\\\"ExternalClass284578C8B6DA46F0A4F2D2600E3E3020\\\"><p>Topic &amp; reply</p></div>\"}}");
+        assertEquals("Topic & reply", indexListItemContent(discussion, java.util.List.of()));
+
+        final ListItem event = parseListItem("{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/Events/1_.000\","
+                + "\"fields\":{\"id\":\"1\",\"ContentType\":\"Event\",\"Description\":\"<p>Kickoff</p><p>Room A</p>\"}}");
+        assertEquals("Kickoff\n\nRoom A", indexListItemContent(event, java.util.List.of()));
+    }
+
+    /**
+     * A custom list's multiple lines of text column can be rich text too.
+     */
+    @Test
+    public void test_processListItem_richTextColumnContentIsPlainText() {
+        final ListItem item = parseListItem("{\"id\":\"1\",\"webUrl\":\"https://example.sharepoint.com/sites/site-1/Lists/Custom/1_.000\","
+                + "\"fields\":{\"id\":\"1\",\"Memo\":\"<div><b>A</b> memo</div>\",\"Status\":\"Open\"}}");
+
+        assertEquals("A memo\nOpen", indexListItemContent(item, java.util.List.of("Memo", "Status")));
+    }
+
     private String indexListItemContent(final ListItem item, final java.util.List<String> contentColumns) {
         final org.codelibs.fess.helper.SystemHelper systemHelper = new org.codelibs.fess.helper.SystemHelper();
         ComponentUtil.register(systemHelper, "systemHelper");
