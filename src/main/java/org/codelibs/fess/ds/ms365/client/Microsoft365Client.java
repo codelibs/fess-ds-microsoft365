@@ -1071,6 +1071,12 @@ public class Microsoft365Client implements Closeable {
     /**
      * Retrieves all sites with pagination support.
      *
+     * <p>A bare {@code GET /sites} lists the tenant's sites under application permissions, but
+     * answers 200 with an empty list under delegated authentication (the only kind
+     * {@code OneNoteDataStore} can use), where the documented way to enumerate sites is
+     * {@code GET /sites?search=*}. So when the bare listing comes back empty, it is retried once
+     * with {@code search=*}; the search lists the sites the signed-in account can reach.</p>
+     *
      * @param consumer A consumer to process each Site object.
      */
     public void getSites(final Consumer<Site> consumer) {
@@ -1080,6 +1086,14 @@ public class Microsoft365Client implements Closeable {
 
         try {
             SiteCollectionResponse response = client.sites().get();
+            if (response == null || response.getValue() == null || response.getValue().isEmpty()) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("GET /sites returned no sites; retrying with search=*");
+                }
+                response = client.sites().get(requestConfiguration -> {
+                    requestConfiguration.queryParameters.search = "*";
+                });
+            }
             int pageCount = 0;
             int totalSites = 0;
 

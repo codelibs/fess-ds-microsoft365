@@ -1211,7 +1211,7 @@ See the [Teams script key table](#teams) above for the full list of `message.*` 
 | Parameter | Description | Default | Notes |
 |-----------|-------------|---------|-------|
 | `site_note_crawler` | Enable crawling of site notebooks | `true` | Crawls notebooks in every SharePoint site in the tenant, or in `site_id` alone when that is set. Earlier releases crawled the root site and nothing else |
-| `site_id` | Restrict site notebooks to one site | - | Site ID as `hostname,siteCollectionId,siteId`. Leave unset to enumerate every site, the same way `sharePointPageDataStore` reads this parameter |
+| `site_id` | Restrict site notebooks to one site | - | Site ID as `hostname,siteCollectionId,siteId`. Leave unset to enumerate every site, the same way `sharePointPageDataStore` reads this parameter. Under the delegated authentication OneNote requires, the sites listed are the ones the signed-in account can reach (`GET /sites?search=*`) |
 | `user_note_crawler` | Enable crawling of user notebooks | `true` | Crawls personal OneNote notebooks for licensed users |
 | `group_note_crawler` | Enable crawling of group notebooks | `true` | Crawls shared notebooks in Microsoft 365 groups |
 | `include_pattern` | Regex a notebook name must fully match to be crawled | - | Matched against the notebook's display name with `Matcher.matches()` (full match). A regex that does not compile aborts the crawl at its start |

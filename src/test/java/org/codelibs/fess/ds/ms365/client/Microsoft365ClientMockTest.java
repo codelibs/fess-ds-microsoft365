@@ -119,6 +119,44 @@ public class Microsoft365ClientMockTest {
     }
 
     @Test
+    public void test_getSites_fallsBackToSearchWhenListingIsEmpty() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            // Under delegated authentication a bare GET /sites answers 200 with no sites.
+            mock.enqueueJson("{\"value\":[]}");
+            mock.enqueueJson("{\"value\":[{\"id\":\"site-1\",\"displayName\":\"Team\"}]}");
+            mock.enqueueJson("{\"value\":[]}");
+
+            client.client = mock.newGraphClient();
+
+            final List<String> ids = new ArrayList<>();
+            client.getSites(site -> ids.add(site.getId()));
+
+            assertEquals(List.of("site-1"), ids, "sites found by the search fallback must be consumed");
+            assertEquals("/sites", mock.takePath());
+            final String searchPath = mock.takePath();
+            assertTrue(searchPath.startsWith("/sites?") && searchPath.contains("search=") && searchPath.contains("*"),
+                    "fallback must request search=*: " + searchPath);
+        }
+    }
+
+    @Test
+    public void test_getSites_doesNotSearchWhenListingHasSites() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            mock.enqueueJson("{\"value\":[{\"id\":\"site-1\",\"displayName\":\"Team\"}]}");
+            mock.enqueueJson("{\"value\":[]}");
+
+            client.client = mock.newGraphClient();
+
+            final List<String> ids = new ArrayList<>();
+            client.getSites(site -> ids.add(site.getId()));
+
+            assertEquals(List.of("site-1"), ids);
+            assertEquals("/sites", mock.takePath());
+            assertEquals("/sites/site-1/sites", mock.takePath(), "no search request may sit between the listing and the child lookup");
+        }
+    }
+
+    @Test
     public void test_getUsers_retriesOnThrottling() throws Exception {
         try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
             mock.enqueueStatus(429, "1");
