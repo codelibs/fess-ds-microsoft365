@@ -692,11 +692,42 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
                 crawlLibraries(drives, "false"));
     }
 
+    /**
+     * Graph hides drives that carry the system facet unless the request selects it, so the
+     * site crawl must ask for them exactly when {@code ignore_system_libraries=false}.
+     */
+    @Test
+    public void test_storeDocumentLibrariesInSite_requestsSystemDrivesOnlyWhenNotIgnored() {
+        final Map<String, Boolean> requested = new HashMap<>();
+        for (final String value : new String[] { "true", "false", null }) {
+            final SharePointDocLibDataStore testDataStore = new SharePointDocLibDataStore() {
+                @Override
+                protected void getSiteDrives(final Microsoft365Client client, final String siteId, final boolean includeSystem,
+                        final Consumer<Drive> consumer) {
+                    requested.put(String.valueOf(value), includeSystem);
+                }
+            };
+            final DataStoreParams paramMap = new DataStoreParams();
+            if (value != null) {
+                paramMap.put("ignore_system_libraries", value);
+            }
+            final Site site = new Site();
+            site.setId("site-1");
+            testDataStore.storeDocumentLibrariesInSite(new DataConfig(), null, new HashMap<>(), paramMap, new HashMap<>(), new HashMap<>(),
+                    null, null, site);
+        }
+
+        assertEquals(Boolean.FALSE, requested.get("true"));
+        assertEquals(Boolean.TRUE, requested.get("false"));
+        assertEquals("unset means the default (ignore)", Boolean.FALSE, requested.get("null"));
+    }
+
     private List<String> crawlLibraries(final List<Drive> drives, final String ignoreSystemLibraries) {
         final List<String> crawled = Collections.synchronizedList(new ArrayList<>());
         final SharePointDocLibDataStore testDataStore = new SharePointDocLibDataStore() {
             @Override
-            protected void getSiteDrives(final Microsoft365Client client, final String siteId, final Consumer<Drive> consumer) {
+            protected void getSiteDrives(final Microsoft365Client client, final String siteId, final boolean includeSystem,
+                    final Consumer<Drive> consumer) {
                 drives.forEach(consumer);
             }
 
@@ -775,7 +806,8 @@ public class SharePointDocLibDataStoreTest extends UnitDsTestCase {
             }
 
             @Override
-            protected void getSiteDrives(final Microsoft365Client c, final String siteId, final Consumer<Drive> consumer) {
+            protected void getSiteDrives(final Microsoft365Client c, final String siteId, final boolean includeSystem,
+                    final Consumer<Drive> consumer) {
                 if ("first".equals(siteId)) {
                     throw new IllegalStateException("the first site's document libraries cannot be listed");
                 }

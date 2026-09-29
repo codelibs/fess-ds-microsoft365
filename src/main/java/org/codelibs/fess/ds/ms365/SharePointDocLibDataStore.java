@@ -221,7 +221,7 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
         final UrlFilter urlFilter = (UrlFilter) configMap.get(URL_FILTER);
 
         // Get all drives (document libraries) for the site
-        getSiteDrives(client, site.getId(), drive -> {
+        getSiteDrives(client, site.getId(), !isIgnoreSystemLibraries(paramMap), drive -> {
             if (logger.isDebugEnabled()) {
                 logger.debug("Evaluating drive: {} - Type: {}, System: {}", drive.getName(), drive.getDriveType(), isSystemLibrary(drive));
             }
@@ -390,16 +390,18 @@ public class SharePointDocLibDataStore extends Microsoft365DataStore {
      *
      * @param client Microsoft 365 client for API calls
      * @param siteId ID of the SharePoint site
+     * @param includeSystem true to also request drives Graph hides by default (system facet)
      * @param consumer consumer to process each drive found
      */
-    protected void getSiteDrives(final Microsoft365Client client, final String siteId, final Consumer<Drive> consumer) {
+    protected void getSiteDrives(final Microsoft365Client client, final String siteId, final boolean includeSystem,
+            final Consumer<Drive> consumer) {
         if (logger.isDebugEnabled()) {
             logger.debug("Getting drives for site: {}", siteId);
         }
 
         try {
             // Use the general getDrives method and filter by site
-            client.getSiteDrives(siteId, drive -> {
+            client.getSiteDrives(siteId, includeSystem, drive -> {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Found drive: {} - Type: {}, WebUrl: {}", drive.getName(), drive.getDriveType(), drive.getWebUrl());
                 }

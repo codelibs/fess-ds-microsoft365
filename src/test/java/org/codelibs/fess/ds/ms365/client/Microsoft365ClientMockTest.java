@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -27,6 +29,7 @@ import org.codelibs.fess.entity.DataStoreParams;
 import org.junit.jupiter.api.Test;
 
 import com.microsoft.graph.models.ColumnDefinition;
+import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.User;
 import com.microsoft.graph.models.UserCollectionResponse;
@@ -85,6 +88,33 @@ public class Microsoft365ClientMockTest {
                     "second page must be collected");
             assertEquals("/sites/site-1/lists/list-1/columns", mock.takePath());
             assertEquals("/sites/site-1/lists/list-1/columns?$skiptoken=PAGE2", mock.takePath());
+        }
+    }
+
+    @Test
+    public void test_getSiteDrives_selectsSystemFacetOnlyWhenRequested() throws Exception {
+        final String body = "{\"value\":[{\"id\":\"d1\",\"name\":\"Style Library\",\"driveType\":\"documentLibrary\","
+                + "\"webUrl\":\"https://example.sharepoint.com/sites/s/Style%20Library\",\"system\":{}}]}";
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            mock.enqueueJson(body);
+            mock.enqueueJson(body);
+            client.client = mock.newGraphClient();
+
+            final List<Drive> withSystem = new ArrayList<>();
+            client.getSiteDrives("site-1", true, withSystem::add);
+            final List<Drive> withoutSystem = new ArrayList<>();
+            client.getSiteDrives("site-1", false, withoutSystem::add);
+
+            final String requested = URLDecoder.decode(mock.takePath(), StandardCharsets.UTF_8);
+            assertTrue(requested.startsWith("/sites/site-1/drives?"), requested);
+            assertTrue(requested.contains("$select="), requested);
+            for (final String field : new String[] { "id", "name", "description", "webUrl", "driveType", "system", "createdDateTime",
+                    "lastModifiedDateTime" }) {
+                assertTrue(requested.matches(".*\\$select=([a-zA-Z]+,)*" + field + "(,[a-zA-Z]+)*(&.*)?"), field + " in " + requested);
+            }
+            assertEquals("/sites/site-1/drives", mock.takePath(), "without the system facet no $select is sent");
+            assertEquals("d1", withSystem.get(0).getId());
+            assertEquals(1, withoutSystem.size());
         }
     }
 

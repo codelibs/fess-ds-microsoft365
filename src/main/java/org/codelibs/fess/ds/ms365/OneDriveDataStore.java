@@ -415,7 +415,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                     logger.debug("Processing site - Name: {}, ID: {}, WebUrl: {}", site.getName(), site.getId(), site.getWebUrl());
                 }
                 try {
-                    client.getSiteDrives(site.getId(), drive -> {
+                    client.getSiteDrives(site.getId(), !isIgnoreSystemLibraries(paramMap), drive -> {
                         if (logger.isDebugEnabled()) {
                             logger.debug("Processing drive in site {} - Name: {}, ID: {}, DriveType: {}, WebUrl: {}", site.getName(),
                                     drive.getName(), drive.getId(), drive.getDriveType(), drive.getWebUrl());
