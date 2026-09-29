@@ -1427,10 +1427,18 @@ public class Microsoft365Client implements Closeable {
      * Implements pagination to handle sites with many drives.
      *
      * @param siteId The ID of the SharePoint site.
+     * @param includeSystem true to also list drives that carry the system facet (Style Library, Form Templates, ...).
+     *        Graph hides those drives unless {@code system} is in {@code $select}, so the request selects the fields the
+     *        data stores read plus {@code system} in that case; false sends no {@code $select}.
      * @param consumer A consumer to process each Drive object.
      */
-    public void getSiteDrives(final String siteId, final Consumer<Drive> consumer) {
-        final DriveCollectionResponse response = client.sites().bySiteId(siteId).drives().get();
+    public void getSiteDrives(final String siteId, final boolean includeSystem, final Consumer<Drive> consumer) {
+        final DriveCollectionResponse response = client.sites().bySiteId(siteId).drives().get(requestConfiguration -> {
+            if (includeSystem) {
+                requestConfiguration.queryParameters.select = new String[] { "id", "name", "description", "webUrl", "driveType", "system",
+                        "createdDateTime", "lastModifiedDateTime" };
+            }
+        });
 
         // Handle pagination with odata.nextLink
         paginate(response, DriveCollectionResponse::getValue, nextLink -> client.sites().bySiteId(siteId).drives().withUrl(nextLink).get(),

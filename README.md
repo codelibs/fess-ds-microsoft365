@@ -857,8 +857,12 @@ the first place, not just their ACLs, so a re-crawl is needed here too:
   of its libraries treated as a system library. The check now compares the library's own URL
   segment; `Forms` is no longer part of it, since it is the folder inside every library that holds
   its view pages rather than a library. Graph does not list a drive that carries the `system`
-  facet unless asked to, and this plugin does not ask, so such a drive is not crawled at either
-  setting.
+  facet unless the request selects it. The plugin now selects it only with
+  `ignore_system_libraries=false`, so that setting is what makes such a drive appear; at the
+  default `true` it stays hidden, as before. Whether a given library (for example Style Library)
+  carries the facet is up to SharePoint: if a tenant's site does not return it with
+  `GET /sites/{site-id}/drives?$select=id,name,webUrl,driveType,system`, there is nothing for the
+  plugin to crawl.
   - **SharePointDocLibDataStore:** with the default `true`, Style Library and Form Templates are no
     longer indexed, and the libraries of a site whose path contains `Forms` now are. Re-crawl to
     apply both, or set `ignore_system_libraries=false` first if you want to keep indexing the
@@ -1379,7 +1383,7 @@ The implementation extracts and indexes the following notebook metadata:
 | `shared_documents_drive_crawler` | Enable SharePoint document library crawling | `true` | Enumerates every SharePoint site and crawls the files in its document libraries (drives whose `driveType` is `documentLibrary`). Personal sites, which `GET /sites` also returns, are skipped: their drive is the user's OneDrive (`business`), crawled only by `user_drive_crawler`. It does **not** crawl the signed-in user's own OneDrive - no `/me/drive` request is ever issued by this DataStore |
 | `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
-| `ignore_system_libraries` | Skip system libraries (Style Library, `FormServerTemplates`, and libraries under `_catalogs`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the library's own URL segment, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below |
+| `ignore_system_libraries` | Skip system libraries (Style Library, `FormServerTemplates`, and libraries under `_catalogs`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the library's own URL segment, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below. `false` also asks Graph for drives that carry the `system` facet, which it hides by default |
 
 #### The per-item failure log line changed
 
@@ -1496,7 +1500,7 @@ correct on a non-English tenant too.
 |-----------|-------------|---------|-------|
 | `site_id` | Specific site ID to crawl | All sites | Full site ID format: `hostname,siteCollectionId,siteId` |
 | `exclude_site_id` | Site IDs to exclude | - | See format guide below |
-| `ignore_system_libraries` | Skip system libraries | `true` | Excludes Style Library, `FormServerTemplates` (Form Templates), and libraries under `_catalogs`, matched case-insensitively against the library's own URL segment |
+| `ignore_system_libraries` | Skip system libraries | `true` | Excludes Style Library, `FormServerTemplates` (Form Templates), and libraries under `_catalogs`, matched case-insensitively against the library's own URL segment. `false` also asks Graph for drives that carry the `system` facet, which it hides by default |
 | `number_of_threads` | Number of processing threads | `1` | Concurrent document library processing |
 | `ignore_error` | Continue crawling when a site's document libraries cannot be listed | `false` | Applies only while every site is crawled (`site_id` unset). A library that fails to process is skipped at either setting - see [`ignore_error` scope differs by DataStore](#ignore_error-scope-differs-by-datastore) |
 | `include_pattern` | Regex pattern matched against the library's browser URL (`doclib.url`), not its display name | - | e.g. `https://contoso\.sharepoint\.com/sites/allowed/.*` |
