@@ -1074,8 +1074,9 @@ public class Microsoft365Client implements Closeable {
      * <p>A bare {@code GET /sites} lists the tenant's sites under application permissions, but
      * answers 200 with an empty list under delegated authentication (the only kind
      * {@code OneNoteDataStore} can use), where the documented way to enumerate sites is
-     * {@code GET /sites?search=*}. So when the bare listing comes back empty, it is retried once
-     * with {@code search=*}; the search lists the sites the signed-in account can reach.</p>
+     * {@code GET /sites?search=*} (plain {@code search}, not {@code $search}, which Graph rejects
+     * for {@code *}). So when the bare listing comes back empty, it is retried once with that
+     * search; it lists the sites the signed-in account can reach.</p>
      *
      * @param consumer A consumer to process each Site object.
      */
@@ -1090,9 +1091,10 @@ public class Microsoft365Client implements Closeable {
                 if (logger.isDebugEnabled()) {
                     logger.debug("GET /sites returned no sites; retrying with search=*");
                 }
-                response = client.sites().get(requestConfiguration -> {
-                    requestConfiguration.queryParameters.search = "*";
-                });
+                // The SDK's typed search property is sent as "$search", which Graph parses as a
+                // KQL query and rejects for "*". The sites search takes the plain "search"
+                // parameter, which the SDK cannot express, so the URL is built by hand.
+                response = client.sites().withUrl(client.getRequestAdapter().getBaseUrl() + "/sites?search=*").get();
             }
             int pageCount = 0;
             int totalSites = 0;

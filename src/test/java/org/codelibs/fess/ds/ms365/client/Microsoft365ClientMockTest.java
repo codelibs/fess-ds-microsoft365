@@ -133,9 +133,9 @@ public class Microsoft365ClientMockTest {
 
             assertEquals(List.of("site-1"), ids, "sites found by the search fallback must be consumed");
             assertEquals("/sites", mock.takePath());
-            final String searchPath = mock.takePath();
-            assertTrue(searchPath.startsWith("/sites?") && searchPath.contains("search=") && searchPath.contains("*"),
-                    "fallback must request search=*: " + searchPath);
+            // Graph's sites search takes the plain "search" parameter; the SDK's typed property
+            // is "$search", which Graph rejects for "*" (Syntax error: character '*' is not valid).
+            assertEquals("/sites?search=*", mock.takePath());
         }
     }
 
