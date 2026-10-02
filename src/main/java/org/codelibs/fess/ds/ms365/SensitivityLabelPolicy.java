@@ -24,7 +24,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.codelibs.core.lang.StringUtil;
@@ -41,8 +40,10 @@ import org.codelibs.core.lang.StringUtil;
  * <li>{@value #PROTECTED_LABEL}: any label that applies encryption;</li>
  * <li>{@value #ANY_LABEL}: any label not matched by a more specific rule.</li>
  * </ul>
- * <p>A label is matched in that order, and only the first matching rule applies to it. The
- * actions are:</p>
+ * <p>A file carries the ID of a sublabel, never that of its parent, so a rule for a parent label
+ * also applies to its sublabels. A label is matched by its own ID, its own names, its parent's
+ * ID, its parent's names, {@value #PROTECTED_LABEL} and {@value #ANY_LABEL}, in that order, and
+ * only the first matching rule applies to it. The actions are:</p>
  * <ul>
  * <li>{@value #ACTION_INDEX}: index the file as usual; used to exempt a label from a broader rule;</li>
  * <li>{@value #ACTION_SKIP}: do not index the file;</li>
@@ -85,9 +86,6 @@ public class SensitivityLabelPolicy {
     /** The rule applied to a label that applies encryption when no {@value #PROTECTED_LABEL} rule is configured. */
     static final Rule DEFAULT_PROTECTED_RULE = new Rule(false, true, null);
 
-    private static final Pattern GUID_PATTERN =
-            Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
-
     /** Rules keyed by lower-cased label ID or name. */
     private final Map<String, Rule> labelRules;
 
@@ -97,14 +95,15 @@ public class SensitivityLabelPolicy {
     /** The {@value #ANY_LABEL} rule, or {@code null} when it is not configured. */
     private final Rule anyRule;
 
-    /** Whether any rule can only be matched once the label's definition is known. */
+    /** Whether any rule other than {@value #ANY_LABEL} can match a label through its definition. */
     private final boolean definitionRequired;
 
     private SensitivityLabelPolicy(final Map<String, Rule> labelRules, final Rule protectedRule, final Rule anyRule) {
         this.labelRules = labelRules;
         this.protectedRule = protectedRule;
         this.anyRule = anyRule;
-        definitionRequired = protectedRule != null || labelRules.keySet().stream().anyMatch(key -> !GUID_PATTERN.matcher(key).matches());
+        // A label ID rule needs the definition too: it can match a sublabel through its parent.
+        definitionRequired = protectedRule != null || !labelRules.isEmpty();
     }
 
     /**
@@ -203,9 +202,10 @@ public class SensitivityLabelPolicy {
     /**
      * Returns whether the rule for {@code label} can be determined.
      *
-     * <p>It cannot when the label's definition could not be read, no rule names the label's ID,
-     * and some rule matches by name or by {@value #PROTECTED_LABEL}: that rule might have been the
-     * one meant for this label, so applying a broader rule - or none - would fail open.</p>
+     * <p>It cannot when the label's definition could not be read, no rule names the label's own
+     * ID, and some rule other than {@value #ANY_LABEL} is configured: that rule might have matched
+     * the label by name, through its parent or by {@value #PROTECTED_LABEL}, so applying a broader
+     * rule - or none - would fail open.</p>
      *
      * @param label the label to check
      * @return {@code false} if the label's rule depends on a definition that is not available
@@ -231,13 +231,19 @@ public class SensitivityLabelPolicy {
             }
         }
         if (label.resolved()) {
-            for (final String name : label.names()) {
-                if (StringUtil.isNotBlank(name)) {
-                    final Rule rule = labelRules.get(name.toLowerCase(Locale.ROOT));
-                    if (rule != null) {
-                        return rule;
-                    }
+            Rule rule = findRuleByName(label.names());
+            if (rule != null) {
+                return rule;
+            }
+            if (label.parentId() != null) {
+                rule = labelRules.get(label.parentId().toLowerCase(Locale.ROOT));
+                if (rule != null) {
+                    return rule;
                 }
+            }
+            rule = findRuleByName(label.parentNames());
+            if (rule != null) {
+                return rule;
             }
             if (Boolean.TRUE.equals(label.hasProtection())) {
                 if (protectedRule != null) {
@@ -249,6 +255,18 @@ public class SensitivityLabelPolicy {
             }
         }
         return anyRule;
+    }
+
+    private Rule findRuleByName(final List<String> names) {
+        for (final String name : names) {
+            if (StringUtil.isNotBlank(name)) {
+                final Rule rule = labelRules.get(name.toLowerCase(Locale.ROOT));
+                if (rule != null) {
+                    return rule;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -297,8 +315,10 @@ public class SensitivityLabelPolicy {
      * @param names the label's name and display name; empty when the definition could not be read
      * @param hasProtection whether the label applies encryption; {@code null} when unknown
      * @param resolved whether the label's definition was read
+     * @param parentId the parent label's ID for a sublabel, otherwise {@code null}
+     * @param parentNames the parent label's name and display name; empty for a top-level label
      */
-    public record Label(String id, List<String> names, Boolean hasProtection, boolean resolved) {
+    public record Label(String id, List<String> names, Boolean hasProtection, boolean resolved, String parentId, List<String> parentNames) {
 
         /**
          * Creates a label.
@@ -307,9 +327,24 @@ public class SensitivityLabelPolicy {
          * @param names the label's name and display name
          * @param hasProtection whether the label applies encryption
          * @param resolved whether the label's definition was read
+         * @param parentId the parent label's ID for a sublabel
+         * @param parentNames the parent label's name and display name
          */
         public Label {
             names = names == null ? Collections.emptyList() : Collections.unmodifiableList(new ArrayList<>(names));
+            parentNames = parentNames == null ? Collections.emptyList() : Collections.unmodifiableList(new ArrayList<>(parentNames));
+        }
+
+        /**
+         * Creates a top-level label.
+         *
+         * @param id the label ID
+         * @param names the label's name and display name
+         * @param hasProtection whether the label applies encryption
+         * @param resolved whether the label's definition was read
+         */
+        public Label(final String id, final List<String> names, final Boolean hasProtection, final boolean resolved) {
+            this(id, names, hasProtection, resolved, null, null);
         }
 
         /**
@@ -323,12 +358,14 @@ public class SensitivityLabelPolicy {
         }
 
         /**
-         * Returns the name to show for the label: the first non-blank name, or the ID.
+         * Returns the name to show for the label: the first non-blank name, or the ID. A sublabel
+         * is shown under its parent, as {@code Parent\Sublabel}, the way Office shows it.
          *
          * @return the display name
          */
         public String displayName() {
-            return names.stream().filter(StringUtil::isNotBlank).findFirst().orElse(id);
+            final String name = names.stream().filter(StringUtil::isNotBlank).findFirst().orElse(id);
+            return parentNames.stream().filter(StringUtil::isNotBlank).findFirst().map(parent -> parent + "\\" + name).orElse(name);
         }
     }
 

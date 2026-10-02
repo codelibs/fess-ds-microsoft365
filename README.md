@@ -133,9 +133,10 @@ nothing.
   [OneNote requires delegated authentication](#onenote-requires-delegated-authentication).
 - (*9) Recommended when `sensitivity_label_enabled=true`. Reading a file's labels
   (`POST /drives/{drive-id}/items/{item-id}/extractSensitivityLabels`) needs only `Files.Read.All`,
-  but resolving a label ID to its name and encryption setting
-  (`GET /security/dataSecurityAndGovernance/sensitivityLabels/{id}`) needs `SensitivityLabel.Read`.
-  Without it, labels are reported by ID only and rules can match them by ID only - see
+  but loading the label definitions - names, parent labels and encryption settings
+  (`GET /security/dataSecurityAndGovernance/sensitivityLabels` and `.../{id}/sublabels`) - needs
+  `SensitivityLabel.Read`. Without it, labels are reported by ID only and only their own ID and `*`
+  rules can match them - see
   [Sensitivity labels](#sensitivity-labels).
 
 **Subsites:** `GET /sites/{site-id}/sites` recursion is used by OneDriveDataStore (in
@@ -353,8 +354,8 @@ role=file.roles
 | file.special_folder | Special folder name (if file is in a special folder). |
 | file.video | Video metadata (for video files). |
 | file.sensitivity_label_ids | IDs of the file's sensitivity labels. Set only when `sensitivity_label_enabled=true`; empty for an unlabeled file. |
-| file.sensitivity_label_names | Display names of the file's sensitivity labels, or their IDs when the definitions cannot be read. Set only when `sensitivity_label_enabled=true`. |
-| file.sensitivity_label_protected | Whether any of the file's sensitivity labels applies encryption. Set only when `sensitivity_label_enabled=true`. |
+| file.sensitivity_label_names | Display names of the file's sensitivity labels, a sublabel as `Parent\Sublabel`, or their IDs when the definitions cannot be read. Set only when `sensitivity_label_enabled=true`. |
+| file.sensitivity_label_protected | Whether any of the file's sensitivity labels is known to apply encryption; `false` also when the definitions cannot be read. Set only when `sensitivity_label_enabled=true`. |
 
 #### OneNote
 
@@ -1396,7 +1397,7 @@ The implementation extracts and indexes the following notebook metadata:
 | `ignore_system_libraries` | Skip system libraries (Style Library, `FormServerTemplates`, and libraries under `_catalogs`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the library's own URL segment, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below. `false` also asks Graph for drives that carry the `system` facet, which it hides by default |
 | `sensitivity_label_enabled` | Read each file's sensitivity labels | `false` | Costs one extra Graph request per targeted file. See [Sensitivity labels](#sensitivity-labels) |
 | `sensitivity_label_policy` | Per-label rules, one `<label>=<action>[;<action>...]` per line | - | Ignored, with a warning, unless `sensitivity_label_enabled=true`. A malformed rule stops the crawl |
-| `sensitivity_label_failure_policy` | What to do with a file whose labels cannot be read | `skip` | `skip` (record a failure URL and do not index the file) or `index_without_label` (ignore the labels that could not be read) |
+| `sensitivity_label_failure_policy` | What to do with a file whose labels cannot be read | `skip` | `skip` (record a failure URL and do not index the file) or `index_without_label` (index it with what could be read) |
 | `sensitivity_label_extensions` | Comma-separated file extensions whose labels are read | Office formats and `pdf` | The file types Microsoft Purview can label in SharePoint and OneDrive. Other files are treated as unlabeled without a request |
 
 #### Sensitivity labels
@@ -1409,9 +1410,10 @@ include/exclude filters and before the file is downloaded:
 1. `POST /drives/{drive-id}/items/{item-id}/extractSensitivityLabels` returns the label IDs on the
    file (`Files.Read.All`). Microsoft documents that this call re-extracts the label from the file
    when SharePoint's stored copy is stale, and updates the item's metadata to match.
-2. `GET /security/dataSecurityAndGovernance/sensitivityLabels/{id}` resolves each ID to its name,
-   display name and whether it applies encryption (`SensitivityLabel.Read`). Definitions are cached
-   for the crawl, bounded by `cache_size`.
+2. `GET /security/dataSecurityAndGovernance/sensitivityLabels` and
+   `GET /security/dataSecurityAndGovernance/sensitivityLabels/{id}/sublabels` load the tenant's
+   labels - name, display name, parent label and whether each applies encryption
+   (`SensitivityLabel.Read`). They are loaded once per crawl, on the first labeled file.
 
 The labels are exposed as `file.sensitivity_label_ids`, `file.sensitivity_label_names` and
 `file.sensitivity_label_protected`. To index them, map them in the script, for example
@@ -1427,6 +1429,7 @@ from the search API or filter on it, add it to `query.additional.response.fields
 |-----------|---------|
 | a label ID (GUID) | that label |
 | a label name or display name | that label, case-insensitively. Needs `SensitivityLabel.Read` |
+| a parent label's ID, name or display name | its sublabels. Needs `SensitivityLabel.Read` |
 | `@protected` | any label that applies encryption. Needs `SensitivityLabel.Read` |
 | `*` | any label not matched by a rule above |
 
@@ -1437,15 +1440,17 @@ from the search API or filter on it, add it to `query.additional.response.fields
 | `no_content` | Index the file without downloading it: metadata only, `file.contents` is empty, and `max_content_length` does not apply |
 | `restrict:<permissions>` | Keep only those roles of the file's ACL that are also listed, in the `default_permissions` syntax (`{user}`, `{group}`, `{role}`). The ACL is narrowed, never widened. A file left with no role is not indexed |
 
-A label is matched by ID, then by name, then by `@protected`, then by `*`, and only the first
-matching rule applies to it. When a file carries several labels, the result is never less
+A file carries the sublabel it was labeled with (for example `Confidential\All Employees`), never
+the parent label, so a rule for a parent label also applies to its sublabels. A label is matched by
+its own ID, its own name, its parent's ID, its parent's name, `@protected` and `*`, in that order,
+and only the first matching rule applies to it. When a file carries several labels, the result is never less
 restrictive than any one of them: `skip` and `no_content` apply if any label asks for them, and
 `restrict` lists are intersected.
 
 ```
-# Highly Confidential: keep it out of the index
+# Highly Confidential and all its sublabels: keep them out of the index
 Highly Confidential=skip
-# Confidential: only the legal and executive groups, without content
+# Confidential and all its sublabels: only the legal and executive groups, without content
 Confidential=no_content;restrict:{group}legal@example.com,{group}executives@example.com
 # Encrypted labels with no rule of their own are indexed without content (the default)
 @protected=no_content
@@ -1470,11 +1475,11 @@ them anyway.
 **When labels cannot be read.** If `extractSensitivityLabels` fails - for example with `423 Locked`
 for a double-key-encrypted file - `sensitivity_label_failure_policy` applies: `skip` (default)
 records a failure URL and does not index the file; `index_without_label` indexes it as unlabeled.
-The same policy applies when a label's definition cannot be read and the policy has rules that
-match by name or by `@protected`, because one of those rules might have been the one meant for it;
-there `index_without_label` ignores only that label, and the rules of the file's other labels still
-apply.
-A policy written only with label IDs does not need the definitions.
+The same policy applies when a label's definition cannot be read, no rule names the label's own ID,
+and the policy has any rule other than `*`, because that rule might have matched it by name,
+through its parent or by `@protected`. There `index_without_label` keeps the label by ID only: its
+`*` rule and the rules of the file's other labels still apply. An `extractSensitivityLabels`
+response without a `labels` property is treated as a failure, not as an unlabeled file.
 
 #### The per-item failure log line changed
 

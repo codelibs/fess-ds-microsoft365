@@ -47,6 +47,7 @@ import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.crawler.helper.ContentLengthHelper;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client.SensitivityLabelEntry;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
 import org.codelibs.fess.exception.DataStoreException;
@@ -918,9 +919,11 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      * @param item The drive item.
      * @param policy The sensitivity label policy.
      * @param paramMap The data store parameters, consulted for {@link #SENSITIVITY_LABEL_FAILURE_POLICY}.
-     * @return the labels; empty for an unlabeled file. Under {@link #POLICY_INDEX_WITHOUT_LABEL}, a label that cannot be
-     *         evaluated is left out, and no label is returned when the file's labels could not be read at all
-     * @throws SensitivityLabelUnavailableException when they could not be read under {@link #POLICY_SKIP}
+     * @return the labels; empty for an unlabeled file. Under {@link #POLICY_INDEX_WITHOUT_LABEL}, a label whose
+     *         definition is needed but could not be read is returned unresolved, and no label is returned when the
+     *         file's labels could not be read at all
+     * @throws SensitivityLabelUnavailableException when they could not be read, under {@link #POLICY_SKIP} or an
+     *         unrecognized policy value
      */
     protected List<SensitivityLabelPolicy.Label> getDriveItemSensitivityLabels(final Microsoft365Client client, final String driveId,
             final DriveItem item, final SensitivityLabelPolicy policy, final DataStoreParams paramMap) {
@@ -938,17 +941,22 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 continue;
             }
             final String labelId = assignment.getSensitivityLabelId();
-            final SensitivityLabel definition = client.getSensitivityLabel(labelId);
-            final SensitivityLabelPolicy.Label label = definition != null
-                    ? new SensitivityLabelPolicy.Label(labelId, Arrays.asList(definition.getDisplayName(), definition.getName()),
-                            definition.getHasProtection(), true)
-                    : SensitivityLabelPolicy.Label.unresolved(labelId);
+            final SensitivityLabelEntry entry = client.getSensitivityLabel(labelId);
+            final SensitivityLabelPolicy.Label label;
+            if (entry != null && entry.label() != null) {
+                final SensitivityLabel definition = entry.label();
+                final SensitivityLabel parent = entry.parent();
+                label = new SensitivityLabelPolicy.Label(labelId, Arrays.asList(definition.getDisplayName(), definition.getName()),
+                        definition.getHasProtection(), true, parent != null ? parent.getId() : null,
+                        parent != null ? Arrays.asList(parent.getDisplayName(), parent.getName()) : null);
+            } else {
+                label = SensitivityLabelPolicy.Label.unresolved(labelId);
+            }
             if (!policy.canEvaluate(label)) {
                 handleSensitivityLabelFailure(paramMap, target, "the definition of its sensitivity label " + labelId
-                        + " could not be read, and the label policy matches labels by name or by encryption", null);
-                // Under index_without_label only this label is ignored; the rules of the
-                // file's other labels still apply.
-                continue;
+                        + " could not be read, and the label policy has rules that could match it through its definition", null);
+                // Under index_without_label the label is kept as unresolved, so the * rule still
+                // applies to it and its ID is still indexed.
             }
             labels.add(label);
         }
@@ -968,7 +976,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      * @param target The URL or name of the file, for the log and the failure record.
      * @param reason Why the labels are not available.
      * @param cause The failure that prevented the lookup, or {@code null}.
-     * @throws SensitivityLabelUnavailableException under {@link #POLICY_SKIP}
+     * @throws SensitivityLabelUnavailableException under {@link #POLICY_SKIP} or an unrecognized policy value
      */
     protected void handleSensitivityLabelFailure(final DataStoreParams paramMap, final String target, final String reason,
             final Exception cause) {
