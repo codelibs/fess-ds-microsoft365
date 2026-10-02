@@ -114,8 +114,10 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected static final String GROUP_DRIVE_CRAWLER = "group_drive_crawler";
     /** Parameter name for reading each file's sensitivity labels; see {@link SensitivityLabelPolicy}. */
     protected static final String SENSITIVITY_LABEL_ENABLED = "sensitivity_label_enabled";
-    /** Parameter name for the per-label rules; also the configuration map key for the parsed {@link SensitivityLabelPolicy}. */
+    /** Configuration map key for the parsed {@link SensitivityLabelPolicy}, and the stem of its rule parameters. */
     protected static final String SENSITIVITY_LABEL_POLICY = "sensitivity_label_policy";
+    /** Prefix of the per-label rule parameters, {@code sensitivity_label_policy.<label>=<action>[;<action>...]}. */
+    protected static final String SENSITIVITY_LABEL_POLICY_PREFIX = SENSITIVITY_LABEL_POLICY + ".";
     /** Parameter name for what to do when a file's sensitivity labels cannot be read. */
     protected static final String SENSITIVITY_LABEL_FAILURE_POLICY = "sensitivity_label_failure_policy";
     /** Parameter name for the file extensions whose sensitivity labels are read; also the configuration map key for the parsed set. */
@@ -850,22 +852,37 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     }
 
     /**
-     * Builds the sensitivity label policy for this crawl.
+     * Builds the sensitivity label policy for this crawl from the
+     * {@code sensitivity_label_policy.<label>=<action>[;<action>...]} parameters.
+     *
+     * <p>Each rule is a parameter of its own because the data config's parameters are read one
+     * {@code key=value} per line, so a single parameter cannot hold several lines.</p>
      *
      * @param paramMap The data store parameters.
      * @return the parsed policy, or {@code null} when {@link #SENSITIVITY_LABEL_ENABLED} is not {@code true}
-     * @throws DataStoreException if {@link #SENSITIVITY_LABEL_POLICY} is malformed
+     * @throws DataStoreException if a rule is malformed, or the rules are given as a bare {@link #SENSITIVITY_LABEL_POLICY} parameter
      */
     protected SensitivityLabelPolicy getSensitivityLabelPolicy(final DataStoreParams paramMap) {
-        final String value = paramMap.getAsString(SENSITIVITY_LABEL_POLICY);
+        final String rules = paramMap.asMap()
+                .entrySet()
+                .stream()
+                .filter(e -> e.getKey().startsWith(SENSITIVITY_LABEL_POLICY_PREFIX))
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> e.getKey().substring(SENSITIVITY_LABEL_POLICY_PREFIX.length()) + "=" + (e.getValue() != null ? e.getValue() : ""))
+                .collect(Collectors.joining("\n"));
+        final boolean bareParameter = paramMap.containsKey(SENSITIVITY_LABEL_POLICY);
         if (!Constants.TRUE.equalsIgnoreCase(StringUtils.trim(paramMap.getAsString(SENSITIVITY_LABEL_ENABLED, Constants.FALSE)))) {
-            if (StringUtil.isNotBlank(value)) {
-                logger.warn("{} is ignored because {} is not true.", SENSITIVITY_LABEL_POLICY, SENSITIVITY_LABEL_ENABLED);
+            if (!rules.isEmpty() || bareParameter) {
+                logger.warn("{}* is ignored because {} is not true.", SENSITIVITY_LABEL_POLICY_PREFIX, SENSITIVITY_LABEL_ENABLED);
             }
             return null;
         }
+        if (bareParameter) {
+            throw new DataStoreException("Invalid " + SENSITIVITY_LABEL_POLICY + ": write each rule as " + SENSITIVITY_LABEL_POLICY_PREFIX
+                    + "<label>=<action>.");
+        }
         try {
-            return SensitivityLabelPolicy.parse(value, ComponentUtil.getPermissionHelper()::encode);
+            return SensitivityLabelPolicy.parse(rules, ComponentUtil.getPermissionHelper()::encode);
         } catch (final IllegalArgumentException e) {
             // A rule that does not parse must stop the crawl: ignoring it would index exactly
             // the files it was written to exclude or restrict.

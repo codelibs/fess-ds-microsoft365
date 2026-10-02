@@ -1396,7 +1396,7 @@ The implementation extracts and indexes the following notebook metadata:
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
 | `ignore_system_libraries` | Skip system libraries (Style Library, `FormServerTemplates`, and libraries under `_catalogs`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the library's own URL segment, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below. `false` also asks Graph for drives that carry the `system` facet, which it hides by default |
 | `sensitivity_label_enabled` | Read each file's sensitivity labels | `false` | Costs one extra Graph request per targeted file. See [Sensitivity labels](#sensitivity-labels) |
-| `sensitivity_label_policy` | Per-label rules, one `<label>=<action>[;<action>...]` per line | - | Ignored, with a warning, unless `sensitivity_label_enabled=true`. A malformed rule stops the crawl |
+| `sensitivity_label_policy.<label>` | The rule for one label: `<action>[;<action>...]` | - | One parameter per rule, e.g. `sensitivity_label_policy.Confidential=no_content`. Ignored, with a warning, unless `sensitivity_label_enabled=true`. A malformed rule stops the crawl |
 | `sensitivity_label_failure_policy` | What to do with a file whose labels cannot be read | `skip` | `skip` (record a failure URL and do not index the file) or `index_without_label` (index it with what could be read) |
 | `sensitivity_label_extensions` | Comma-separated file extensions whose labels are read | Office formats and `pdf` | The file types Microsoft Purview can label in SharePoint and OneDrive. Other files are treated as unlabeled without a request |
 
@@ -1422,8 +1422,10 @@ from the search API or filter on it, add it to `query.additional.response.fields
 `query.additional.api.response.fields` and `query.additional.search.fields` in
 `fess_config.properties`.
 
-`sensitivity_label_policy` decides what happens to a labeled file. Each line is
-`<label>=<action>[;<action>...]`; blank lines and lines starting with `#` are ignored.
+`sensitivity_label_policy.<label>=<action>[;<action>...]` parameters decide what happens to a
+labeled file, one parameter per rule. (The data config's Parameters field is read one `key=value`
+per line, so a single parameter cannot hold several rules; a bare `sensitivity_label_policy`
+parameter stops the crawl.)
 
 | `<label>` | Matches |
 |-----------|---------|
@@ -1443,17 +1445,19 @@ from the search API or filter on it, add it to `query.additional.response.fields
 A file carries the sublabel it was labeled with (for example `Confidential\All Employees`), never
 the parent label, so a rule for a parent label also applies to its sublabels. A label is matched by
 its own ID, its own name, its parent's ID, its parent's name, `@protected` and `*`, in that order,
-and only the first matching rule applies to it. When a file carries several labels, the result is never less
-restrictive than any one of them: `skip` and `no_content` apply if any label asks for them, and
+and only the first matching rule applies to it. When a file carries several labels, the result is
+never less restrictive than any one of them: `skip` and `no_content` apply if any label asks for them, and
 `restrict` lists are intersected.
 
+For example, to keep `Highly Confidential` and its sublabels out of the index, index
+`Confidential` and its sublabels without content for the legal and executive groups only, and
+index other encrypted labels without content (which is also the default):
+
 ```
-# Highly Confidential and all its sublabels: keep them out of the index
-Highly Confidential=skip
-# Confidential and all its sublabels: only the legal and executive groups, without content
-Confidential=no_content;restrict:{group}legal@example.com,{group}executives@example.com
-# Encrypted labels with no rule of their own are indexed without content (the default)
-@protected=no_content
+sensitivity_label_enabled=true
+sensitivity_label_policy.Highly Confidential=skip
+sensitivity_label_policy.Confidential=no_content;restrict:{group}legal@example.com,{group}executives@example.com
+sensitivity_label_policy.@protected=no_content
 ```
 
 **`restrict` and the file's ACL.** Microsoft Graph does not expose who a label's encryption

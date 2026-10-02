@@ -1421,14 +1421,15 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         final DataStoreParams paramMap = new DataStoreParams();
         assertNull("disabled by default", dataStore.getSensitivityLabelPolicy(paramMap));
 
-        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY, "Confidential=skip");
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY_PREFIX + "Confidential", "skip");
         assertNull("a policy without sensitivity_label_enabled=true is ignored", dataStore.getSensitivityLabelPolicy(paramMap));
 
         paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_ENABLED, "false");
         assertNull(dataStore.getSensitivityLabelPolicy(paramMap));
 
         // a malformed policy does not matter while the feature is off
-        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY, "Confidential");
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY_PREFIX + "Secret", "delete");
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY, "Confidential=skip");
         assertNull(dataStore.getSensitivityLabelPolicy(paramMap));
     }
 
@@ -1437,7 +1438,7 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         registerLabelProcessingComponents();
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_ENABLED, " TRUE ");
-        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY, "Confidential=restrict:{group}sales");
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY_PREFIX + "Confidential", "restrict:{group}sales");
 
         final SensitivityLabelPolicy policy = dataStore.getSensitivityLabelPolicy(paramMap);
 
@@ -1462,11 +1463,51 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         registerLabelProcessingComponents();
         final DataStoreParams paramMap = new DataStoreParams();
         paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_ENABLED, "true");
-        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY, "Confidential=delete");
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY_PREFIX + "Confidential", "delete");
 
         final DataStoreException e = assertThrows(DataStoreException.class, () -> dataStore.getSensitivityLabelPolicy(paramMap));
         assertTrue(e.getMessage(), e.getMessage().contains(OneDriveDataStore.SENSITIVITY_LABEL_POLICY));
         assertTrue(String.valueOf(e.getCause()), e.getCause() instanceof IllegalArgumentException);
+    }
+
+    @Test
+    public void test_getSensitivityLabelPolicy_readsOneRulePerParameter() {
+        registerLabelProcessingComponents();
+        // Parameters as Fess core parses the data config's Parameters field: one key=value per line.
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.putAll(org.codelibs.fess.util.ParameterUtil.parse("sensitivity_label_enabled=true\n"
+                + "sensitivity_label_policy.Highly Confidential=skip\n" + "sensitivity_label_policy.*=no_content;restrict:{group}sales\n"
+                + "sensitivity_label_policy.@protected=index\n" + "number_of_threads=2"));
+
+        final SensitivityLabelPolicy policy = dataStore.getSensitivityLabelPolicy(paramMap);
+
+        assertTrue(policy.findRule(new SensitivityLabelPolicy.Label("id-1", List.of("Highly Confidential"), false, true)).skip());
+        final SensitivityLabelPolicy.Rule anyRule =
+                policy.findRule(new SensitivityLabelPolicy.Label("id-2", List.of("General"), false, true));
+        assertTrue(anyRule.noContent());
+        assertEquals(Set.of(ComponentUtil.getPermissionHelper().encode("{group}sales")), anyRule.restrictRoles());
+        assertFalse(policy.findRule(new SensitivityLabelPolicy.Label("id-3", List.of("Encrypted"), true, true)).noContent());
+    }
+
+    @Test
+    public void test_getSensitivityLabelPolicy_emptyActionFailsTheCrawl() {
+        registerLabelProcessingComponents();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_ENABLED, "true");
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY_PREFIX + "Confidential", "");
+
+        assertThrows(DataStoreException.class, () -> dataStore.getSensitivityLabelPolicy(paramMap));
+    }
+
+    @Test
+    public void test_getSensitivityLabelPolicy_bareParameterFailsTheCrawl() {
+        registerLabelProcessingComponents();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_ENABLED, "true");
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY, "Confidential=skip");
+
+        final DataStoreException e = assertThrows(DataStoreException.class, () -> dataStore.getSensitivityLabelPolicy(paramMap));
+        assertTrue(e.getMessage(), e.getMessage().contains(OneDriveDataStore.SENSITIVITY_LABEL_POLICY_PREFIX));
     }
 
     @Test

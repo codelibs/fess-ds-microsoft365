@@ -29,11 +29,11 @@ import java.util.stream.Collectors;
 import org.codelibs.core.lang.StringUtil;
 
 /**
- * The per-label rules configured by the {@code sensitivity_label_policy} parameter, and the
- * decision they produce for one file.
+ * The per-label rules configured by the {@code sensitivity_label_policy.<label>} parameters, and
+ * the decision they produce for one file.
  *
- * <p>The parameter holds one rule per line, {@code <label>=<action>[;<action>...]}. Blank lines
- * and lines starting with {@code #} are ignored. {@code <label>} is one of:</p>
+ * <p>Each rule is {@code <label>=<action>[;<action>...]}; {@link #parse} takes them one per line,
+ * and ignores blank lines and lines starting with {@code #}. {@code <label>} is one of:</p>
  * <ul>
  * <li>a label ID (GUID);</li>
  * <li>a label name or display name, compared case-insensitively;</li>
@@ -107,9 +107,9 @@ public class SensitivityLabelPolicy {
     }
 
     /**
-     * Parses the {@code sensitivity_label_policy} parameter.
+     * Parses sensitivity label rules.
      *
-     * @param value the parameter value; blank means no rules
+     * @param value the rules, one {@code <label>=<action>[;<action>...]} per line; blank means no rules
      * @param permissionEncoder encodes one {@code default_permissions}-style entry into a search role
      * @return the parsed policy
      * @throws IllegalArgumentException if a line is malformed, names an unknown action or repeats a label
@@ -302,7 +302,7 @@ public class SensitivityLabelPolicy {
     /**
      * Returns whether no rule is configured, so only the default rule for encrypted labels applies.
      *
-     * @return {@code true} when the parameter held no rules
+     * @return {@code true} when no rule was given
      */
     public boolean isEmpty() {
         return labelRules.isEmpty() && protectedRule == null && anyRule == null;
