@@ -24,7 +24,10 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -72,6 +75,7 @@ import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.DriveCollectionResponse;
 import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.DriveItemCollectionResponse;
+import com.microsoft.graph.models.ExtractSensitivityLabelsResult;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.GroupCollectionResponse;
 import com.microsoft.graph.models.ListCollectionResponse;
@@ -83,6 +87,10 @@ import com.microsoft.graph.models.OnenotePageCollectionResponse;
 import com.microsoft.graph.models.OnenoteSection;
 import com.microsoft.graph.models.OnenoteSectionCollectionResponse;
 import com.microsoft.graph.models.PermissionCollectionResponse;
+import com.microsoft.graph.models.SensitivityLabel;
+import com.microsoft.graph.models.SensitivityLabelAssignment;
+import com.microsoft.graph.models.SensitivityLabelCollectionResponse;
+import com.microsoft.graph.models.odataerrors.ODataError;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.models.SiteCollectionResponse;
 import com.microsoft.graph.models.SitePageCollectionResponse;
@@ -91,9 +99,14 @@ import com.microsoft.graph.models.User;
 import com.microsoft.graph.models.UserCollectionResponse;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
 import com.microsoft.kiota.ApiException;
+import com.microsoft.kiota.RequestInformation;
 import com.microsoft.kiota.RequestOption;
 import com.microsoft.kiota.ResponseHeaders;
 import com.microsoft.kiota.http.middleware.options.RetryHandlerOption;
+import com.microsoft.kiota.serialization.Parsable;
+import com.microsoft.kiota.serialization.ParsableFactory;
+import com.microsoft.kiota.serialization.ParseNode;
+import com.microsoft.kiota.serialization.SerializationWriter;
 
 import okhttp3.Authenticator;
 import okhttp3.Credentials;
@@ -209,6 +222,13 @@ public class Microsoft365Client implements Closeable {
     protected LoadingCache<String, Optional<String>> groupNameCache;
     /** Cache of user object ID to UPN. Empty means "looked up, not resolvable". */
     protected LoadingCache<String, Optional<String>> upnCache;
+    /**
+     * The tenant's sensitivity labels keyed by lower-cased label ID, loaded on first use.
+     * {@code null} until loaded; empty when the application may not read them.
+     */
+    protected volatile Map<String, SensitivityLabelEntry> sensitivityLabelCatalog;
+    /** Guards the one-time load of {@link #sensitivityLabelCatalog}. */
+    protected final Object sensitivityLabelCatalogLock = new Object();
 
     /** The maximum content length for extracted text. */
     protected int maxContentLength = -1;
@@ -539,6 +559,7 @@ public class Microsoft365Client implements Closeable {
         groupIdCache.invalidateAll();
         upnCache.invalidateAll();
         groupNameCache.invalidateAll();
+        sensitivityLabelCatalog = null;
         if (httpClient != null) {
             // OkHttp's documented shutdown. The leak this plugin actually had is the pooled
             // keep-alive sockets evicted below: kiota's OkHttpRequestAdapter calls Call#execute,
@@ -627,6 +648,197 @@ public class Microsoft365Client implements Closeable {
                     response.getValue() != null ? response.getValue().size() : 0, driveId, itemId);
         }
         return response;
+    }
+
+    /**
+     * Reads the sensitivity labels assigned to a drive item.
+     *
+     * <p>Calls {@code POST /drives/{drive-id}/items/{item-id}/extractSensitivityLabels}. Microsoft
+     * documents that the call re-extracts the label from the file when SharePoint's copy of it is
+     * stale, and updates the item's metadata to match.</p>
+     *
+     * <p>The SDK expects {@code labels} at the top level of the response, while Microsoft's
+     * reference shows it wrapped in {@code value}, so both shapes are accepted. A response with
+     * neither is an error, not an unlabeled file: reading it as unlabeled would bypass every rule
+     * configured for the file's label.</p>
+     *
+     * @param driveId The ID of the drive.
+     * @param itemId The ID of the drive item.
+     * @return the label assignments, empty for an unlabeled file
+     * @throws IllegalStateException if the response carries no {@code labels} property
+     */
+    public List<SensitivityLabelAssignment> extractSensitivityLabels(final String driveId, final String itemId) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Extracting sensitivity labels - Drive ID: {}, Item ID: {}", driveId, itemId);
+        }
+        final RequestInformation requestInfo =
+                client.drives().byDriveId(driveId).items().byDriveItemId(itemId).extractSensitivityLabels().toPostRequestInformation();
+        final HashMap<String, ParsableFactory<? extends Parsable>> errorMapping = new HashMap<>();
+        errorMapping.put("XXX", ODataError::createFromDiscriminatorValue);
+        final ExtractSensitivityLabelsEnvelope envelope =
+                client.getRequestAdapter().send(requestInfo, errorMapping, parseNode -> new ExtractSensitivityLabelsEnvelope());
+        final List<SensitivityLabelAssignment> labels = envelope != null ? envelope.getLabels() : null;
+        if (labels == null) {
+            throw new IllegalStateException(
+                    "The extractSensitivityLabels response for Drive ID: " + driveId + ", Item ID: " + itemId + " has no labels.");
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug("Extracted {} sensitivity labels for Drive ID: {}, Item ID: {}", labels.size(), driveId, itemId);
+        }
+        return labels;
+    }
+
+    /**
+     * Returns the definition of a sensitivity label, and of its parent when it is a sublabel.
+     *
+     * <p>The tenant's labels are loaded once, on first use, and kept until {@link #close()}.</p>
+     *
+     * @param labelId The label ID.
+     * @return the label definition, or {@code null} when it cannot be read: the label is not one
+     *         of the tenant's labels, the application lacks the permission to read label
+     *         definitions, or loading them failed transiently. Only a transient failure is retried
+     *         on the next call.
+     */
+    public SensitivityLabelEntry getSensitivityLabel(final String labelId) {
+        if (StringUtil.isBlank(labelId)) {
+            return null;
+        }
+        final Map<String, SensitivityLabelEntry> catalog = getSensitivityLabelCatalog();
+        return catalog != null ? catalog.get(labelId.toLowerCase(Locale.ROOT)) : null;
+    }
+
+    /**
+     * Returns the tenant's sensitivity labels, loading them on first use.
+     *
+     * @return the labels keyed by lower-cased ID; empty when they cannot be read, for example without the
+     *         permission or in a cloud that does not offer the endpoint; {@code null} when loading failed
+     *         transiently (408, 429, 5xx or a non-HTTP error), so the next call tries again
+     */
+    protected Map<String, SensitivityLabelEntry> getSensitivityLabelCatalog() {
+        final Map<String, SensitivityLabelEntry> loaded = sensitivityLabelCatalog;
+        if (loaded != null) {
+            return loaded;
+        }
+        synchronized (sensitivityLabelCatalogLock) {
+            if (sensitivityLabelCatalog != null) {
+                return sensitivityLabelCatalog;
+            }
+            try {
+                sensitivityLabelCatalog = loadSensitivityLabelCatalog();
+            } catch (final ApiException e) {
+                final int status = e.getResponseStatusCode();
+                if (status < 400 || status >= 500 || status == 408 || status == 429) {
+                    logger.warn("Failed to load sensitivity label definitions (status={})", status, e);
+                    return null;
+                }
+                // Any other client error will not go away within the crawl - a missing permission,
+                // or a cloud that does not offer the endpoint - so it is not retried for each file.
+                logger.warn(
+                        "Cannot read sensitivity label definitions (status={}). Grant the SensitivityLabel.Read application "
+                                + "permission to match labels by name or parent label and to detect labels that apply encryption.",
+                        status, e);
+                sensitivityLabelCatalog = Collections.emptyMap();
+            } catch (final Exception e) {
+                logger.warn("Failed to load sensitivity label definitions", e);
+                return null;
+            }
+            return sensitivityLabelCatalog;
+        }
+    }
+
+    /**
+     * Loads the tenant's sensitivity labels from
+     * {@code GET /security/dataSecurityAndGovernance/sensitivityLabels} and the sublabels of each
+     * from {@code GET /security/dataSecurityAndGovernance/sensitivityLabels/{id}/sublabels}.
+     *
+     * <p>A file carries the ID of the sublabel it was labeled with, never that of its parent, so
+     * the parent of each sublabel is recorded too. A sublabel list that cannot be read is logged
+     * and left out: its sublabels then have no definition, which the label policy treats as a
+     * failure rather than as a match.</p>
+     *
+     * @return the labels keyed by lower-cased ID
+     */
+    protected Map<String, SensitivityLabelEntry> loadSensitivityLabelCatalog() {
+        final String[] select = { "id", "name", "displayName", "hasProtection" };
+        final var labelsBuilder = client.security().dataSecurityAndGovernance().sensitivityLabels();
+        final List<SensitivityLabel> topLevel = new ArrayList<>();
+        paginate(labelsBuilder.get(rc -> rc.queryParameters.select = select), SensitivityLabelCollectionResponse::getValue,
+                nextLink -> labelsBuilder.withUrl(nextLink).get(), topLevel::add);
+
+        final Map<String, SensitivityLabelEntry> catalog = new HashMap<>();
+        topLevel.stream()
+                .filter(label -> StringUtil.isNotBlank(label.getId()))
+                .forEach(label -> catalog.put(label.getId().toLowerCase(Locale.ROOT), new SensitivityLabelEntry(label, null)));
+        for (final SensitivityLabel parent : topLevel) {
+            if (StringUtil.isBlank(parent.getId())) {
+                continue;
+            }
+            try {
+                final var sublabelsBuilder = labelsBuilder.bySensitivityLabelId(parent.getId()).sublabels();
+                paginate(sublabelsBuilder.get(rc -> rc.queryParameters.select = select), SensitivityLabelCollectionResponse::getValue,
+                        nextLink -> sublabelsBuilder.withUrl(nextLink).get(), sublabel -> {
+                            if (StringUtil.isNotBlank(sublabel.getId())) {
+                                // Overwrites the entry of a sublabel the top-level list also returned.
+                                catalog.put(sublabel.getId().toLowerCase(Locale.ROOT), new SensitivityLabelEntry(sublabel, parent));
+                            }
+                        });
+            } catch (final ApiException e) {
+                if (e.getResponseStatusCode() == 401 || e.getResponseStatusCode() == 403) {
+                    throw e;
+                }
+                logger.warn("Failed to read the sublabels of sensitivity label {} (status={})", parent.getId(), e.getResponseStatusCode(),
+                        e);
+            }
+        }
+        logger.info("Loaded {} sensitivity label definitions", catalog.size());
+        return Collections.unmodifiableMap(catalog);
+    }
+
+    /**
+     * A sensitivity label definition, together with the definition of its parent label when it
+     * is a sublabel.
+     *
+     * @param label the label definition
+     * @param parent the parent label's definition, or {@code null} for a top-level label
+     */
+    public record SensitivityLabelEntry(SensitivityLabel label, SensitivityLabel parent) {
+    }
+
+    /**
+     * Reads an {@code extractSensitivityLabels} response whose {@code labels} sit either at the
+     * top level or inside {@code value}.
+     */
+    static final class ExtractSensitivityLabelsEnvelope implements Parsable {
+
+        private List<SensitivityLabelAssignment> labels;
+
+        private ExtractSensitivityLabelsResult value;
+
+        /**
+         * Returns the labels found in either shape.
+         *
+         * @return the labels, or {@code null} when the response carried no {@code labels} property
+         */
+        List<SensitivityLabelAssignment> getLabels() {
+            if (labels != null) {
+                return labels;
+            }
+            return value != null ? value.getLabels() : null;
+        }
+
+        @Override
+        public Map<String, java.util.function.Consumer<ParseNode>> getFieldDeserializers() {
+            final Map<String, java.util.function.Consumer<ParseNode>> deserializers = new HashMap<>();
+            deserializers.put("labels",
+                    n -> labels = n.getCollectionOfObjectValues(SensitivityLabelAssignment::createFromDiscriminatorValue));
+            deserializers.put("value", n -> value = n.getObjectValue(ExtractSensitivityLabelsResult::createFromDiscriminatorValue));
+            return deserializers;
+        }
+
+        @Override
+        public void serialize(final SerializationWriter writer) {
+            throw new UnsupportedOperationException("A response envelope is never sent.");
+        }
     }
 
     /**

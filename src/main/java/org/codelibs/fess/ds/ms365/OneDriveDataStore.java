@@ -20,11 +20,14 @@ import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
@@ -44,8 +47,10 @@ import org.codelibs.fess.crawler.filter.UrlFilter;
 import org.codelibs.fess.crawler.helper.ContentLengthHelper;
 import org.codelibs.fess.ds.callback.IndexUpdateCallback;
 import org.codelibs.fess.ds.ms365.client.Microsoft365Client;
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client.SensitivityLabelEntry;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.codelibs.fess.exception.DataStoreCrawlingException;
+import org.codelibs.fess.exception.DataStoreException;
 import org.codelibs.fess.helper.CrawlerStatsHelper;
 import org.codelibs.fess.mylasta.direction.FessConfig;
 import org.codelibs.fess.helper.CrawlerStatsHelper.StatsAction;
@@ -57,6 +62,8 @@ import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.DriveItemCollectionResponse;
 import com.microsoft.graph.models.Hashes;
+import com.microsoft.graph.models.SensitivityLabel;
+import com.microsoft.graph.models.SensitivityLabelAssignment;
 import com.microsoft.kiota.ApiException;
 
 /**
@@ -105,6 +112,23 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected static final String USER_DRIVE_CRAWLER = "user_drive_crawler";
     /** Parameter name for enabling the group drive crawler. */
     protected static final String GROUP_DRIVE_CRAWLER = "group_drive_crawler";
+    /** Parameter name for reading each file's sensitivity labels; see {@link SensitivityLabelPolicy}. */
+    protected static final String SENSITIVITY_LABEL_ENABLED = "sensitivity_label_enabled";
+    /** Configuration map key for the parsed {@link SensitivityLabelPolicy}, and the stem of its rule parameters. */
+    protected static final String SENSITIVITY_LABEL_POLICY = "sensitivity_label_policy";
+    /** Prefix of the per-label rule parameters, {@code sensitivity_label_policy.<label>=<action>[;<action>...]}. */
+    protected static final String SENSITIVITY_LABEL_POLICY_PREFIX = SENSITIVITY_LABEL_POLICY + ".";
+    /** Parameter name for what to do when a file's sensitivity labels cannot be read. */
+    protected static final String SENSITIVITY_LABEL_FAILURE_POLICY = "sensitivity_label_failure_policy";
+    /** Parameter name for the file extensions whose sensitivity labels are read; also the configuration map key for the parsed set. */
+    protected static final String SENSITIVITY_LABEL_EXTENSIONS = "sensitivity_label_extensions";
+
+    /** Index the file as if it were unlabeled when its labels cannot be read. */
+    protected static final String POLICY_INDEX_WITHOUT_LABEL = "index_without_label";
+
+    /** The file types sensitivity labels can be applied to in SharePoint and OneDrive: Office files and PDF. */
+    protected static final String DEFAULT_SENSITIVITY_LABEL_EXTENSIONS =
+            "doc,docx,docm,dot,dotx,dotm,xls,xlsx,xlsm,xlsb,xlt,xltx,xltm,ppt,pptx,pptm,pps,ppsx,ppsm,pot,potx,potm,pdf";
 
     // scripts
     /** Key for the file object in the script map. */
@@ -177,6 +201,12 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     protected static final String FILE_SPECIAL_FOLDER = "special_folder";
     /** Key for the file video in the script map. */
     protected static final String FILE_VIDEO = "video";
+    /** Key for the IDs of the file's sensitivity labels in the script map. */
+    protected static final String FILE_SENSITIVITY_LABEL_IDS = "sensitivity_label_ids";
+    /** Key for the names of the file's sensitivity labels in the script map. */
+    protected static final String FILE_SENSITIVITY_LABEL_NAMES = "sensitivity_label_names";
+    /** Key for whether any of the file's sensitivity labels applies encryption, in the script map. */
+    protected static final String FILE_SENSITIVITY_LABEL_PROTECTED = "sensitivity_label_protected";
 
     /** The name of the extractor to use for file content. */
     protected String extractorName = "tikaExtractor";
@@ -202,6 +232,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         configMap.put(IGNORE_ERROR, isIgnoreError(paramMap));
         configMap.put(SUPPORTED_MIMETYPES, getSupportedMimeTypes(paramMap));
         configMap.put(URL_FILTER, getUrlFilter(paramMap));
+        configMap.put(SENSITIVITY_LABEL_POLICY, getSensitivityLabelPolicy(paramMap));
+        configMap.put(SENSITIVITY_LABEL_EXTENSIONS, getSensitivityLabelExtensions(paramMap));
         if (logger.isDebugEnabled()) {
             logger.debug(
                     "OneDrive crawling started with configuration - MaxSize: {}, IgnoreFolder: {}, IgnoreError: {}, MimeTypes: {}, Threads: {}, IgnoreSystemLists: {}, IgnoreSystemLibraries: {}",
@@ -634,6 +666,23 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 return;
             }
 
+            final SensitivityLabelPolicy labelPolicy = (SensitivityLabelPolicy) configMap.get(SENSITIVITY_LABEL_POLICY);
+            List<SensitivityLabelPolicy.Label> labels = Collections.emptyList();
+            SensitivityLabelPolicy.Decision labelDecision = SensitivityLabelPolicy.Decision.NONE;
+            if (labelPolicy != null) {
+                if (isSensitivityLabelTarget(configMap, item)) {
+                    labels = getDriveItemSensitivityLabels(client, driveId, item, labelPolicy, paramMap);
+                }
+                labelDecision = labelPolicy.decide(labels);
+                if (labelDecision.skip()) {
+                    logger.info("Skipping {}: the sensitivity label policy excludes its labels {}", url,
+                            labels.stream().map(SensitivityLabelPolicy.Label::displayName).collect(Collectors.toList()));
+                    crawlerStatsHelper.discard(statsKey);
+                    return;
+                }
+            }
+            final boolean fetchContent = !labelDecision.noContent();
+
             final Long size = item.getSize();
             logger.info("Crawling OneDrive item - URL: {}, Name: {}, Size: {} bytes, MimeType: {}", url, item.getName(), size, mimetype);
 
@@ -651,7 +700,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                     logger.warn("Failed to get maxContentLength.", e);
                 }
             }
-            if (maxContentLength >= 0 && size != null && size.longValue() > maxContentLength) {
+            if (fetchContent && maxContentLength >= 0 && size != null && size.longValue() > maxContentLength) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Content length exceeded for item: {} - Size: {} bytes, Max: {} bytes", item.getName(), size,
                             maxContentLength);
@@ -664,7 +713,14 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             filesMap.put(FILE_NAME, item.getName());
             filesMap.put(FILE_DESCRIPTION, item.getDescription() != null ? item.getDescription() : StringUtil.EMPTY);
 
-            filesMap.put(FILE_CONTENTS, getDriveItemContents(client, driveId, item, maxContentLength, ignoreError));
+            if (fetchContent) {
+                filesMap.put(FILE_CONTENTS, getDriveItemContents(client, driveId, item, maxContentLength, ignoreError));
+            } else {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Not downloading the content of {}: the sensitivity label policy indexes it without content", url);
+                }
+                filesMap.put(FILE_CONTENTS, StringUtil.EMPTY);
+            }
             filesMap.put(FILE_MIMETYPE, mimetype);
             filesMap.put(FILE_FILETYPE, filetype);
             filesMap.put(FILE_CREATED, item.getCreatedDateTime());
@@ -696,11 +752,19 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             filesMap.put(FILE_SEARCH_RESULT, item.getSearchResult());
             filesMap.put(FILE_SPECIAL_FOLDER, item.getSpecialFolder() != null ? item.getSpecialFolder().getName() : null);
             filesMap.put(FILE_VIDEO, item.getVideo());
+            if (labelPolicy != null) {
+                filesMap.put(FILE_SENSITIVITY_LABEL_IDS,
+                        labels.stream().map(SensitivityLabelPolicy.Label::id).collect(Collectors.toList()));
+                filesMap.put(FILE_SENSITIVITY_LABEL_NAMES,
+                        labels.stream().map(SensitivityLabelPolicy.Label::displayName).collect(Collectors.toList()));
+                filesMap.put(FILE_SENSITIVITY_LABEL_PROTECTED, labels.stream().anyMatch(l -> Boolean.TRUE.equals(l.hasProtection())));
+            }
 
             final List<String> fileRoles = getDriveItemPermissions(client, driveId, item, paramMap);
             roles.forEach(fileRoles::add);
             fileRoles.addAll(getDefaultPermissions(paramMap));
-            filesMap.put(FILE_ROLES, mergeDefaultRoles(fileRoles, defaultDataMap).stream().distinct().collect(Collectors.toList()));
+            filesMap.put(FILE_ROLES, labelDecision
+                    .applyRoles(mergeDefaultRoles(fileRoles, defaultDataMap).stream().distinct().collect(Collectors.toList())));
 
             resultMap.put(FILE, filesMap);
 
@@ -721,6 +785,13 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             }
 
             crawlerStatsHelper.record(statsKey, StatsAction.EVALUATED);
+
+            if (labelDecision.allowedRoles() != null && !restrictRoleField(dataMap, labelDecision)) {
+                logger.info("Skipping {}: none of its roles is allowed by the sensitivity label policy {}", url,
+                        labelDecision.allowedRoles());
+                crawlerStatsHelper.discard(statsKey);
+                return;
+            }
 
             if (logger.isDebugEnabled()) {
                 logger.debug("Final data map prepared for indexing - Fields count: {}, URL: {}", dataMap.size(), dataMap.get("url"));
@@ -743,6 +814,199 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         } finally {
             crawlerStatsHelper.done(statsKey);
         }
+    }
+
+    /**
+     * Narrows the role field of the document about to be stored to the roles the sensitivity label
+     * policy allows.
+     *
+     * <p>{@code file.roles} is already narrowed, but the role field is whatever the script map
+     * made of it, or the data config's own permissions when the script map does not set it. It is
+     * narrowed again here so that no script can widen a restricted file's ACL.</p>
+     *
+     * @param dataMap the document about to be stored
+     * @param decision the sensitivity label decision for the file, with a non-null {@code allowedRoles}
+     * @return {@code false} when no role is left, so the file must not be indexed
+     */
+    protected boolean restrictRoleField(final Map<String, Object> dataMap, final SensitivityLabelPolicy.Decision decision) {
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+        final Object value = dataMap.get(roleField);
+        final List<String> roles = new ArrayList<>();
+        if (value instanceof final Iterable<?> values) {
+            values.forEach(v -> {
+                if (v != null) {
+                    roles.add(v.toString());
+                }
+            });
+        } else if (value instanceof final Object[] values) {
+            Stream.of(values).filter(v -> v != null).map(Object::toString).forEach(roles::add);
+        } else if (value != null) {
+            roles.add(value.toString());
+        }
+        final List<String> allowed = decision.applyRoles(roles);
+        if (allowed.isEmpty()) {
+            return false;
+        }
+        dataMap.put(roleField, allowed);
+        return true;
+    }
+
+    /**
+     * Builds the sensitivity label policy for this crawl from the
+     * {@code sensitivity_label_policy.<label>=<action>[;<action>...]} parameters.
+     *
+     * <p>Each rule is a parameter of its own because the data config's parameters are read one
+     * {@code key=value} per line, so a single parameter cannot hold several lines.</p>
+     *
+     * @param paramMap The data store parameters.
+     * @return the parsed policy, or {@code null} when {@link #SENSITIVITY_LABEL_ENABLED} is not {@code true}
+     * @throws DataStoreException if a rule is malformed, or the rules are given as a bare {@link #SENSITIVITY_LABEL_POLICY} parameter
+     */
+    protected SensitivityLabelPolicy getSensitivityLabelPolicy(final DataStoreParams paramMap) {
+        final String rules = paramMap.asMap()
+                .entrySet()
+                .stream()
+                .filter(e -> e.getKey().startsWith(SENSITIVITY_LABEL_POLICY_PREFIX))
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> e.getKey().substring(SENSITIVITY_LABEL_POLICY_PREFIX.length()) + "=" + (e.getValue() != null ? e.getValue() : ""))
+                .collect(Collectors.joining("\n"));
+        final boolean bareParameter = paramMap.containsKey(SENSITIVITY_LABEL_POLICY);
+        if (!Constants.TRUE.equalsIgnoreCase(StringUtils.trim(paramMap.getAsString(SENSITIVITY_LABEL_ENABLED, Constants.FALSE)))) {
+            if (!rules.isEmpty() || bareParameter) {
+                logger.warn("{}* is ignored because {} is not true.", SENSITIVITY_LABEL_POLICY_PREFIX, SENSITIVITY_LABEL_ENABLED);
+            }
+            return null;
+        }
+        if (bareParameter) {
+            throw new DataStoreException("Invalid " + SENSITIVITY_LABEL_POLICY + ": write each rule as " + SENSITIVITY_LABEL_POLICY_PREFIX
+                    + "<label>=<action>.");
+        }
+        try {
+            return SensitivityLabelPolicy.parse(rules, ComponentUtil.getPermissionHelper()::encode);
+        } catch (final IllegalArgumentException e) {
+            // A rule that does not parse must stop the crawl: ignoring it would index exactly
+            // the files it was written to exclude or restrict.
+            throw new DataStoreException("Invalid " + SENSITIVITY_LABEL_POLICY + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Gets the file extensions whose sensitivity labels are read.
+     *
+     * @param paramMap The data store parameters.
+     * @return the lower-cased extensions, without the leading dot
+     */
+    protected Set<String> getSensitivityLabelExtensions(final DataStoreParams paramMap) {
+        String value = paramMap.getAsString(SENSITIVITY_LABEL_EXTENSIONS);
+        if (StringUtil.isBlank(value)) {
+            value = DEFAULT_SENSITIVITY_LABEL_EXTENSIONS;
+        }
+        return Arrays.stream(value.split(","))
+                .map(s -> s.trim().toLowerCase(Locale.ROOT))
+                .map(s -> s.startsWith(".") ? s.substring(1) : s)
+                .filter(StringUtil::isNotBlank)
+                .collect(Collectors.toSet());
+    }
+
+    /**
+     * Checks whether the sensitivity labels of a drive item should be read.
+     *
+     * @param configMap The configuration map.
+     * @param item The drive item.
+     * @return {@code true} for a file whose extension is in {@link #SENSITIVITY_LABEL_EXTENSIONS}
+     */
+    @SuppressWarnings("unchecked")
+    protected boolean isSensitivityLabelTarget(final Map<String, Object> configMap, final DriveItem item) {
+        if (item.getFile() == null || item.getName() == null) {
+            return false;
+        }
+        final int pos = item.getName().lastIndexOf('.');
+        if (pos < 0) {
+            return false;
+        }
+        final Set<String> extensions = (Set<String>) configMap.get(SENSITIVITY_LABEL_EXTENSIONS);
+        return extensions != null && extensions.contains(item.getName().substring(pos + 1).toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * Reads the sensitivity labels of a drive item and the definitions of those labels.
+     *
+     * @param client The Microsoft365Client.
+     * @param driveId The drive ID.
+     * @param item The drive item.
+     * @param policy The sensitivity label policy.
+     * @param paramMap The data store parameters, consulted for {@link #SENSITIVITY_LABEL_FAILURE_POLICY}.
+     * @return the labels; empty for an unlabeled file. Under {@link #POLICY_INDEX_WITHOUT_LABEL}, a label whose
+     *         definition is needed but could not be read is returned unresolved, and no label is returned when the
+     *         file's labels could not be read at all
+     * @throws SensitivityLabelUnavailableException when they could not be read, under {@link #POLICY_SKIP} or an
+     *         unrecognized policy value
+     */
+    protected List<SensitivityLabelPolicy.Label> getDriveItemSensitivityLabels(final Microsoft365Client client, final String driveId,
+            final DriveItem item, final SensitivityLabelPolicy policy, final DataStoreParams paramMap) {
+        final String target = item.getWebUrl() != null ? item.getWebUrl() : item.getName();
+        final List<SensitivityLabelAssignment> assignments;
+        try {
+            assignments = client.extractSensitivityLabels(driveId, item.getId());
+        } catch (final Exception e) {
+            handleSensitivityLabelFailure(paramMap, target, "its sensitivity labels could not be read", e);
+            return Collections.emptyList();
+        }
+        final List<SensitivityLabelPolicy.Label> labels = new ArrayList<>();
+        for (final SensitivityLabelAssignment assignment : assignments) {
+            if (assignment == null || StringUtil.isBlank(assignment.getSensitivityLabelId())) {
+                continue;
+            }
+            final String labelId = assignment.getSensitivityLabelId();
+            final SensitivityLabelEntry entry = client.getSensitivityLabel(labelId);
+            final SensitivityLabelPolicy.Label label;
+            if (entry != null && entry.label() != null) {
+                final SensitivityLabel definition = entry.label();
+                final SensitivityLabel parent = entry.parent();
+                label = new SensitivityLabelPolicy.Label(labelId, Arrays.asList(definition.getDisplayName(), definition.getName()),
+                        definition.getHasProtection(), true, parent != null ? parent.getId() : null,
+                        parent != null ? Arrays.asList(parent.getDisplayName(), parent.getName()) : null);
+            } else {
+                label = SensitivityLabelPolicy.Label.unresolved(labelId);
+            }
+            if (!policy.canEvaluate(label)) {
+                handleSensitivityLabelFailure(paramMap, target, "the definition of its sensitivity label " + labelId
+                        + " could not be read, and the label policy has rules that could match it through its definition", null);
+                // Under index_without_label the label is kept as unresolved, so the * rule still
+                // applies to it and its ID is still indexed.
+            }
+            labels.add(label);
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug("Sensitivity labels of {}: {}", target, labels);
+        }
+        return labels;
+    }
+
+    /**
+     * Applies {@link #SENSITIVITY_LABEL_FAILURE_POLICY} after a file's labels could not be read.
+     *
+     * <p>Returns normally only under {@link #POLICY_INDEX_WITHOUT_LABEL}, in which case the caller
+     * indexes the file as if it were unlabeled.</p>
+     *
+     * @param paramMap The data store parameters.
+     * @param target The URL or name of the file, for the log and the failure record.
+     * @param reason Why the labels are not available.
+     * @param cause The failure that prevented the lookup, or {@code null}.
+     * @throws SensitivityLabelUnavailableException under {@link #POLICY_SKIP} or an unrecognized policy value
+     */
+    protected void handleSensitivityLabelFailure(final DataStoreParams paramMap, final String target, final String reason,
+            final Exception cause) {
+        final String value = paramMap.getAsString(SENSITIVITY_LABEL_FAILURE_POLICY, POLICY_SKIP);
+        final String policy = value == null ? POLICY_SKIP : value.trim();
+        if (POLICY_INDEX_WITHOUT_LABEL.equalsIgnoreCase(policy)) {
+            logger.warn("Indexing {} as unlabeled: {}.", target, reason, cause);
+            return;
+        }
+        if (!POLICY_SKIP.equalsIgnoreCase(policy)) {
+            logger.warn("Unknown {} value '{}'; treating it as '{}'.", SENSITIVITY_LABEL_FAILURE_POLICY, policy, POLICY_SKIP);
+        }
+        throw new SensitivityLabelUnavailableException("Skipped " + target + ": " + reason, cause);
     }
 
     /**
