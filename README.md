@@ -24,6 +24,7 @@ This plugin extends [Fess](https://fess.codelibs.org/) enterprise search capabil
 - **Role-based Access Control**: Seamless integration with Fess security model
 - **Azure AD Authentication**: Client credentials flow with automatic token refresh
 - **Permission Mapping**: Where Microsoft Graph exposes an ACL - OneDrive and SharePoint document library items, and Teams channel/chat membership - it is mapped onto Fess roles. SharePoint lists, SharePoint pages and OneNote site notebooks get `default_permissions` and the data config's Permissions field only; see [What ACL Each DataStore Can Produce](#what-acl-each-datastore-can-produce)
+- **Sensitivity Labels**: OneDriveDataStore can read each file's Microsoft Purview sensitivity labels, index them, and skip, index without content, or narrow the ACL of files by label; see [Sensitivity labels](#sensitivity-labels)
 
 ### ⚡ **Performance & Reliability**
 - **Microsoft Graph SDK v6**: Latest API with efficient pagination and caching
@@ -90,7 +91,7 @@ Each DataStore requires specific Microsoft Graph API permissions. Grant only the
 
 | DataStore | Required Permissions | Conditional Permissions |
 |-----------|---------------------|------------------------|
-| OneDriveDataStore | Files.Read.All, User.Read.All, Group.Read.All | Sites.Read.All (*1) |
+| OneDriveDataStore | Files.Read.All, User.Read.All, Group.Read.All | Sites.Read.All (*1), SensitivityLabel.Read (*9) |
 | OneNoteDataStore (*8) | Notes.Read.All | User.Read.All (*2), Group.Read.All (*3), Sites.Read.All (*4) |
 | TeamsDataStore | Team.ReadBasic.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMember.Read.All, Group.Read.All, User.Read.All | Chat.Read.All (*5), attachment permission (*6) |
 | SharePointDocLibDataStore | Sites.Read.All, User.Read.All, Group.Read.All | - |
@@ -130,6 +131,12 @@ nothing.
   OneNote API on 2025-03-31 and answers every `/onenote/` request made with one with a 401. Every
   other DataStore listed here keeps using application permissions. See
   [OneNote requires delegated authentication](#onenote-requires-delegated-authentication).
+- (*9) Recommended when `sensitivity_label_enabled=true`. Reading a file's labels
+  (`POST /drives/{drive-id}/items/{item-id}/extractSensitivityLabels`) needs only `Files.Read.All`,
+  but resolving a label ID to its name and encryption setting
+  (`GET /security/dataSecurityAndGovernance/sensitivityLabels/{id}`) needs `SensitivityLabel.Read`.
+  Without it, labels are reported by ID only and rules can match them by ID only - see
+  [Sensitivity labels](#sensitivity-labels).
 
 **Subsites:** `GET /sites/{site-id}/sites` recursion is used by OneDriveDataStore (in
 shared-documents mode), SharePointDocLibDataStore, SharePointListDataStore, and
@@ -345,6 +352,9 @@ role=file.roles
 | file.search_result | Search result metadata (if file was found via search). |
 | file.special_folder | Special folder name (if file is in a special folder). |
 | file.video | Video metadata (for video files). |
+| file.sensitivity_label_ids | IDs of the file's sensitivity labels. Set only when `sensitivity_label_enabled=true`; empty for an unlabeled file. |
+| file.sensitivity_label_names | Display names of the file's sensitivity labels, or their IDs when the definitions cannot be read. Set only when `sensitivity_label_enabled=true`. |
+| file.sensitivity_label_protected | Whether any of the file's sensitivity labels applies encryption. Set only when `sensitivity_label_enabled=true`. |
 
 #### OneNote
 
@@ -1384,6 +1394,85 @@ The implementation extracts and indexes the following notebook metadata:
 | `user_drive_crawler` | Enable user drives crawling | `true` | Crawl all licensed users' drives |
 | `group_drive_crawler` | Enable group drives crawling | `true` | Crawl Microsoft 365 group drives |
 | `ignore_system_libraries` | Skip system libraries (Style Library, `FormServerTemplates`, and libraries under `_catalogs`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the library's own URL segment, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below. `false` also asks Graph for drives that carry the `system` facet, which it hides by default |
+| `sensitivity_label_enabled` | Read each file's sensitivity labels | `false` | Costs one extra Graph request per targeted file. See [Sensitivity labels](#sensitivity-labels) |
+| `sensitivity_label_policy` | Per-label rules, one `<label>=<action>[;<action>...]` per line | - | Ignored, with a warning, unless `sensitivity_label_enabled=true`. A malformed rule stops the crawl |
+| `sensitivity_label_failure_policy` | What to do with a file whose labels cannot be read | `skip` | `skip` (record a failure URL and do not index the file) or `index_without_label` (index it as unlabeled) |
+| `sensitivity_label_extensions` | Comma-separated file extensions whose labels are read | Office formats and `pdf` | The file types Microsoft Purview can label in SharePoint and OneDrive. Other files are treated as unlabeled without a request |
+
+#### Sensitivity labels
+
+With `sensitivity_label_enabled=true`, OneDriveDataStore reads the
+[Microsoft Purview sensitivity labels](https://learn.microsoft.com/en-us/purview/sensitivity-labels)
+of each file whose extension is in `sensitivity_label_extensions`, after the MIME type and
+include/exclude filters and before the file is downloaded:
+
+1. `POST /drives/{drive-id}/items/{item-id}/extractSensitivityLabels` returns the label IDs on the
+   file (`Files.Read.All`). Microsoft documents that this call re-extracts the label from the file
+   when SharePoint's stored copy is stale, and updates the item's metadata to match.
+2. `GET /security/dataSecurityAndGovernance/sensitivityLabels/{id}` resolves each ID to its name,
+   display name and whether it applies encryption (`SensitivityLabel.Read`). Definitions are cached
+   for the crawl, bounded by `cache_size`.
+
+The labels are exposed as `file.sensitivity_label_ids`, `file.sensitivity_label_names` and
+`file.sensitivity_label_protected`. To index them, map them in the script, for example
+`sensitivity_label=file.sensitivity_label_names`. Fess maps a new field dynamically; to return it
+from the search API or filter on it, add it to `query.additional.response.fields`,
+`query.additional.api.response.fields` and `query.additional.search.fields` in
+`fess_config.properties`.
+
+`sensitivity_label_policy` decides what happens to a labeled file. Each line is
+`<label>=<action>[;<action>...]`; blank lines and lines starting with `#` are ignored.
+
+| `<label>` | Matches |
+|-----------|---------|
+| a label ID (GUID) | that label |
+| a label name or display name | that label, case-insensitively. Needs `SensitivityLabel.Read` |
+| `@protected` | any label that applies encryption. Needs `SensitivityLabel.Read` |
+| `*` | any label not matched by a rule above |
+
+| Action | Effect |
+|--------|--------|
+| `index` | Index the file as usual. Use it to exempt a label from `*` or `@protected` |
+| `skip` | Do not index the file. It is discarded, not recorded as a failure |
+| `no_content` | Index the file without downloading it: metadata only, `file.contents` is empty, and `max_content_length` does not apply |
+| `restrict:<permissions>` | Keep only those roles of the file's ACL that are also listed, in the `default_permissions` syntax (`{user}`, `{group}`, `{role}`). The ACL is narrowed, never widened. A file left with no role is not indexed |
+
+A label is matched by ID, then by name, then by `@protected`, then by `*`, and only the first
+matching rule applies to it. When a file carries several labels, the result is never less
+restrictive than any one of them: `skip` and `no_content` apply if any label asks for them, and
+`restrict` lists are intersected.
+
+```
+# Highly Confidential: keep it out of the index
+Highly Confidential=skip
+# Confidential: only the legal and executive groups, without content
+Confidential=no_content;restrict:{group}legal@example.com,{group}executives@example.com
+# Encrypted labels with no rule of their own are indexed without content (the default)
+@protected=no_content
+```
+
+**`restrict` and the file's ACL.** Microsoft Graph does not expose who a label's encryption
+admits, so `restrict` cannot be derived from the label; it is the operator's statement of who may
+see files with that label. It is intersected with the roles built from the file's ACL,
+`default_permissions` and the data config's Permissions field, both in `file.roles` and in the role
+field of the stored document, so no script can widen it. The comparison is by role string: list
+groups and users in the form the ACL produces them - the object ID, or the UPN or group mail /
+mail nickname / display name that is added next to it. A user granted access to the file directly,
+rather than through a listed group, loses that access.
+
+**Encrypted files.** Microsoft Graph returns a file protected by a label's encryption still
+encrypted, so its content cannot be extracted. When no `@protected` rule is configured, a label
+that applies encryption and has no rule of its own gets the `*` rule, if any, with `no_content`
+added, so the file is searchable by name and metadata instead of failing extraction. This default needs the label definition; without
+`SensitivityLabel.Read` such files are downloaded as before. Set `@protected=index` to download
+them anyway.
+
+**When labels cannot be read.** If `extractSensitivityLabels` fails - for example with `423 Locked`
+for a double-key-encrypted file - `sensitivity_label_failure_policy` applies: `skip` (default)
+records a failure URL and does not index the file; `index_without_label` indexes it as unlabeled.
+The same policy applies when a label's definition cannot be read and the policy has rules that
+match by name or by `@protected`, because one of those rules might have been the one meant for it.
+A policy written only with label IDs does not need the definitions.
 
 #### The per-item failure log line changed
 

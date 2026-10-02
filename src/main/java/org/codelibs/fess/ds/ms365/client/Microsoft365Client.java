@@ -29,6 +29,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -72,6 +73,7 @@ import com.microsoft.graph.models.Drive;
 import com.microsoft.graph.models.DriveCollectionResponse;
 import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.DriveItemCollectionResponse;
+import com.microsoft.graph.models.ExtractSensitivityLabelsResult;
 import com.microsoft.graph.models.Group;
 import com.microsoft.graph.models.GroupCollectionResponse;
 import com.microsoft.graph.models.ListCollectionResponse;
@@ -83,6 +85,8 @@ import com.microsoft.graph.models.OnenotePageCollectionResponse;
 import com.microsoft.graph.models.OnenoteSection;
 import com.microsoft.graph.models.OnenoteSectionCollectionResponse;
 import com.microsoft.graph.models.PermissionCollectionResponse;
+import com.microsoft.graph.models.SensitivityLabel;
+import com.microsoft.graph.models.SensitivityLabelAssignment;
 import com.microsoft.graph.models.Site;
 import com.microsoft.graph.models.SiteCollectionResponse;
 import com.microsoft.graph.models.SitePageCollectionResponse;
@@ -209,6 +213,10 @@ public class Microsoft365Client implements Closeable {
     protected LoadingCache<String, Optional<String>> groupNameCache;
     /** Cache of user object ID to UPN. Empty means "looked up, not resolvable". */
     protected LoadingCache<String, Optional<String>> upnCache;
+    /** Cache of sensitivity label ID to its definition. Empty means "looked up, not readable". */
+    protected LoadingCache<String, Optional<SensitivityLabel>> sensitivityLabelCache;
+    /** Whether the missing permission to read label definitions has already been reported. */
+    protected final AtomicBoolean sensitivityLabelAccessDeniedReported = new AtomicBoolean(false);
 
     /** The maximum content length for extracted text. */
     protected int maxContentLength = -1;
@@ -389,6 +397,14 @@ public class Microsoft365Client implements Closeable {
             }
         });
 
+        sensitivityLabelCache =
+                CacheBuilder.newBuilder().maximumSize(getCacheSize(params)).build(new CacheLoader<String, Optional<SensitivityLabel>>() {
+                    @Override
+                    public Optional<SensitivityLabel> load(final String labelId) {
+                        return Optional.ofNullable(doGetSensitivityLabel(labelId));
+                    }
+                });
+
     }
 
     /**
@@ -539,6 +555,7 @@ public class Microsoft365Client implements Closeable {
         groupIdCache.invalidateAll();
         upnCache.invalidateAll();
         groupNameCache.invalidateAll();
+        sensitivityLabelCache.invalidateAll();
         if (httpClient != null) {
             // OkHttp's documented shutdown. The leak this plugin actually had is the pooled
             // keep-alive sockets evicted below: kiota's OkHttpRequestAdapter calls Call#execute,
@@ -627,6 +644,89 @@ public class Microsoft365Client implements Closeable {
                     response.getValue() != null ? response.getValue().size() : 0, driveId, itemId);
         }
         return response;
+    }
+
+    /**
+     * Reads the sensitivity labels assigned to a drive item.
+     *
+     * <p>Calls {@code POST /drives/{drive-id}/items/{item-id}/extractSensitivityLabels}. Microsoft
+     * documents that the call re-extracts the label from the file when SharePoint's copy of it is
+     * stale, and updates the item's metadata to match.</p>
+     *
+     * @param driveId The ID of the drive.
+     * @param itemId The ID of the drive item.
+     * @return the label assignments, empty for an unlabeled file
+     */
+    public List<SensitivityLabelAssignment> extractSensitivityLabels(final String driveId, final String itemId) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Extracting sensitivity labels - Drive ID: {}, Item ID: {}", driveId, itemId);
+        }
+        final ExtractSensitivityLabelsResult result =
+                client.drives().byDriveId(driveId).items().byDriveItemId(itemId).extractSensitivityLabels().post();
+        final List<SensitivityLabelAssignment> labels =
+                result != null && result.getLabels() != null ? result.getLabels() : Collections.emptyList();
+        if (logger.isDebugEnabled()) {
+            logger.debug("Extracted {} sensitivity labels for Drive ID: {}, Item ID: {}", labels.size(), driveId, itemId);
+        }
+        return labels;
+    }
+
+    /**
+     * Returns the definition of a sensitivity label, read through a cache.
+     *
+     * @param labelId The label ID.
+     * @return the label definition, or {@code null} when it cannot be read: the label does not
+     *         exist, the application lacks the permission to read label definitions, or the lookup
+     *         failed transiently. Only the first two outcomes are cached.
+     */
+    public SensitivityLabel getSensitivityLabel(final String labelId) {
+        if (StringUtil.isBlank(labelId)) {
+            return null;
+        }
+        try {
+            return sensitivityLabelCache.get(labelId).orElse(null);
+        } catch (final Exception e) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Failed to read the sensitivity label definition for id={}", labelId, e);
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Reads a sensitivity label definition from
+     * {@code GET /security/dataSecurityAndGovernance/sensitivityLabels/{id}}.
+     *
+     * @param labelId The label ID.
+     * @return the label definition, or {@code null} when the label does not exist or cannot be
+     *         read with the granted permissions
+     * @throws TransientPrincipalLookupException if the lookup failed transiently or unexpectedly;
+     *         must not be cached as "not readable"
+     */
+    private SensitivityLabel doGetSensitivityLabel(final String labelId) {
+        try {
+            return client.security().dataSecurityAndGovernance().sensitivityLabels().bySensitivityLabelId(labelId).get(rc -> {
+                rc.queryParameters.select = new String[] { "id", "name", "displayName", "hasProtection" };
+            });
+        } catch (final ApiException e) {
+            final int status = e.getResponseStatusCode();
+            if (status == 404) {
+                logger.warn("Sensitivity label {} was not found.", labelId);
+                return null;
+            }
+            if (status == 401 || status == 403) {
+                if (sensitivityLabelAccessDeniedReported.compareAndSet(false, true)) {
+                    logger.warn("Cannot read sensitivity label definitions (status={}). Grant the SensitivityLabel.Read application "
+                            + "permission to match labels by name and to detect labels that apply encryption.", status, e);
+                }
+                return null;
+            }
+            logger.warn("Failed to read the sensitivity label definition for id={} (status={})", labelId, status, e);
+            throw new TransientPrincipalLookupException("Failed to read the sensitivity label definition for id=" + labelId, e);
+        } catch (final Exception e) {
+            logger.warn("Failed to read the sensitivity label definition for id={}", labelId, e);
+            throw new TransientPrincipalLookupException("Failed to read the sensitivity label definition for id=" + labelId, e);
+        }
     }
 
     /**
