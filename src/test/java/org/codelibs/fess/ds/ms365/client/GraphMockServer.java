@@ -28,6 +28,7 @@ import com.microsoft.kiota.http.middleware.options.RetryHandlerOption;
 import okhttp3.OkHttpClient;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.RecordedRequest;
 
 /**
  * Wraps a MockWebServer and hands out GraphServiceClient instances pointed at it,
@@ -125,6 +126,11 @@ public class GraphMockServer implements AutoCloseable {
     /** Path (with query string) of the next request the server received. */
     public String takePath() throws InterruptedException {
         return server.takeRequest().getPath();
+    }
+
+    /** The next request the server received, for assertions on its method or body. */
+    public RecordedRequest takeRequest() throws InterruptedException {
+        return server.takeRequest();
     }
 
     /** Value of the given header on the next request the server received, or null if absent. */

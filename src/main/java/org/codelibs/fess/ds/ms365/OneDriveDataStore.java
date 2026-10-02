@@ -918,7 +918,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      * @param item The drive item.
      * @param policy The sensitivity label policy.
      * @param paramMap The data store parameters, consulted for {@link #SENSITIVITY_LABEL_FAILURE_POLICY}.
-     * @return the labels; empty for an unlabeled file, or when they could not be read under {@link #POLICY_INDEX_WITHOUT_LABEL}
+     * @return the labels; empty for an unlabeled file. Under {@link #POLICY_INDEX_WITHOUT_LABEL}, a label that cannot be
+     *         evaluated is left out, and no label is returned when the file's labels could not be read at all
      * @throws SensitivityLabelUnavailableException when they could not be read under {@link #POLICY_SKIP}
      */
     protected List<SensitivityLabelPolicy.Label> getDriveItemSensitivityLabels(final Microsoft365Client client, final String driveId,
@@ -945,7 +946,9 @@ public class OneDriveDataStore extends Microsoft365DataStore {
             if (!policy.canEvaluate(label)) {
                 handleSensitivityLabelFailure(paramMap, target, "the definition of its sensitivity label " + labelId
                         + " could not be read, and the label policy matches labels by name or by encryption", null);
-                return Collections.emptyList();
+                // Under index_without_label only this label is ignored; the rules of the
+                // file's other labels still apply.
+                continue;
             }
             labels.add(label);
         }

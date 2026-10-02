@@ -1396,7 +1396,7 @@ The implementation extracts and indexes the following notebook metadata:
 | `ignore_system_libraries` | Skip system libraries (Style Library, `FormServerTemplates`, and libraries under `_catalogs`) | `true` | Applies whenever `shared_documents_drive_crawler=true` (default), to the sub-mode that enumerates all SharePoint sites' document libraries (Crawling Mode 1 below) - independent of `drive_id`. Setting `drive_id` runs an additional, separate crawl (Crawling Mode 4) that does not go through this check; it does not turn off Mode 1. Has no effect on personal or group drives. Matched case-insensitively against the library's own URL segment, same as [SharePoint Document Library Parameters](#sharepoint-document-library-parameters) below. `false` also asks Graph for drives that carry the `system` facet, which it hides by default |
 | `sensitivity_label_enabled` | Read each file's sensitivity labels | `false` | Costs one extra Graph request per targeted file. See [Sensitivity labels](#sensitivity-labels) |
 | `sensitivity_label_policy` | Per-label rules, one `<label>=<action>[;<action>...]` per line | - | Ignored, with a warning, unless `sensitivity_label_enabled=true`. A malformed rule stops the crawl |
-| `sensitivity_label_failure_policy` | What to do with a file whose labels cannot be read | `skip` | `skip` (record a failure URL and do not index the file) or `index_without_label` (index it as unlabeled) |
+| `sensitivity_label_failure_policy` | What to do with a file whose labels cannot be read | `skip` | `skip` (record a failure URL and do not index the file) or `index_without_label` (ignore the labels that could not be read) |
 | `sensitivity_label_extensions` | Comma-separated file extensions whose labels are read | Office formats and `pdf` | The file types Microsoft Purview can label in SharePoint and OneDrive. Other files are treated as unlabeled without a request |
 
 #### Sensitivity labels
@@ -1471,7 +1471,9 @@ them anyway.
 for a double-key-encrypted file - `sensitivity_label_failure_policy` applies: `skip` (default)
 records a failure URL and does not index the file; `index_without_label` indexes it as unlabeled.
 The same policy applies when a label's definition cannot be read and the policy has rules that
-match by name or by `@protected`, because one of those rules might have been the one meant for it.
+match by name or by `@protected`, because one of those rules might have been the one meant for it;
+there `index_without_label` ignores only that label, and the rules of the file's other labels still
+apply.
 A policy written only with label IDs does not need the definitions.
 
 #### The per-item failure log line changed

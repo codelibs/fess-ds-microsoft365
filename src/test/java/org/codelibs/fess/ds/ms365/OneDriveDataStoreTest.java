@@ -16,6 +16,10 @@
 package org.codelibs.fess.ds.ms365;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
@@ -25,6 +29,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.Level;
@@ -50,6 +55,8 @@ import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.Identity;
 import com.microsoft.graph.models.ItemReference;
 import com.microsoft.graph.models.Permission;
+import com.microsoft.graph.models.SensitivityLabel;
+import com.microsoft.graph.models.SensitivityLabelAssignment;
 import com.microsoft.graph.models.SharePointIdentitySet;
 
 public class OneDriveDataStoreTest extends UnitDsTestCase {
@@ -815,6 +822,604 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertTrue(content.contains("Test Author"));
         assertTrue(content.contains("alpha beta gamma"));
         assertFalse(content.contains("should-not-be-searchable"));
+    }
+
+    // ===== sensitivity labels =====
+
+    private static final String LABEL_ID_CONFIDENTIAL = "0e7d7d2b-1c3e-4f5a-9b8c-1234567890ab";
+    private static final String LABEL_ID_SECRET = "a1b2c3d4-e5f6-4a5b-8c9d-0123456789ef";
+    private static final String DOCX_MIMETYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+    /** The same stand-in for {@code PermissionHelper#encode} that {@link SensitivityLabelPolicyTest} uses. */
+    private static SensitivityLabelPolicy labelPolicy(final String value) {
+        return SensitivityLabelPolicy.parse(value, s -> s.replace("{group}", "2").replace("{user}", "1").replace("{role}", "R"));
+    }
+
+    private static SensitivityLabelPolicy.Label confidentialLabel() {
+        return new SensitivityLabelPolicy.Label(LABEL_ID_CONFIDENTIAL, List.of("Confidential", "conf"), Boolean.FALSE, true);
+    }
+
+    /**
+     * A {@link OneDriveDataStore} whose Graph-facing members are stubbed and which records how
+     * often each was reached. {@code convertValue} resolves {@code file.<key>} templates with a
+     * direct map lookup, for the reason given in
+     * {@link #test_processDriveItem_assemblesRolesFromAllFourSources()}.
+     */
+    private static class LabelAwareDataStore extends OneDriveDataStore {
+        /** The labels to report, or {@code null} to run the real lookup against the client. */
+        private final List<SensitivityLabelPolicy.Label> labels;
+        private final java.util.concurrent.atomic.AtomicInteger labelLookups = new java.util.concurrent.atomic.AtomicInteger();
+        private final java.util.concurrent.atomic.AtomicInteger contentFetches = new java.util.concurrent.atomic.AtomicInteger();
+        /** What the {@code broader.roles} template evaluates to. */
+        private Object broaderRoles;
+        private Map<?, ?> lastFilesMap;
+
+        LabelAwareDataStore(final List<SensitivityLabelPolicy.Label> labels) {
+            this.labels = labels;
+        }
+
+        @Override
+        protected List<SensitivityLabelPolicy.Label> getDriveItemSensitivityLabels(final Microsoft365Client client, final String driveId,
+                final DriveItem item, final SensitivityLabelPolicy policy, final DataStoreParams paramMap) {
+            labelLookups.incrementAndGet();
+            if (labels == null) {
+                return super.getDriveItemSensitivityLabels(client, driveId, item, policy, paramMap);
+            }
+            return labels;
+        }
+
+        @Override
+        protected List<String> getDriveItemPermissions(final Microsoft365Client client, final String driveId, final DriveItem item,
+                final DataStoreParams paramMap) {
+            return new ArrayList<>(List.of("1alice", "2sales", "2hr"));
+        }
+
+        @Override
+        protected String getDriveItemContents(final Microsoft365Client client, final String driveId, final DriveItem item,
+                final long maxContentLength, final boolean ignoreError) {
+            contentFetches.incrementAndGet();
+            return "content";
+        }
+
+        @Override
+        protected Object convertValue(final String scriptType, final String template, final Map<String, Object> resultMap) {
+            if (resultMap.get(FILE) instanceof final Map<?, ?> filesMap) {
+                lastFilesMap = filesMap;
+                if (template.startsWith("file.")) {
+                    return filesMap.get(template.substring("file.".length()));
+                }
+            }
+            if ("broader.roles".equals(template)) {
+                return broaderRoles;
+            }
+            return super.convertValue(scriptType, template, resultMap);
+        }
+    }
+
+    private static DriveItem labeledItem(final String name) {
+        final DriveItem item = new DriveItem();
+        item.setId("item-1");
+        item.setName(name);
+        item.setWebUrl("https://example.com/" + name);
+        item.setSize(100L);
+        final com.microsoft.graph.models.File file = new com.microsoft.graph.models.File();
+        file.setMimeType(DOCX_MIMETYPE);
+        item.setFile(file);
+        return item;
+    }
+
+    private Map<String, Object> labelConfigMap(final SensitivityLabelPolicy policy, final long maxContentLength) {
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.IGNORE_FOLDER, Boolean.FALSE);
+        configMap.put(OneDriveDataStore.IGNORE_ERROR, Boolean.FALSE);
+        configMap.put(OneDriveDataStore.SUPPORTED_MIMETYPES, new String[] { ".*" });
+        configMap.put(OneDriveDataStore.MAX_CONTENT_LENGTH, Long.valueOf(maxContentLength));
+        configMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY, policy);
+        configMap.put(OneDriveDataStore.SENSITIVITY_LABEL_EXTENSIONS, dataStore.getSensitivityLabelExtensions(new DataStoreParams()));
+        return configMap;
+    }
+
+    private static void registerLabelProcessingComponents() {
+        registerDriveItemProcessingComponents();
+        final TestablePermissionHelper permissionHelper = new TestablePermissionHelper();
+        permissionHelper.useSystemHelper(ComponentUtil.getSystemHelper());
+        ComponentUtil.register(permissionHelper, "permissionHelper");
+    }
+
+    private static List<Map<String, Object>> processLabeled(final LabelAwareDataStore store, final Map<String, Object> configMap,
+            final DataStoreParams paramMap, final Map<String, String> scriptMap, final Map<String, Object> defaultDataMap,
+            final Microsoft365Client client, final DriveItem item, final List<String> driveRoles) {
+        final List<Map<String, Object>> captured = new ArrayList<>();
+        final TestCallback callback = new TestCallback() {
+            @Override
+            void test(final DataStoreParams params, final Map<String, Object> dataMap) {
+                captured.add(dataMap);
+            }
+        };
+        store.processDriveItem(new DataConfig(), callback, configMap, paramMap, scriptMap, defaultDataMap, client, drive("drive-1"), item,
+                driveRoles);
+        return captured;
+    }
+
+    private static Map<String, String> roleScriptMap() {
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put(ComponentUtil.getFessConfig().getIndexFieldRole(), "file.roles");
+        scriptMap.put("content", "file.contents");
+        return scriptMap;
+    }
+
+    @Test
+    public void test_processDriveItem_sensitivityLabelSkipRuleStoresNothing() {
+        registerLabelProcessingComponents();
+        final CapturingFailureUrlService failures = CapturingFailureUrlService.empty();
+        final LabelAwareDataStore store = new LabelAwareDataStore(List.of(confidentialLabel()));
+
+        final List<Map<String, Object>> captured = processLabeled(store, labelConfigMap(labelPolicy("Confidential=skip"), 1000000L),
+                new DataStoreParams(), roleScriptMap(), new HashMap<>(), null, labeledItem("report.docx"), List.of());
+
+        assertEquals("a skipped file must not be stored", 0, captured.size());
+        assertEquals("a policy skip is not a failure", List.of(), failures.getStoredFailures());
+        assertEquals("the labels must have been read once", 1, store.labelLookups.get());
+        assertEquals("a skipped file's content must not be downloaded", 0, store.contentFetches.get());
+    }
+
+    @Test
+    public void test_processDriveItem_sensitivityLabelNoContentRuleStoresWithoutContent() {
+        registerLabelProcessingComponents();
+        final CapturingFailureUrlService failures = CapturingFailureUrlService.empty();
+        final LabelAwareDataStore store = new LabelAwareDataStore(List.of(confidentialLabel()));
+        final DriveItem item = labeledItem("report.docx");
+        // larger than max_content_length: without content there is nothing to exceed it
+        item.setSize(10_000_000L);
+
+        final List<Map<String, Object>> captured = processLabeled(store, labelConfigMap(labelPolicy("Confidential=no_content"), 1000L),
+                new DataStoreParams(), roleScriptMap(), new HashMap<>(), null, item, List.of());
+
+        assertEquals("the file must still be indexed", 1, captured.size());
+        assertEquals("", captured.get(0).get("content"));
+        assertEquals("the content must not be downloaded", 0, store.contentFetches.get());
+        assertEquals(List.of(), failures.getStoredFailures());
+    }
+
+    @Test
+    public void test_processDriveItem_oversizedUnlabeledFileStillFailsLengthCheck() {
+        // control for the test above: the size check is lifted only for no_content files
+        registerLabelProcessingComponents();
+        final CapturingFailureUrlService failures = CapturingFailureUrlService.empty();
+        final LabelAwareDataStore store = new LabelAwareDataStore(List.of());
+        final DriveItem item = labeledItem("report.docx");
+        item.setSize(10_000_000L);
+
+        final List<Map<String, Object>> captured = processLabeled(store, labelConfigMap(labelPolicy("Confidential=no_content"), 1000L),
+                new DataStoreParams(), roleScriptMap(), new HashMap<>(), null, item, List.of());
+
+        assertEquals(0, captured.size());
+        assertEquals(1, failures.getStoredFailures().size());
+        assertEquals(0, store.contentFetches.get());
+    }
+
+    @Test
+    public void test_processDriveItem_sensitivityLabelRestrictNarrowsRolesAndExposesLabelFields() {
+        registerLabelProcessingComponents();
+        final LabelAwareDataStore store = new LabelAwareDataStore(List.of(confidentialLabel()));
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+        final Map<String, String> scriptMap = roleScriptMap();
+        scriptMap.put("label", "file.sensitivity_label_names");
+        scriptMap.put("label_id", "file.sensitivity_label_ids");
+        scriptMap.put("label_protected", "file.sensitivity_label_protected");
+
+        final List<Map<String, Object>> captured =
+                processLabeled(store, labelConfigMap(labelPolicy("Confidential=restrict:{group}legal,{group}sales"), 1000000L),
+                        new DataStoreParams(), scriptMap, new HashMap<>(), null, labeledItem("report.docx"), List.of("2legal"));
+
+        assertEquals(1, captured.size());
+        final Map<String, Object> dataMap = captured.get(0);
+        assertEquals("only the allowed roles, in the ACL's own order", List.of("2sales", "2legal"), dataMap.get(roleField));
+        assertEquals(List.of("2sales", "2legal"), store.lastFilesMap.get(OneDriveDataStore.FILE_ROLES));
+        assertEquals(List.of("Confidential"), dataMap.get("label"));
+        assertEquals(List.of(LABEL_ID_CONFIDENTIAL), dataMap.get("label_id"));
+        assertEquals(Boolean.FALSE, dataMap.get("label_protected"));
+        assertEquals("content", dataMap.get("content"));
+    }
+
+    @Test
+    public void test_processDriveItem_sensitivityLabelProtectedFieldIsTrueForEncryptedLabel() {
+        registerLabelProcessingComponents();
+        final SensitivityLabelPolicy.Label encrypted =
+                new SensitivityLabelPolicy.Label(LABEL_ID_SECRET, List.of("Secret"), Boolean.TRUE, true);
+        final LabelAwareDataStore store = new LabelAwareDataStore(List.of(confidentialLabel(), encrypted));
+        final Map<String, String> scriptMap = roleScriptMap();
+        scriptMap.put("label", "file.sensitivity_label_names");
+        scriptMap.put("label_protected", "file.sensitivity_label_protected");
+
+        final List<Map<String, Object>> captured = processLabeled(store, labelConfigMap(labelPolicy(""), 1000000L), new DataStoreParams(),
+                scriptMap, new HashMap<>(), null, labeledItem("report.docx"), List.of());
+
+        assertEquals(1, captured.size());
+        assertEquals(List.of("Confidential", "Secret"), captured.get(0).get("label"));
+        assertEquals(Boolean.TRUE, captured.get(0).get("label_protected"));
+        assertEquals("an encrypted label is indexed without content by default", "", captured.get(0).get("content"));
+        assertEquals(0, store.contentFetches.get());
+    }
+
+    @Test
+    public void test_processDriveItem_sensitivityLabelRestrictWithNoRoleLeftIsDiscarded() {
+        registerLabelProcessingComponents();
+        final CapturingFailureUrlService failures = CapturingFailureUrlService.empty();
+        final LabelAwareDataStore store = new LabelAwareDataStore(List.of(confidentialLabel()));
+
+        final List<Map<String, Object>> captured =
+                processLabeled(store, labelConfigMap(labelPolicy("Confidential=restrict:{group}nobody"), 1000000L), new DataStoreParams(),
+                        roleScriptMap(), new HashMap<>(), null, labeledItem("report.docx"), List.of("2legal"));
+
+        assertEquals("a file no role may see must not be indexed", 0, captured.size());
+        assertEquals("a policy discard is not a failure", List.of(), failures.getStoredFailures());
+    }
+
+    @Test
+    public void test_processDriveItem_sensitivityLabelRestrictNarrowsBroaderScriptRoleField() {
+        registerLabelProcessingComponents();
+        final LabelAwareDataStore store = new LabelAwareDataStore(List.of(confidentialLabel()));
+        store.broaderRoles = List.of("1alice", "2sales", "2hr", "Rguest");
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put(roleField, "broader.roles");
+
+        final List<Map<String, Object>> captured =
+                processLabeled(store, labelConfigMap(labelPolicy("Confidential=restrict:{group}sales,{role}guest"), 1000000L),
+                        new DataStoreParams(), scriptMap, new HashMap<>(), null, labeledItem("report.docx"), List.of());
+
+        assertEquals(1, captured.size());
+        assertEquals("the script must not widen a restricted file's ACL", List.of("2sales", "Rguest"), captured.get(0).get(roleField));
+    }
+
+    @Test
+    public void test_processDriveItem_sensitivityLabelRestrictNarrowsScalarScriptRoleField() {
+        registerLabelProcessingComponents();
+        final LabelAwareDataStore store = new LabelAwareDataStore(List.of(confidentialLabel()));
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+        final Map<String, String> scriptMap = new HashMap<>();
+        scriptMap.put(roleField, "broader.roles");
+
+        store.broaderRoles = "Rguest";
+        final List<Map<String, Object>> allowed =
+                processLabeled(store, labelConfigMap(labelPolicy("Confidential=restrict:{role}guest"), 1000000L), new DataStoreParams(),
+                        scriptMap, new HashMap<>(), null, labeledItem("report.docx"), List.of());
+        assertEquals(1, allowed.size());
+        assertEquals(List.of("Rguest"), allowed.get(0).get(roleField));
+
+        store.broaderRoles = new String[] { "2hr", null, "Rguest" };
+        final List<Map<String, Object>> fromArray =
+                processLabeled(store, labelConfigMap(labelPolicy("Confidential=restrict:{role}guest"), 1000000L), new DataStoreParams(),
+                        scriptMap, new HashMap<>(), null, labeledItem("report.docx"), List.of());
+        assertEquals(1, fromArray.size());
+        assertEquals(List.of("Rguest"), fromArray.get(0).get(roleField));
+
+        store.broaderRoles = "Reveryone";
+        final List<Map<String, Object>> denied =
+                processLabeled(store, labelConfigMap(labelPolicy("Confidential=restrict:{role}guest"), 1000000L), new DataStoreParams(),
+                        scriptMap, new HashMap<>(), null, labeledItem("report.docx"), List.of());
+        assertEquals(0, denied.size());
+    }
+
+    @Test
+    public void test_processDriveItem_sensitivityLabelRestrictNarrowsDataConfigRolesWithoutScript() {
+        registerLabelProcessingComponents();
+        final LabelAwareDataStore store = new LabelAwareDataStore(List.of(confidentialLabel()));
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+        final Map<String, Object> defaultDataMap = new HashMap<>();
+        defaultDataMap.put(roleField, List.of("2sales", "2hr"));
+
+        final List<Map<String, Object>> captured =
+                processLabeled(store, labelConfigMap(labelPolicy("Confidential=restrict:{group}sales"), 1000000L), new DataStoreParams(),
+                        new HashMap<>(), defaultDataMap, null, labeledItem("report.docx"), List.of());
+
+        assertEquals(1, captured.size());
+        assertEquals(List.of("2sales"), captured.get(0).get(roleField));
+    }
+
+    @Test
+    public void test_processDriveItem_sensitivityLabelsDisabledAddsNothing() {
+        registerLabelProcessingComponents();
+        final LabelAwareDataStore store = new LabelAwareDataStore(List.of(confidentialLabel()));
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+
+        final List<Map<String, Object>> captured = processLabeled(store, labelConfigMap(null, 1000000L), new DataStoreParams(),
+                roleScriptMap(), new HashMap<>(), null, labeledItem("report.docx"), List.of("2legal"));
+
+        assertEquals(1, captured.size());
+        assertEquals("the labels must not be read when the feature is disabled", 0, store.labelLookups.get());
+        assertEquals(1, store.contentFetches.get());
+        assertEquals(List.of("1alice", "2sales", "2hr", "2legal"), captured.get(0).get(roleField));
+        assertFalse(store.lastFilesMap.containsKey(OneDriveDataStore.FILE_SENSITIVITY_LABEL_IDS));
+        assertFalse(store.lastFilesMap.containsKey(OneDriveDataStore.FILE_SENSITIVITY_LABEL_NAMES));
+        assertFalse(store.lastFilesMap.containsKey(OneDriveDataStore.FILE_SENSITIVITY_LABEL_PROTECTED));
+    }
+
+    @Test
+    public void test_processDriveItem_sensitivityLabelNonTargetExtensionIsNotLookedUp() {
+        registerLabelProcessingComponents();
+        final LabelAwareDataStore store = new LabelAwareDataStore(List.of(confidentialLabel()));
+
+        final List<Map<String, Object>> captured = processLabeled(store, labelConfigMap(labelPolicy("Confidential=skip"), 1000000L),
+                new DataStoreParams(), roleScriptMap(), new HashMap<>(), null, labeledItem("notes.txt"), List.of());
+
+        assertEquals(1, captured.size());
+        assertEquals(0, store.labelLookups.get());
+        assertEquals(1, store.contentFetches.get());
+        assertEquals(List.of(), store.lastFilesMap.get(OneDriveDataStore.FILE_SENSITIVITY_LABEL_IDS));
+        assertEquals(List.of(), store.lastFilesMap.get(OneDriveDataStore.FILE_SENSITIVITY_LABEL_NAMES));
+        assertEquals(Boolean.FALSE, store.lastFilesMap.get(OneDriveDataStore.FILE_SENSITIVITY_LABEL_PROTECTED));
+    }
+
+    @Test
+    public void test_processDriveItem_unreadableSensitivityLabelsRecordFailure() {
+        registerLabelProcessingComponents();
+        final CapturingFailureUrlService failures = CapturingFailureUrlService.empty();
+        final LabelAwareDataStore store = new LabelAwareDataStore(null);
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenThrow(new IllegalStateException("graph down"));
+        final DriveItem item = labeledItem("report.docx");
+
+        final List<Map<String, Object>> captured = processLabeled(store, labelConfigMap(labelPolicy(""), 1000000L), new DataStoreParams(),
+                roleScriptMap(), new HashMap<>(), client, item, List.of());
+
+        assertEquals("a file whose labels cannot be read must not be indexed by default", 0, captured.size());
+        assertEquals(0, store.contentFetches.get());
+        final List<CapturingFailureUrlService.StoredFailure> stored = failures.getStoredFailures();
+        assertEquals(1, stored.size());
+        assertEquals(item.getWebUrl(), stored.get(0).url());
+        assertTrue(String.valueOf(stored.get(0).throwable()), stored.get(0).throwable() instanceof SensitivityLabelUnavailableException);
+    }
+
+    @Test
+    public void test_processDriveItem_unreadableSensitivityLabelsIndexedUnderIndexWithoutLabel() {
+        registerLabelProcessingComponents();
+        final CapturingFailureUrlService failures = CapturingFailureUrlService.empty();
+        final LabelAwareDataStore store = new LabelAwareDataStore(null);
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenThrow(new IllegalStateException("graph down"));
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_FAILURE_POLICY, "index_without_label");
+
+        final List<Map<String, Object>> captured = processLabeled(store, labelConfigMap(labelPolicy("*=skip"), 1000000L), paramMap,
+                roleScriptMap(), new HashMap<>(), client, labeledItem("report.docx"), List.of());
+
+        assertEquals(1, captured.size());
+        assertEquals(List.of(), failures.getStoredFailures());
+        assertEquals(List.of(), store.lastFilesMap.get(OneDriveDataStore.FILE_SENSITIVITY_LABEL_IDS));
+    }
+
+    // ----- getDriveItemSensitivityLabels -----
+
+    private static DriveItem labelLookupItem() {
+        final DriveItem item = labeledItem("report.docx");
+        item.setId("item-1");
+        return item;
+    }
+
+    private static SensitivityLabelAssignment assignment(final String labelId) {
+        final SensitivityLabelAssignment assignment = new SensitivityLabelAssignment();
+        assignment.setSensitivityLabelId(labelId);
+        return assignment;
+    }
+
+    private static SensitivityLabel definition(final String id, final String displayName, final String name, final Boolean hasProtection) {
+        final SensitivityLabel label = new SensitivityLabel();
+        label.setId(id);
+        label.setDisplayName(displayName);
+        label.setName(name);
+        label.setHasProtection(hasProtection);
+        return label;
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_extractFailureThrowsByDefault() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        final IllegalStateException cause = new IllegalStateException("graph down");
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenThrow(cause);
+
+        final SensitivityLabelUnavailableException e = assertThrows(SensitivityLabelUnavailableException.class, () -> dataStore
+                .getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(), labelPolicy(""), new DataStoreParams()));
+        assertSame(cause, e.getCause());
+        assertTrue(e.getMessage(), e.getMessage().contains("https://example.com/report.docx"));
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_extractFailureUnknownPolicyTreatedAsSkip() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenThrow(new IllegalStateException("graph down"));
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_FAILURE_POLICY, "index_anyway");
+
+        assertThrows(SensitivityLabelUnavailableException.class,
+                () -> dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(), labelPolicy(""), paramMap));
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_extractFailureUnderIndexWithoutLabelIsEmpty() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenThrow(new IllegalStateException("graph down"));
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_FAILURE_POLICY, " Index_Without_Label ");
+
+        assertEquals(List.of(), dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(), labelPolicy(""), paramMap));
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_unreadableDefinitionWithNameRuleFails() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenReturn(List.of(assignment(LABEL_ID_CONFIDENTIAL)));
+        when(client.getSensitivityLabel(LABEL_ID_CONFIDENTIAL)).thenReturn(null);
+
+        final SensitivityLabelUnavailableException e =
+                assertThrows(SensitivityLabelUnavailableException.class, () -> dataStore.getDriveItemSensitivityLabels(client, "drive-1",
+                        labelLookupItem(), labelPolicy("Confidential=skip"), new DataStoreParams()));
+        assertTrue(e.getMessage(), e.getMessage().contains(LABEL_ID_CONFIDENTIAL));
+
+        final DataStoreParams lenient = new DataStoreParams();
+        lenient.put(OneDriveDataStore.SENSITIVITY_LABEL_FAILURE_POLICY, "index_without_label");
+        assertEquals(List.of(),
+                dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(), labelPolicy("Confidential=skip"), lenient));
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_indexWithoutLabelKeepsEvaluableLabels() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1"))
+                .thenReturn(List.of(assignment(LABEL_ID_CONFIDENTIAL), assignment(LABEL_ID_SECRET)));
+        when(client.getSensitivityLabel(LABEL_ID_CONFIDENTIAL)).thenReturn(null);
+        when(client.getSensitivityLabel(LABEL_ID_SECRET)).thenReturn(definition(LABEL_ID_SECRET, "Highly Confidential", "secret", true));
+
+        final DataStoreParams lenient = new DataStoreParams();
+        lenient.put(OneDriveDataStore.SENSITIVITY_LABEL_FAILURE_POLICY, "index_without_label");
+        final SensitivityLabelPolicy policy = labelPolicy("Confidential=index\n" + LABEL_ID_SECRET + "=skip");
+        final List<SensitivityLabelPolicy.Label> labels =
+                dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(), policy, lenient);
+
+        // Only the unreadable label is dropped; the GUID skip rule of the other label still applies.
+        assertEquals(
+                List.of(new SensitivityLabelPolicy.Label(LABEL_ID_SECRET, List.of("Highly Confidential", "secret"), Boolean.TRUE, true)),
+                labels);
+        assertTrue(policy.decide(labels).skip());
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_unreadableDefinitionWithIdRulesIsUnresolved() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenReturn(List.of(assignment(LABEL_ID_CONFIDENTIAL)));
+        when(client.getSensitivityLabel(LABEL_ID_CONFIDENTIAL)).thenReturn(null);
+
+        final List<SensitivityLabelPolicy.Label> labels = dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(),
+                labelPolicy(LABEL_ID_SECRET + "=skip"), new DataStoreParams());
+        assertEquals(List.of(SensitivityLabelPolicy.Label.unresolved(LABEL_ID_CONFIDENTIAL)), labels);
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_resolvesDefinition() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1"))
+                .thenReturn(java.util.Arrays.asList(assignment(LABEL_ID_CONFIDENTIAL), null, assignment(" "), assignment(LABEL_ID_SECRET)));
+        when(client.getSensitivityLabel(LABEL_ID_CONFIDENTIAL))
+                .thenReturn(definition(LABEL_ID_CONFIDENTIAL, "Confidential", "conf", Boolean.FALSE));
+        when(client.getSensitivityLabel(LABEL_ID_SECRET)).thenReturn(definition(LABEL_ID_SECRET, "Highly Confidential", "secret", true));
+
+        final List<SensitivityLabelPolicy.Label> labels = dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(),
+                labelPolicy("Confidential=skip\n@protected=index"), new DataStoreParams());
+
+        assertEquals(
+                List.of(new SensitivityLabelPolicy.Label(LABEL_ID_CONFIDENTIAL, List.of("Confidential", "conf"), Boolean.FALSE, true),
+                        new SensitivityLabelPolicy.Label(LABEL_ID_SECRET, List.of("Highly Confidential", "secret"), Boolean.TRUE, true)),
+                labels);
+        verify(client, never()).getSensitivityLabel(" ");
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_unlabeledFileIsEmpty() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenReturn(List.of());
+
+        assertEquals(List.of(), dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(),
+                labelPolicy("Confidential=skip"), new DataStoreParams()));
+        verify(client, never()).getSensitivityLabel(org.mockito.ArgumentMatchers.anyString());
+    }
+
+    // ----- getSensitivityLabelPolicy / extensions -----
+
+    @Test
+    public void test_getSensitivityLabelPolicy_disabledIsNull() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        assertNull("disabled by default", dataStore.getSensitivityLabelPolicy(paramMap));
+
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY, "Confidential=skip");
+        assertNull("a policy without sensitivity_label_enabled=true is ignored", dataStore.getSensitivityLabelPolicy(paramMap));
+
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_ENABLED, "false");
+        assertNull(dataStore.getSensitivityLabelPolicy(paramMap));
+
+        // a malformed policy does not matter while the feature is off
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY, "Confidential");
+        assertNull(dataStore.getSensitivityLabelPolicy(paramMap));
+    }
+
+    @Test
+    public void test_getSensitivityLabelPolicy_enabledEncodesPermissions() {
+        registerLabelProcessingComponents();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_ENABLED, " TRUE ");
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY, "Confidential=restrict:{group}sales");
+
+        final SensitivityLabelPolicy policy = dataStore.getSensitivityLabelPolicy(paramMap);
+
+        assertNotNull(policy);
+        final String expectedRole = ComponentUtil.getPermissionHelper().encode("{group}sales");
+        assertEquals(Set.of(expectedRole), policy.findRule(confidentialLabel()).restrictRoles());
+    }
+
+    @Test
+    public void test_getSensitivityLabelPolicy_enabledWithoutRulesIsEmpty() {
+        registerLabelProcessingComponents();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_ENABLED, "true");
+
+        final SensitivityLabelPolicy policy = dataStore.getSensitivityLabelPolicy(paramMap);
+        assertNotNull("enabled with no rules still applies the default rule for encrypted labels", policy);
+        assertTrue(policy.isEmpty());
+    }
+
+    @Test
+    public void test_getSensitivityLabelPolicy_malformedPolicyFailsTheCrawl() {
+        registerLabelProcessingComponents();
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_ENABLED, "true");
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_POLICY, "Confidential=delete");
+
+        final DataStoreException e = assertThrows(DataStoreException.class, () -> dataStore.getSensitivityLabelPolicy(paramMap));
+        assertTrue(e.getMessage(), e.getMessage().contains(OneDriveDataStore.SENSITIVITY_LABEL_POLICY));
+        assertTrue(String.valueOf(e.getCause()), e.getCause() instanceof IllegalArgumentException);
+    }
+
+    @Test
+    public void test_getSensitivityLabelExtensions_defaults() {
+        final Set<String> extensions = dataStore.getSensitivityLabelExtensions(new DataStoreParams());
+        for (final String ext : new String[] { "docx", "xlsx", "pptx", "pdf", "doc", "xlsb", "potm" }) {
+            assertTrue(ext, extensions.contains(ext));
+        }
+        assertFalse(extensions.contains("txt"));
+        assertFalse(extensions.contains("csv"));
+    }
+
+    @Test
+    public void test_getSensitivityLabelExtensions_customList() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_EXTENSIONS, " .DOCX, pdf ,, .Xlsx , ");
+        assertEquals(Set.of("docx", "pdf", "xlsx"), dataStore.getSensitivityLabelExtensions(paramMap));
+
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_EXTENSIONS, "  ");
+        assertTrue("blank falls back to the defaults", dataStore.getSensitivityLabelExtensions(paramMap).contains("docx"));
+    }
+
+    @Test
+    public void test_isSensitivityLabelTarget() {
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_EXTENSIONS, ".DOCX,pdf");
+        final Map<String, Object> configMap = new HashMap<>();
+        configMap.put(OneDriveDataStore.SENSITIVITY_LABEL_EXTENSIONS, dataStore.getSensitivityLabelExtensions(paramMap));
+
+        assertTrue(dataStore.isSensitivityLabelTarget(configMap, labeledItem("Report.DOCX")));
+        assertTrue(dataStore.isSensitivityLabelTarget(configMap, labeledItem("scan.final.pdf")));
+        assertFalse(dataStore.isSensitivityLabelTarget(configMap, labeledItem("notes.txt")));
+        assertFalse(dataStore.isSensitivityLabelTarget(configMap, labeledItem("report.docx.txt")));
+        assertFalse(dataStore.isSensitivityLabelTarget(configMap, labeledItem("README")));
+        assertFalse(dataStore.isSensitivityLabelTarget(configMap, labeledItem("report.")));
+        assertFalse(dataStore.isSensitivityLabelTarget(configMap, labeledItem(null)));
+
+        final DriveItem folder = new DriveItem();
+        folder.setName("archive.docx");
+        folder.setFolder(new com.microsoft.graph.models.Folder());
+        assertFalse("a folder is never a target", dataStore.isSensitivityLabelTarget(configMap, folder));
+
+        assertFalse("no extension set configured", dataStore.isSensitivityLabelTarget(new HashMap<>(), labeledItem("Report.docx")));
     }
 
     static abstract class TestCallback implements IndexUpdateCallback {
