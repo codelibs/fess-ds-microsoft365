@@ -207,6 +207,66 @@ public class SensitivityLabelPolicyTest {
         assertEquals(new Rule(true, false, null), parse("*=skip").findRule(unresolvedEncrypted));
     }
 
+    // ===== findRule: sublabels =====
+
+    private static Label sublabel(final String id, final Boolean hasProtection, final List<String> names, final String parentId,
+            final String... parentNames) {
+        return new Label(id, names, hasProtection, true, parentId, Arrays.asList(parentNames));
+    }
+
+    @Test
+    public void test_findRule_matchesParentId() {
+        final SensitivityLabelPolicy policy = parse(ID_CONFIDENTIAL.toUpperCase() + "=skip");
+        assertEquals(new Rule(true, false, null),
+                policy.findRule(sublabel(ID_SECRET, false, List.of("All Employees"), ID_CONFIDENTIAL, "Confidential")));
+    }
+
+    @Test
+    public void test_findRule_matchesEitherParentName() {
+        final SensitivityLabelPolicy policy = parse("confidential=no_content");
+        assertEquals(new Rule(false, true, null),
+                policy.findRule(sublabel(ID_SECRET, false, List.of("All Employees"), ID_CONFIDENTIAL, "Vertraulich", "CONFIDENTIAL")));
+        assertEquals(new Rule(false, true, null),
+                policy.findRule(sublabel(ID_SECRET, false, List.of("All Employees"), null, null, " ", "Confidential")));
+    }
+
+    @Test
+    public void test_findRule_ownRuleBeatsParentRule() {
+        final Label label = sublabel(ID_SECRET, false, List.of("All Employees"), ID_CONFIDENTIAL, "Confidential");
+        // own id beats parent id and parent name
+        assertEquals(new Rule(false, false, null),
+                parse(ID_SECRET + "=index\n" + ID_CONFIDENTIAL + "=skip\nConfidential=skip").findRule(label));
+        // own name beats parent id
+        assertEquals(new Rule(false, true, null), parse("All Employees=no_content\n" + ID_CONFIDENTIAL + "=skip").findRule(label));
+        // parent id beats parent name
+        assertEquals(new Rule(true, false, null), parse(ID_CONFIDENTIAL + "=skip\nConfidential=index").findRule(label));
+    }
+
+    @Test
+    public void test_findRule_parentRuleBeatsProtectedAndAny() {
+        final Label encrypted = sublabel(ID_SECRET, true, List.of("All Employees"), ID_CONFIDENTIAL, "Confidential");
+        assertEquals(new Rule(false, false, null), parse("Confidential=index\n@protected=skip\n*=skip").findRule(encrypted));
+        assertEquals(new Rule(false, false, null), parse(ID_CONFIDENTIAL + "=index").findRule(encrypted),
+                "the parent rule also beats the implicit rule for encrypted labels");
+        final Label plain = sublabel(ID_SECRET, false, List.of("All Employees"), ID_CONFIDENTIAL, "Confidential");
+        assertEquals(new Rule(false, false, Set.of("2a")), parse("Confidential=restrict:{group}a\n*=skip").findRule(plain));
+    }
+
+    @Test
+    public void test_findRule_sublabelWithoutParentRuleFallsThrough() {
+        final Label encrypted = sublabel(ID_SECRET, true, List.of("All Employees"), ID_CONFIDENTIAL, "Confidential");
+        assertEquals(new Rule(true, false, null), parse("Public=index\n@protected=skip").findRule(encrypted));
+        assertEquals(new Rule(false, true, null), parse("Public=index").findRule(encrypted));
+        final Label plain = sublabel(ID_SECRET, false, List.of("All Employees"), ID_CONFIDENTIAL, "Confidential");
+        assertEquals(new Rule(true, false, null), parse("Public=index\n*=skip").findRule(plain));
+    }
+
+    @Test
+    public void test_findRule_parentIgnoredForUnresolvedLabel() {
+        final Label label = new Label(ID_SECRET, List.of(), null, false, ID_CONFIDENTIAL, List.of("Confidential"));
+        assertNull(parse(ID_CONFIDENTIAL + "=skip\nConfidential=skip").findRule(label));
+    }
+
     // ===== canEvaluate =====
 
     @Test
@@ -219,7 +279,14 @@ public class SensitivityLabelPolicyTest {
         final Label label = Label.unresolved(ID_OTHER);
         assertTrue(parse("").canEvaluate(label));
         assertTrue(parse("*=skip").canEvaluate(label));
-        assertTrue(parse(ID_CONFIDENTIAL + "=skip\n" + ID_SECRET.toUpperCase() + "=no_content").canEvaluate(label));
+    }
+
+    @Test
+    public void test_canEvaluate_unresolvedNotMatchedWithIdRulesOnly() {
+        // An ID rule can match a sublabel through its parent, so it needs the definition too.
+        final SensitivityLabelPolicy policy = parse(ID_CONFIDENTIAL + "=skip\n" + ID_SECRET.toUpperCase() + "=no_content");
+        assertFalse(policy.canEvaluate(Label.unresolved(ID_OTHER)));
+        assertTrue(policy.canEvaluate(Label.unresolved(ID_SECRET)));
     }
 
     @Test
@@ -427,6 +494,38 @@ public class SensitivityLabelPolicyTest {
         assertEquals(ID_CONFIDENTIAL, resolved(ID_CONFIDENTIAL, false).displayName());
         assertEquals(ID_CONFIDENTIAL, new Label(ID_CONFIDENTIAL, null, null, true).displayName());
         assertEquals(ID_CONFIDENTIAL, Label.unresolved(ID_CONFIDENTIAL).displayName());
+    }
+
+    @Test
+    public void test_label_displayNameWithParent() {
+        assertEquals("Confidential\\All Employees",
+                new Label(ID_SECRET, List.of("All Employees", "conf-all"), null, true, ID_CONFIDENTIAL, List.of("Confidential", "conf"))
+                        .displayName());
+        assertEquals("conf\\" + ID_SECRET,
+                new Label(ID_SECRET, List.of(), null, true, ID_CONFIDENTIAL, Arrays.asList(null, " ", "conf")).displayName());
+        assertEquals("All Employees",
+                new Label(ID_SECRET, List.of("All Employees"), null, true, ID_CONFIDENTIAL, Arrays.asList(" ", null)).displayName(),
+                "a parent without a usable name is not shown");
+        assertEquals("All Employees", new Label(ID_SECRET, List.of("All Employees"), null, true).displayName());
+    }
+
+    @Test
+    public void test_label_fourArgConstructorHasNoParent() {
+        final Label label = new Label(ID_SECRET, List.of("Secret"), Boolean.TRUE, true);
+        assertNull(label.parentId());
+        assertEquals(List.of(), label.parentNames());
+        assertEquals(new Label(ID_SECRET, List.of("Secret"), Boolean.TRUE, true, null, null), label);
+        assertNull(Label.unresolved(ID_SECRET).parentId());
+        assertEquals(List.of(), Label.unresolved(ID_SECRET).parentNames());
+    }
+
+    @Test
+    public void test_label_parentNamesAreCopied() {
+        final List<String> parentNames = new ArrayList<>(List.of("Confidential"));
+        final Label label = new Label(ID_SECRET, List.of("All Employees"), null, true, ID_CONFIDENTIAL, parentNames);
+        parentNames.set(0, "Public");
+        assertEquals(List.of("Confidential"), label.parentNames());
+        assertThrows(UnsupportedOperationException.class, () -> label.parentNames().add("x"));
     }
 
     @Test

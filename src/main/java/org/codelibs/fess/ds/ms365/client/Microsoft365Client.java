@@ -710,8 +710,9 @@ public class Microsoft365Client implements Closeable {
     /**
      * Returns the tenant's sensitivity labels, loading them on first use.
      *
-     * @return the labels keyed by lower-cased ID; empty when the application may not read them;
-     *         {@code null} when loading failed transiently, so the next call tries again
+     * @return the labels keyed by lower-cased ID; empty when they cannot be read, for example without the
+     *         permission or in a cloud that does not offer the endpoint; {@code null} when loading failed
+     *         transiently (408, 429, 5xx or a non-HTTP error), so the next call tries again
      */
     protected Map<String, SensitivityLabelEntry> getSensitivityLabelCatalog() {
         final Map<String, SensitivityLabelEntry> loaded = sensitivityLabelCatalog;
@@ -726,10 +727,12 @@ public class Microsoft365Client implements Closeable {
                 sensitivityLabelCatalog = loadSensitivityLabelCatalog();
             } catch (final ApiException e) {
                 final int status = e.getResponseStatusCode();
-                if (status != 401 && status != 403) {
+                if (status < 400 || status >= 500 || status == 408 || status == 429) {
                     logger.warn("Failed to load sensitivity label definitions (status={})", status, e);
                     return null;
                 }
+                // Any other client error will not go away within the crawl - a missing permission,
+                // or a cloud that does not offer the endpoint - so it is not retried for each file.
                 logger.warn(
                         "Cannot read sensitivity label definitions (status={}). Grant the SensitivityLabel.Read application "
                                 + "permission to match labels by name or parent label and to detect labels that apply encryption.",

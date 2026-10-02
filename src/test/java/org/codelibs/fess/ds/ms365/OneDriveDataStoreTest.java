@@ -1213,6 +1213,10 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         return label;
     }
 
+    private static Microsoft365Client.SensitivityLabelEntry entry(final SensitivityLabel label) {
+        return new Microsoft365Client.SensitivityLabelEntry(label, null);
+    }
+
     @Test
     public void test_getDriveItemSensitivityLabels_extractFailureThrowsByDefault() {
         final Microsoft365Client client = mock(Microsoft365Client.class);
@@ -1259,8 +1263,19 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
 
         final DataStoreParams lenient = new DataStoreParams();
         lenient.put(OneDriveDataStore.SENSITIVITY_LABEL_FAILURE_POLICY, "index_without_label");
-        assertEquals(List.of(),
+        assertEquals("under index_without_label the label is kept, unresolved",
+                List.of(SensitivityLabelPolicy.Label.unresolved(LABEL_ID_CONFIDENTIAL)),
                 dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(), labelPolicy("Confidential=skip"), lenient));
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_entryWithoutLabelIsUnresolved() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenReturn(List.of(assignment(LABEL_ID_CONFIDENTIAL)));
+        when(client.getSensitivityLabel(LABEL_ID_CONFIDENTIAL)).thenReturn(new Microsoft365Client.SensitivityLabelEntry(null, null));
+
+        assertEquals(List.of(SensitivityLabelPolicy.Label.unresolved(LABEL_ID_CONFIDENTIAL)), dataStore
+                .getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(), labelPolicy("*=skip"), new DataStoreParams()));
     }
 
     @Test
@@ -1269,7 +1284,8 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         when(client.extractSensitivityLabels("drive-1", "item-1"))
                 .thenReturn(List.of(assignment(LABEL_ID_CONFIDENTIAL), assignment(LABEL_ID_SECRET)));
         when(client.getSensitivityLabel(LABEL_ID_CONFIDENTIAL)).thenReturn(null);
-        when(client.getSensitivityLabel(LABEL_ID_SECRET)).thenReturn(definition(LABEL_ID_SECRET, "Highly Confidential", "secret", true));
+        when(client.getSensitivityLabel(LABEL_ID_SECRET))
+                .thenReturn(entry(definition(LABEL_ID_SECRET, "Highly Confidential", "secret", true)));
 
         final DataStoreParams lenient = new DataStoreParams();
         lenient.put(OneDriveDataStore.SENSITIVITY_LABEL_FAILURE_POLICY, "index_without_label");
@@ -1277,22 +1293,95 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         final List<SensitivityLabelPolicy.Label> labels =
                 dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(), policy, lenient);
 
-        // Only the unreadable label is dropped; the GUID skip rule of the other label still applies.
+        // The unreadable label is kept unresolved; the GUID skip rule of the other label still applies.
         assertEquals(
-                List.of(new SensitivityLabelPolicy.Label(LABEL_ID_SECRET, List.of("Highly Confidential", "secret"), Boolean.TRUE, true)),
+                List.of(SensitivityLabelPolicy.Label.unresolved(LABEL_ID_CONFIDENTIAL),
+                        new SensitivityLabelPolicy.Label(LABEL_ID_SECRET, List.of("Highly Confidential", "secret"), Boolean.TRUE, true)),
                 labels);
         assertTrue(policy.decide(labels).skip());
     }
 
     @Test
-    public void test_getDriveItemSensitivityLabels_unreadableDefinitionWithIdRulesIsUnresolved() {
+    public void test_getDriveItemSensitivityLabels_indexWithoutLabelAppliesAnyRuleToUnresolvedLabel() {
         final Microsoft365Client client = mock(Microsoft365Client.class);
         when(client.extractSensitivityLabels("drive-1", "item-1")).thenReturn(List.of(assignment(LABEL_ID_CONFIDENTIAL)));
         when(client.getSensitivityLabel(LABEL_ID_CONFIDENTIAL)).thenReturn(null);
 
-        final List<SensitivityLabelPolicy.Label> labels = dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(),
-                labelPolicy(LABEL_ID_SECRET + "=skip"), new DataStoreParams());
+        final DataStoreParams lenient = new DataStoreParams();
+        lenient.put(OneDriveDataStore.SENSITIVITY_LABEL_FAILURE_POLICY, "index_without_label");
+        final SensitivityLabelPolicy policy = labelPolicy("Confidential=skip\n*=restrict:{group}a");
+        final List<SensitivityLabelPolicy.Label> labels =
+                dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(), policy, lenient);
+
         assertEquals(List.of(SensitivityLabelPolicy.Label.unresolved(LABEL_ID_CONFIDENTIAL)), labels);
+        final SensitivityLabelPolicy.Decision decision = policy.decide(labels);
+        assertFalse("the name rule cannot match an unresolved label", decision.skip());
+        assertEquals(Set.of("2a"), decision.allowedRoles());
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_unreadableDefinitionWithIdRuleForOtherLabelFails() {
+        // An ID rule can match a sublabel through its parent, so it needs the definition too.
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenReturn(List.of(assignment(LABEL_ID_CONFIDENTIAL)));
+        when(client.getSensitivityLabel(LABEL_ID_CONFIDENTIAL)).thenReturn(null);
+
+        assertThrows(SensitivityLabelUnavailableException.class, () -> dataStore.getDriveItemSensitivityLabels(client, "drive-1",
+                labelLookupItem(), labelPolicy(LABEL_ID_SECRET + "=skip"), new DataStoreParams()));
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_unreadableDefinitionWithOwnIdRuleIsUnresolved() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenReturn(List.of(assignment(LABEL_ID_CONFIDENTIAL)));
+        when(client.getSensitivityLabel(LABEL_ID_CONFIDENTIAL)).thenReturn(null);
+
+        assertEquals(List.of(SensitivityLabelPolicy.Label.unresolved(LABEL_ID_CONFIDENTIAL)), dataStore.getDriveItemSensitivityLabels(
+                client, "drive-1", labelLookupItem(), labelPolicy(LABEL_ID_CONFIDENTIAL + "=skip\nSecret=index"), new DataStoreParams()));
+        assertEquals("a policy with only * needs no definition", List.of(SensitivityLabelPolicy.Label.unresolved(LABEL_ID_CONFIDENTIAL)),
+                dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(), labelPolicy("*=index"),
+                        new DataStoreParams()));
+    }
+
+    @Test
+    public void test_getDriveItemSensitivityLabels_sublabelCarriesParent() {
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenReturn(List.of(assignment(LABEL_ID_SECRET)));
+        when(client.getSensitivityLabel(LABEL_ID_SECRET))
+                .thenReturn(new Microsoft365Client.SensitivityLabelEntry(definition(LABEL_ID_SECRET, "All Employees", "conf-all", true),
+                        definition(LABEL_ID_CONFIDENTIAL, "Confidential", "conf", false)));
+
+        final SensitivityLabelPolicy policy = labelPolicy(LABEL_ID_CONFIDENTIAL + "=skip");
+        final List<SensitivityLabelPolicy.Label> labels =
+                dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(), policy, new DataStoreParams());
+
+        assertEquals(List.of(new SensitivityLabelPolicy.Label(LABEL_ID_SECRET, List.of("All Employees", "conf-all"), Boolean.TRUE, true,
+                LABEL_ID_CONFIDENTIAL, List.of("Confidential", "conf"))), labels);
+        assertEquals("Confidential\\All Employees", labels.get(0).displayName());
+        assertTrue("the parent's ID rule applies to the sublabel", policy.decide(labels).skip());
+    }
+
+    @Test
+    public void test_processDriveItem_unreadableLabelDefinitionUnderIndexWithoutLabelKeepsLabelId() {
+        registerLabelProcessingComponents();
+        final CapturingFailureUrlService failures = CapturingFailureUrlService.empty();
+        final LabelAwareDataStore store = new LabelAwareDataStore(null);
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.extractSensitivityLabels("drive-1", "item-1")).thenReturn(List.of(assignment(LABEL_ID_CONFIDENTIAL)));
+        when(client.getSensitivityLabel(LABEL_ID_CONFIDENTIAL)).thenReturn(null);
+        final DataStoreParams paramMap = new DataStoreParams();
+        paramMap.put(OneDriveDataStore.SENSITIVITY_LABEL_FAILURE_POLICY, "index_without_label");
+        final String roleField = ComponentUtil.getFessConfig().getIndexFieldRole();
+
+        final List<Map<String, Object>> captured =
+                processLabeled(store, labelConfigMap(labelPolicy("Confidential=skip\n*=restrict:{group}sales"), 1000000L), paramMap,
+                        roleScriptMap(), new HashMap<>(), client, labeledItem("report.docx"), List.of());
+
+        assertEquals(1, captured.size());
+        assertEquals(List.of(), failures.getStoredFailures());
+        assertEquals(List.of("2sales"), captured.get(0).get(roleField));
+        assertEquals(List.of(LABEL_ID_CONFIDENTIAL), store.lastFilesMap.get(OneDriveDataStore.FILE_SENSITIVITY_LABEL_IDS));
+        assertEquals(List.of(LABEL_ID_CONFIDENTIAL), store.lastFilesMap.get(OneDriveDataStore.FILE_SENSITIVITY_LABEL_NAMES));
     }
 
     @Test
@@ -1301,8 +1390,9 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         when(client.extractSensitivityLabels("drive-1", "item-1"))
                 .thenReturn(java.util.Arrays.asList(assignment(LABEL_ID_CONFIDENTIAL), null, assignment(" "), assignment(LABEL_ID_SECRET)));
         when(client.getSensitivityLabel(LABEL_ID_CONFIDENTIAL))
-                .thenReturn(definition(LABEL_ID_CONFIDENTIAL, "Confidential", "conf", Boolean.FALSE));
-        when(client.getSensitivityLabel(LABEL_ID_SECRET)).thenReturn(definition(LABEL_ID_SECRET, "Highly Confidential", "secret", true));
+                .thenReturn(entry(definition(LABEL_ID_CONFIDENTIAL, "Confidential", "conf", Boolean.FALSE)));
+        when(client.getSensitivityLabel(LABEL_ID_SECRET))
+                .thenReturn(entry(definition(LABEL_ID_SECRET, "Highly Confidential", "secret", true)));
 
         final List<SensitivityLabelPolicy.Label> labels = dataStore.getDriveItemSensitivityLabels(client, "drive-1", labelLookupItem(),
                 labelPolicy("Confidential=skip\n@protected=index"), new DataStoreParams());

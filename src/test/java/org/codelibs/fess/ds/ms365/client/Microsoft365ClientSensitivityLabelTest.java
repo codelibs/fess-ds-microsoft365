@@ -18,26 +18,30 @@ package org.codelibs.fess.ds.ms365.client;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 
+import org.codelibs.fess.ds.ms365.client.Microsoft365Client.SensitivityLabelEntry;
 import org.codelibs.fess.entity.DataStoreParams;
 import org.junit.jupiter.api.Test;
 
-import com.microsoft.graph.models.SensitivityLabel;
 import com.microsoft.graph.models.SensitivityLabelAssignment;
 import com.microsoft.graph.models.SensitivityLabelAssignmentMethod;
+import com.microsoft.kiota.ApiException;
 
 import okhttp3.mockwebserver.RecordedRequest;
 
 /**
  * Exercises the two Graph calls behind sensitivity label support against a mock Graph endpoint:
- * reading the labels assigned to a drive item, and reading - through a cache - the definition of
- * a label. A transient failure cached as "not readable" would make every file carrying that label
- * fall back to the failure policy for the rest of the crawl.
+ * reading the labels assigned to a drive item, and reading the tenant's label catalog - labels
+ * and their sublabels, loaded once - that resolves a label ID to its definition and parent. A
+ * transient failure cached as "not readable" would make every labeled file fall back to the
+ * failure policy for the rest of the crawl.
  */
 public class Microsoft365ClientSensitivityLabelTest {
 
@@ -53,18 +57,9 @@ public class Microsoft365ClientSensitivityLabelTest {
         return params;
     }
 
-    private static String labelJson() {
-        return "{\"id\":\"" + LABEL_ID + "\",\"name\":\"Confidential\",\"displayName\":\"Confidential - All Employees\","
-                + "\"hasProtection\":true}";
-    }
-
     // ===== extractSensitivityLabels =====
 
-    /**
-     * The SDK deserializes the action's response body directly as
-     * {@code ExtractSensitivityLabelsResult}: {@code labels} sits at the top level of the body,
-     * not inside an OData {@code value} wrapper.
-     */
+    /** The shape the SDK's own model expects: {@code labels} at the top level of the body. */
     @Test
     public void test_extractSensitivityLabels_parsesLabels() throws Exception {
         try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
@@ -94,52 +89,194 @@ public class Microsoft365ClientSensitivityLabelTest {
     public void test_extractSensitivityLabels_unlabeledFileIsEmpty() throws Exception {
         try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
             mock.enqueueJson("{\"labels\":[]}");
-            mock.enqueueJson("{}");
+            mock.enqueueJson("{\"value\":{\"labels\":[]}}");
             client.client = mock.newGraphClient();
 
             assertEquals(List.of(), client.extractSensitivityLabels("drive-1", "item-1"));
-            assertEquals(List.of(), client.extractSensitivityLabels("drive-1", "item-1"), "a missing labels property is no labels");
+            assertEquals(List.of(), client.extractSensitivityLabels("drive-1", "item-1"), "an empty value-wrapped list is no labels");
         }
     }
 
     /**
-     * Pins the response shape the SDK expects: a body that wraps the result in an OData
-     * {@code value} property is not unwrapped, so its labels are not seen. Should Graph ever
-     * answer in that shape, this test documents why every file would look unlabeled.
+     * Microsoft's reference shows the result wrapped in an OData {@code value} property, while the
+     * SDK's own model expects it at the top level; both shapes must yield the labels.
      */
     @Test
-    public void test_extractSensitivityLabels_valueWrappedBodyIsNotUnwrapped() throws Exception {
+    public void test_extractSensitivityLabels_unwrapsValueWrappedBody() throws Exception {
         try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
-            mock.enqueueJson("{\"value\":{\"labels\":[{\"sensitivityLabelId\":\"" + LABEL_ID + "\",\"assignmentMethod\":\"standard\"}]}}");
+            mock.enqueueJson(
+                    "{\"@odata.context\":\"https://graph.microsoft.com/v1.0/$metadata#microsoft.graph.extractSensitivityLabelsResult\","
+                            + "\"value\":{\"labels\":[{\"sensitivityLabelId\":\"" + LABEL_ID
+                            + "\",\"assignmentMethod\":\"standard\",\"tenantId\":\"" + TENANT_ID + "\"}]}}");
             client.client = mock.newGraphClient();
 
-            assertEquals(List.of(), client.extractSensitivityLabels("drive-1", "item-1"));
+            final List<SensitivityLabelAssignment> labels = client.extractSensitivityLabels("drive-1", "item-1");
+            assertEquals(1, labels.size());
+            assertEquals(LABEL_ID, labels.get(0).getSensitivityLabelId());
+            assertEquals(SensitivityLabelAssignmentMethod.Standard, labels.get(0).getAssignmentMethod());
+            assertEquals(TENANT_ID, labels.get(0).getTenantId());
+
+            final RecordedRequest request = mock.takeRequest();
+            assertEquals("POST", request.getMethod());
+            assertEquals("/drives/drive-1/items/item-1/extractSensitivityLabels", request.getPath());
+        }
+    }
+
+    /** A response without labels is not an unlabeled file: reading it as one would bypass the label's rules. */
+    @Test
+    public void test_extractSensitivityLabels_missingLabelsPropertyThrows() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            mock.enqueueJson("{}");
+            mock.enqueueJson("{\"value\":{}}");
+            mock.enqueueJson("{\"value\":null}");
+            client.client = mock.newGraphClient();
+
+            for (int i = 0; i < 3; i++) {
+                final IllegalStateException e =
+                        assertThrows(IllegalStateException.class, () -> client.extractSensitivityLabels("drive-1", "item-1"));
+                assertTrue(e.getMessage().contains("item-1"), e.getMessage());
+            }
+            assertEquals(3, mock.requestCount());
+        }
+    }
+
+    @Test
+    public void test_extractSensitivityLabels_errorStatusThrowsApiException() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            mock.enqueueStatus(403, null);
+            client.client = mock.newGraphClientWithRetriesDisabled();
+
+            final ApiException e = assertThrows(ApiException.class, () -> client.extractSensitivityLabels("drive-1", "item-1"));
+            assertEquals(403, e.getResponseStatusCode());
         }
     }
 
     // ===== getSensitivityLabel =====
 
+    private static final String PARENT_ID = "aaaaaaaa-0000-4000-8000-000000000001";
+    private static final String PUBLIC_ID = "aaaaaaaa-0000-4000-8000-000000000002";
+    private static final String SUBLABEL_ID = "BBBBBBBB-0000-4000-8000-000000000003";
+    private static final String OTHER_SUBLABEL_ID = "bbbbbbbb-0000-4000-8000-000000000004";
+    private static final String LABELS_PATH = "/security/dataSecurityAndGovernance/sensitivityLabels";
+
+    private static String labelJson(final String id, final String name, final String displayName, final boolean hasProtection) {
+        return "{\"id\":\"" + id + "\",\"name\":\"" + name + "\",\"displayName\":\"" + displayName + "\",\"hasProtection\":" + hasProtection
+                + "}";
+    }
+
+    private static String page(final String nextLink, final String... labels) {
+        return "{" + (nextLink != null ? "\"@odata.nextLink\":\"" + nextLink + "\"," : "") + "\"value\":[" + String.join(",", labels)
+                + "]}";
+    }
+
+    private static String parentJson() {
+        return labelJson(PARENT_ID, "Confidential", "Confidential", false);
+    }
+
+    private static String publicJson() {
+        return labelJson(PUBLIC_ID, "Public", "Public", false);
+    }
+
+    private static String sublabelJson() {
+        return labelJson(SUBLABEL_ID, "conf-all", "All Employees", true);
+    }
+
+    /** Queues a catalog of two top-level labels, the first with one sublabel. */
+    private static void enqueueCatalog(final GraphMockServer mock) {
+        mock.enqueueJson(page(null, parentJson(), publicJson()));
+        mock.enqueueJson(page(null, sublabelJson()));
+        mock.enqueueJson(page(null));
+    }
+
+    private static String decodedPath(final GraphMockServer mock) throws InterruptedException {
+        return URLDecoder.decode(mock.takePath(), StandardCharsets.UTF_8);
+    }
+
+    private static void assertSelects(final String path) {
+        for (final String field : new String[] { "id", "name", "displayName", "hasProtection" }) {
+            assertTrue(path.matches(".*\\$select=([a-zA-Z]+,)*" + field + "(,[a-zA-Z]+)*(&.*)?"), field + " in " + path);
+        }
+    }
+
     @Test
-    public void test_getSensitivityLabel_returnsAndCachesDefinition() throws Exception {
+    public void test_getSensitivityLabel_loadsCatalogOnceWithSublabels() throws Exception {
         try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
-            mock.enqueueJson(labelJson());
+            enqueueCatalog(mock);
             client.client = mock.newGraphClient();
 
-            final SensitivityLabel label = client.getSensitivityLabel(LABEL_ID);
-            assertNotNull(label);
-            assertEquals("Confidential", label.getName());
-            assertEquals("Confidential - All Employees", label.getDisplayName());
-            assertEquals(Boolean.TRUE, label.getHasProtection());
+            final SensitivityLabelEntry sublabel = client.getSensitivityLabel(SUBLABEL_ID);
+            assertNotNull(sublabel);
+            assertEquals("conf-all", sublabel.label().getName());
+            assertEquals("All Employees", sublabel.label().getDisplayName());
+            assertEquals(Boolean.TRUE, sublabel.label().getHasProtection());
+            assertNotNull(sublabel.parent(), "a sublabel must carry its parent");
+            assertEquals(PARENT_ID, sublabel.parent().getId());
+            assertEquals("Confidential", sublabel.parent().getName());
 
-            final SensitivityLabel cached = client.getSensitivityLabel(LABEL_ID);
-            assertEquals("Confidential", cached.getName());
-            assertEquals(1, mock.requestCount(), "the second call must be served from the cache");
+            final SensitivityLabelEntry parent = client.getSensitivityLabel(PARENT_ID);
+            assertEquals("Confidential", parent.label().getName());
+            assertNull(parent.parent());
+            assertEquals("Public", client.getSensitivityLabel(PUBLIC_ID).label().getName());
+            assertNull(client.getSensitivityLabel("ffffffff-0000-4000-8000-00000000dead"), "an unknown label has no definition");
+            assertEquals(3, mock.requestCount(), "the catalog is loaded once: the list plus one sublabel list per top-level label");
 
-            final String path = URLDecoder.decode(mock.takePath(), StandardCharsets.UTF_8);
-            assertTrue(path.startsWith("/security/dataSecurityAndGovernance/sensitivityLabels/" + LABEL_ID + "?"), path);
-            for (final String field : new String[] { "id", "name", "displayName", "hasProtection" }) {
-                assertTrue(path.matches(".*\\$select=([a-zA-Z]+,)*" + field + "(,[a-zA-Z]+)*(&.*)?"), field + " in " + path);
-            }
+            final String listPath = decodedPath(mock);
+            assertTrue(listPath.startsWith(LABELS_PATH + "?"), listPath);
+            assertSelects(listPath);
+            final String sublabelPath = decodedPath(mock);
+            assertTrue(sublabelPath.startsWith(LABELS_PATH + "/" + PARENT_ID + "/sublabels?"), sublabelPath);
+            assertSelects(sublabelPath);
+            assertTrue(decodedPath(mock).startsWith(LABELS_PATH + "/" + PUBLIC_ID + "/sublabels"));
+        }
+    }
+
+    @Test
+    public void test_getSensitivityLabel_lookupIgnoresCase() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            enqueueCatalog(mock);
+            client.client = mock.newGraphClient();
+
+            assertNotNull(client.getSensitivityLabel(SUBLABEL_ID.toLowerCase(Locale.ROOT)));
+            assertNotNull(client.getSensitivityLabel(SUBLABEL_ID.toUpperCase(Locale.ROOT)));
+            assertNotNull(client.getSensitivityLabel(PARENT_ID.toUpperCase(Locale.ROOT)));
+        }
+    }
+
+    @Test
+    public void test_getSensitivityLabel_followsNextLinks() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            final String listNext = mock.url(LABELS_PATH + "?$skiptoken=LIST2");
+            final String subNext = mock.url(LABELS_PATH + "/" + PARENT_ID + "/sublabels?$skiptoken=SUB2");
+            mock.enqueueJson(page(listNext, parentJson()));
+            mock.enqueueJson(page(null, publicJson()));
+            mock.enqueueJson(page(subNext, sublabelJson()));
+            mock.enqueueJson(page(null, labelJson(OTHER_SUBLABEL_ID, "conf-partners", "Partners", true)));
+            mock.enqueueJson(page(null));
+            client.client = mock.newGraphClient();
+
+            assertEquals(PARENT_ID, client.getSensitivityLabel(OTHER_SUBLABEL_ID).parent().getId(), "second sublabel page");
+            assertNull(client.getSensitivityLabel(PUBLIC_ID).parent(), "second label page");
+            assertEquals(5, mock.requestCount());
+            mock.takePath();
+            assertEquals(LABELS_PATH + "?$skiptoken=LIST2", decodedPath(mock));
+            mock.takePath();
+            assertEquals(LABELS_PATH + "/" + PARENT_ID + "/sublabels?$skiptoken=SUB2", decodedPath(mock));
+        }
+    }
+
+    @Test
+    public void test_getSensitivityLabel_sublabelOverwritesTopLevelEntry() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            // the list also returns the sublabel at the top level
+            mock.enqueueJson(page(null, sublabelJson(), parentJson()));
+            mock.enqueueJson(page(null));
+            mock.enqueueJson(page(null, sublabelJson()));
+            client.client = mock.newGraphClient();
+
+            final SensitivityLabelEntry entry = client.getSensitivityLabel(SUBLABEL_ID);
+            assertNotNull(entry.parent(), "the sublabel entry must win over the top-level one");
+            assertEquals(PARENT_ID, entry.parent().getId());
+            assertEquals(3, mock.requestCount());
         }
     }
 
@@ -155,73 +292,117 @@ public class Microsoft365ClientSensitivityLabelTest {
     }
 
     @Test
-    public void test_getSensitivityLabel_notFoundIsCached() throws Exception {
-        assertNullAndCached(404);
-    }
-
-    @Test
     public void test_getSensitivityLabel_forbiddenIsCached() throws Exception {
-        assertNullAndCached(403);
+        assertListFailureCached(403);
     }
 
     @Test
     public void test_getSensitivityLabel_unauthorizedIsCached() throws Exception {
-        assertNullAndCached(401);
+        assertListFailureCached(401);
     }
 
-    private static void assertNullAndCached(final int status) throws Exception {
+    private static void assertListFailureCached(final int status) throws Exception {
         try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
             mock.enqueueStatus(status, null);
-            mock.enqueueJson(labelJson());
+            enqueueCatalog(mock);
             client.client = mock.newGraphClientWithRetriesDisabled();
 
-            assertNull(client.getSensitivityLabel(LABEL_ID));
-            assertNull(client.getSensitivityLabel(LABEL_ID), "a " + status + " must be remembered, not re-queried");
-            assertEquals(1, mock.requestCount(), "a " + status + " must be cached");
+            assertNull(client.getSensitivityLabel(PARENT_ID));
+            assertNull(client.getSensitivityLabel(SUBLABEL_ID), "a " + status + " must be remembered, not re-queried");
+            assertEquals(1, mock.requestCount(), "a " + status + " must be cached as an empty catalog");
         }
     }
 
     @Test
     public void test_getSensitivityLabel_serviceUnavailableIsNotCached() throws Exception {
-        assertNullAndNotCached(503);
+        assertListFailureNotCached(503);
     }
 
     @Test
     public void test_getSensitivityLabel_serverErrorIsNotCached() throws Exception {
-        assertNullAndNotCached(500);
+        assertListFailureNotCached(500);
     }
 
     @Test
     public void test_getSensitivityLabel_throttlingIsNotCached() throws Exception {
-        assertNullAndNotCached(429);
+        assertListFailureNotCached(429);
     }
 
-    private static void assertNullAndNotCached(final int status) throws Exception {
+    @Test
+    public void test_getSensitivityLabel_notFoundListIsCachedAsEmpty() throws Exception {
+        // A cloud that does not offer the endpoint answers 404 for good; reloading for every file
+        // would add one request and one WARN per labeled file.
         try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
-            mock.enqueueStatus(status, null);
-            mock.enqueueJson(labelJson());
+            mock.enqueueStatus(404, null);
+            enqueueCatalog(mock);
             client.client = mock.newGraphClientWithRetriesDisabled();
 
-            assertNull(client.getSensitivityLabel(LABEL_ID));
+            assertNull(client.getSensitivityLabel(SUBLABEL_ID));
+            assertNull(client.getSensitivityLabel(SUBLABEL_ID));
+            assertEquals(1, mock.requestCount(), "a persistent 4xx must not be retried");
+        }
+    }
+
+    private static void assertListFailureNotCached(final int status) throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            mock.enqueueStatus(status, null);
+            enqueueCatalog(mock);
+            client.client = mock.newGraphClientWithRetriesDisabled();
+
+            assertNull(client.getSensitivityLabel(SUBLABEL_ID));
             assertEquals(1, mock.requestCount());
 
-            final SensitivityLabel label = client.getSensitivityLabel(LABEL_ID);
-            assertNotNull(label, "a transient " + status + " must not be cached as unreadable");
-            assertEquals("Confidential", label.getName());
-            assertEquals(2, mock.requestCount(), "the second call must reach Graph again");
+            final SensitivityLabelEntry entry = client.getSensitivityLabel(SUBLABEL_ID);
+            assertNotNull(entry, "a transient " + status + " must not be cached as unreadable");
+            assertEquals(PARENT_ID, entry.parent().getId());
+            assertEquals(4, mock.requestCount(), "the second call must reload the catalog");
         }
     }
 
     @Test
-    public void test_getSensitivityLabel_cachesPerLabelId() throws Exception {
+    public void test_getSensitivityLabel_sublabelListErrorSkipsOnlyThatLabel() throws Exception {
         try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
-            mock.enqueueStatus(404, null);
-            mock.enqueueJson(labelJson());
+            mock.enqueueJson(page(null, parentJson(), publicJson()));
+            mock.enqueueStatus(500, null);
+            mock.enqueueJson(page(null, labelJson(OTHER_SUBLABEL_ID, "public-ext", "External", false)));
             client.client = mock.newGraphClientWithRetriesDisabled();
 
-            assertNull(client.getSensitivityLabel("ffffffff-0000-4000-8000-000000000001"));
-            assertNotNull(client.getSensitivityLabel(LABEL_ID), "another label's 404 must not be served for this one");
-            assertEquals(2, mock.requestCount());
+            assertNull(client.getSensitivityLabel(SUBLABEL_ID), "the sublabels of the failed label are unknown");
+            assertNotNull(client.getSensitivityLabel(PARENT_ID), "the failed label itself is still known");
+            assertEquals(PUBLIC_ID, client.getSensitivityLabel(OTHER_SUBLABEL_ID).parent().getId(), "other labels' sublabels still load");
+            assertEquals(3, mock.requestCount(), "the catalog is cached despite the skipped sublabel list");
+        }
+    }
+
+    @Test
+    public void test_getSensitivityLabel_sublabelListForbiddenEmptiesCatalog() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            mock.enqueueJson(page(null, parentJson(), publicJson()));
+            mock.enqueueStatus(403, null);
+            enqueueCatalog(mock);
+            client.client = mock.newGraphClientWithRetriesDisabled();
+
+            assertNull(client.getSensitivityLabel(PARENT_ID), "a 403 on a sublabel list empties the whole catalog");
+            assertNull(client.getSensitivityLabel(PUBLIC_ID));
+            assertEquals(2, mock.requestCount(), "the empty catalog is cached; the remaining sublabel list is not requested");
+        }
+    }
+
+    @Test
+    public void test_close_resetsCatalog() throws Exception {
+        try (GraphMockServer mock = new GraphMockServer(); Microsoft365Client client = new Microsoft365Client(dummyParams())) {
+            enqueueCatalog(mock);
+            enqueueCatalog(mock);
+            client.client = mock.newGraphClient();
+
+            assertNotNull(client.getSensitivityLabel(PARENT_ID));
+            assertNotNull(client.sensitivityLabelCatalog);
+            client.close();
+            assertNull(client.sensitivityLabelCatalog, "close() must forget the catalog");
+
+            client.client = mock.newGraphClient();
+            assertNotNull(client.getSensitivityLabel(PARENT_ID));
+            assertEquals(6, mock.requestCount(), "the catalog is loaded again after close()");
         }
     }
 }
