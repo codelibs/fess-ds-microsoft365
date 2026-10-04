@@ -17,6 +17,12 @@
 		<version>15.9.0-SNAPSHOT</version>
 		<relativePath />
 	</parent>
+	<properties>
+		<azure.core.version>1.59.1</azure.core.version>
+		<azure.identity.version>1.18.6</azure.identity.version>
+		<azure.core.http.netty.version>1.16.7</azure.core.http.netty.version>
+		<microsoft.graph.version>6.70.0</microsoft.graph.version>
+	</properties>
 	<build>
 		<plugins>
 			<plugin>
