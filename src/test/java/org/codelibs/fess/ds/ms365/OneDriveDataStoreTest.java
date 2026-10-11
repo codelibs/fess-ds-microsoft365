@@ -16,6 +16,8 @@
 package org.codelibs.fess.ds.ms365;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -30,6 +32,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.Level;
@@ -50,7 +55,11 @@ import org.codelibs.fess.opensearch.config.exentity.DataConfig;
 import org.codelibs.fess.util.ComponentUtil;
 import org.codelibs.fess.crawler.entity.ExtractData;
 
+import com.microsoft.graph.models.AssignedLicense;
 import com.microsoft.graph.models.Drive;
+import com.microsoft.graph.models.DriveItemCollectionResponse;
+import com.microsoft.graph.models.Folder;
+import com.microsoft.graph.models.User;
 import com.microsoft.graph.models.DriveItem;
 import com.microsoft.graph.models.Identity;
 import com.microsoft.graph.models.ItemReference;
@@ -58,6 +67,7 @@ import com.microsoft.graph.models.Permission;
 import com.microsoft.graph.models.SensitivityLabel;
 import com.microsoft.graph.models.SensitivityLabelAssignment;
 import com.microsoft.graph.models.SharePointIdentitySet;
+import com.microsoft.kiota.ApiException;
 
 public class OneDriveDataStoreTest extends UnitDsTestCase {
 
@@ -1551,6 +1561,188 @@ public class OneDriveDataStoreTest extends UnitDsTestCase {
         assertFalse("a folder is never a target", dataStore.isSensitivityLabelTarget(configMap, folder));
 
         assertFalse("no extension set configured", dataStore.isSensitivityLabelTarget(new HashMap<>(), labeledItem("Report.docx")));
+    }
+
+    /**
+     * An {@link ApiException} carrying a status code. {@code ApiException.setResponseStatusCode}
+     * is {@code protected}, so a status-bearing instance can only be built from a subclass.
+     */
+    private static final class StatusApiException extends ApiException {
+        private static final long serialVersionUID = 1L;
+
+        StatusApiException(final int statusCode, final String message) {
+            super(message);
+            setResponseStatusCode(statusCode);
+        }
+    }
+
+    private static Drive driveWithUrl(final String id, final String webUrl) {
+        final Drive drive = drive(id);
+        drive.setWebUrl(webUrl);
+        return drive;
+    }
+
+    private static DriveItemCollectionResponse page(final DriveItem... items) {
+        final DriveItemCollectionResponse response = new DriveItemCollectionResponse();
+        response.setValue(List.of(items));
+        return response;
+    }
+
+    /**
+     * The first listing of a drive failing with 500, 401, 403 or 429 (after the client's own
+     * retries) was logged at {@code WARN} and the drive was skipped: no document, no failure URL,
+     * no {@code ERROR}, so a crawl that indexed nothing looked like a clean one. Pins that the
+     * failure is now an {@code ERROR} and a failure-URL row against the drive, and that the crawl
+     * moves on rather than aborting.
+     */
+    @Test
+    public void test_getDriveItemsInDrive_rootListingFailureIsAnErrorWithAFailureUrl() {
+        for (final int status : new int[] { 500, 401, 403, 429 }) {
+            final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
+            final Microsoft365Client client = mock(Microsoft365Client.class);
+            when(client.getDriveItemPage("drive-1", null)).thenThrow(new StatusApiException(status, "listing failed"));
+            final DataConfig dataConfig = new DataConfig();
+            final List<DriveItem> consumed = new ArrayList<>();
+
+            final List<LogEvent> events = captureDataStoreWarnings(() -> dataStore.getDriveItemsInDrive(dataConfig, client,
+                    driveWithUrl("drive-1", "https://example.com/drive-1"), consumed::add));
+
+            assertEquals("status " + status + ": nothing can be consumed from a drive that cannot be listed", 0, consumed.size());
+            assertEquals("status " + status + ": exactly one ERROR is expected, got " + messagesOf(events), 1,
+                    events.stream().filter(event -> event.getLevel() == Level.ERROR).count());
+            final List<CapturingFailureUrlService.StoredFailure> stored = failureUrlService.getStoredFailures();
+            assertEquals("status " + status + ": exactly one failure row is expected", 1, stored.size());
+            assertSame(dataConfig, stored.get(0).crawlingConfig());
+            assertEquals("https://example.com/drive-1", stored.get(0).url());
+            assertTrue(stored.get(0).throwable() instanceof StatusApiException);
+        }
+    }
+
+    /**
+     * A drive without a web URL is still recorded, under its ID, rather than under {@code null}.
+     */
+    @Test
+    public void test_getDriveItemsInDrive_rootListingFailureFallsBackToTheDriveId() {
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.getDriveItemPage("drive-1", null)).thenThrow(new StatusApiException(500, "listing failed"));
+
+        dataStore.getDriveItemsInDrive(new DataConfig(), client, drive("drive-1"), item -> {});
+
+        assertEquals("drive-1", failureUrlService.getStoredFailures().get(0).url());
+    }
+
+    /**
+     * A drive that does not exist (404) stays a debug-level skip, as before.
+     */
+    @Test
+    public void test_getDriveItemsInDrive_rootListing404IsStillSkipped() {
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        when(client.getDriveItemPage("drive-1", null)).thenThrow(new StatusApiException(404, "not found"));
+
+        final List<LogEvent> events =
+                captureDataStoreWarnings(() -> dataStore.getDriveItemsInDrive(new DataConfig(), client, drive("drive-1"), item -> {}));
+
+        assertEquals("a 404 must not be logged above DEBUG, got " + messagesOf(events), 0, events.size());
+        assertEquals(0, failureUrlService.getStoredFailures().size());
+    }
+
+    /**
+     * Only the first listing is promoted. A folder inside the drive that fails, whatever the
+     * status, is skipped with a {@code WARN} as before: the rest of the drive is still crawled and
+     * no failure row or {@code ERROR} is produced for one folder.
+     */
+    @Test
+    public void test_getDriveItemsInDrive_failureBelowTheRootStaysAWarning() {
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        final DriveItem folder = new DriveItem();
+        folder.setId("folder-1");
+        folder.setName("folder");
+        folder.setFolder(new Folder());
+        final DriveItem sibling = new DriveItem();
+        sibling.setId("file-1");
+        sibling.setName("file");
+        when(client.getDriveItemPage("drive-1", null)).thenReturn(page(folder, sibling));
+        when(client.getDriveItemPage("drive-1", "folder-1")).thenThrow(new StatusApiException(500, "folder listing failed"));
+        final List<String> consumed = new ArrayList<>();
+
+        final List<LogEvent> events = captureDataStoreWarnings(
+                () -> dataStore.getDriveItemsInDrive(new DataConfig(), client, drive("drive-1"), item -> consumed.add(item.getId())));
+
+        assertEquals("the failing folder and its sibling must both still be handed to the consumer", List.of("folder-1", "file-1"),
+                consumed);
+        assertEquals("one WARN for the folder, got " + messagesOf(events), 1, events.size());
+        assertEquals(Level.WARN, events.get(0).getLevel());
+        assertEquals(0, failureUrlService.getStoredFailures().size());
+    }
+
+    /**
+     * {@code storeUsersDrive} wraps the drive in {@code catch (ApiException)} and logs a warning,
+     * so a root failure must be handled before it can reach that net: the user's drive failing is
+     * recorded and the next user is still crawled.
+     */
+    @Test
+    public void test_storeUsersDrive_rootListingFailureIsRecordedAndTheNextUserIsStillCrawled() {
+        final CapturingFailureUrlService failureUrlService = CapturingFailureUrlService.empty();
+        final Microsoft365Client client = mock(Microsoft365Client.class);
+        final User broken = licensedUser("user-1");
+        final User healthy = licensedUser("user-2");
+        doAnswer(invocation -> {
+            final Consumer<User> consumer = invocation.getArgument(1);
+            consumer.accept(broken);
+            consumer.accept(healthy);
+            return null;
+        }).when(client).getUsers(any(), any());
+        when(client.getUserDrive("user-1")).thenReturn(driveWithUrl("drive-1", "https://example.com/drive-1"));
+        when(client.getUserDrive("user-2")).thenReturn(driveWithUrl("drive-2", "https://example.com/drive-2"));
+        when(client.getDriveItemPage("drive-1", null)).thenThrow(new StatusApiException(403, "accessDenied"));
+        final DriveItem file = new DriveItem();
+        file.setId("file-1");
+        when(client.getDriveItemPage("drive-2", null)).thenReturn(page(file));
+
+        final List<String> processed = Collections.synchronizedList(new ArrayList<>());
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
+        final List<LogEvent> events;
+        try {
+            events = captureDataStoreWarnings(() -> new OneDriveDataStore() {
+                @Override
+                protected List<String> getUserRoles(final User user) {
+                    return Collections.emptyList();
+                }
+
+                @Override
+                protected void processDriveItem(final DataConfig dataConfig, final IndexUpdateCallback callback,
+                        final Map<String, Object> configMap, final DataStoreParams paramMap, final Map<String, String> scriptMap,
+                        final Map<String, Object> defaultDataMap, final Microsoft365Client client, final Drive drive, final DriveItem item,
+                        final List<String> roles) {
+                    processed.add(drive.getId() + "/" + item.getId());
+                }
+            }.storeUsersDrive(new DataConfig(), null, new HashMap<>(), new DataStoreParams(), new HashMap<>(), new HashMap<>(),
+                    executorService, client));
+        } finally {
+            executorService.shutdown();
+        }
+        try {
+            executorService.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        assertEquals("the healthy user's drive must still be crawled", List.of("drive-2/file-1"), processed);
+        assertEquals("one ERROR for the broken drive, got " + messagesOf(events), 1,
+                events.stream().filter(event -> event.getLevel() == Level.ERROR).count());
+        assertEquals(List.of("https://example.com/drive-1"),
+                failureUrlService.getStoredFailures().stream().map(CapturingFailureUrlService.StoredFailure::url).toList());
+    }
+
+    private static User licensedUser(final String id) {
+        final User user = new User();
+        user.setId(id);
+        user.setDisplayName(id);
+        user.setAssignedLicenses(List.of(new AssignedLicense()));
+        return user;
     }
 
     static abstract class TestCallback implements IndexUpdateCallback {

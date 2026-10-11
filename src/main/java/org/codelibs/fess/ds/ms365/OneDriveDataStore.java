@@ -40,6 +40,7 @@ import org.codelibs.core.CoreLibConstants;
 import org.codelibs.core.lang.StringUtil;
 import org.codelibs.core.stream.StreamUtil;
 import org.codelibs.fess.Constants;
+import org.codelibs.fess.app.service.FailureUrlService;
 import org.codelibs.fess.crawler.entity.ExtractData;
 import org.codelibs.fess.crawler.exception.CrawlingAccessException;
 import org.codelibs.fess.crawler.exception.MaxLengthExceededException;
@@ -439,8 +440,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
 
         if (driveId != null) {
             final Drive drive = (Drive) configMap.get(DRIVE_INFO);
-            getDriveItemsInDrive(client, driveId, item -> executorService.execute(() -> processDriveItem(dataConfig, callback, configMap,
-                    paramMap, scriptMap, defaultDataMap, client, drive, item, Collections.emptyList())));
+            getDriveItemsInDrive(dataConfig, client, drive, item -> executorService.execute(() -> processDriveItem(dataConfig, callback,
+                    configMap, paramMap, scriptMap, defaultDataMap, client, drive, item, Collections.emptyList())));
         } else {
             client.getSites(site -> {
                 if (logger.isDebugEnabled()) {
@@ -459,7 +460,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                             }
                             return;
                         }
-                        getDriveItemsInDrive(client, drive.getId(), item -> {
+                        getDriveItemsInDrive(dataConfig, client, drive, item -> {
                             if (logger.isDebugEnabled()) {
                                 logger.debug("Processing drive item in drive {} - Name: {}, ID: {}, WebUrl: {}", drive.getName(),
                                         item.getName(), item.getId(), item.getWebUrl());
@@ -526,7 +527,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                     logger.debug("Retrieved drive for user {} - Drive Name: {}, Drive ID: {}, DriveType: {}, System: {}", displayName,
                             userDrive.getName(), userDrive.getId(), userDrive.getDriveType(), isSystemLibrary(userDrive));
                 }
-                getDriveItemsInDrive(client, userDrive.getId(), item -> {
+                getDriveItemsInDrive(dataConfig, client, userDrive, item -> {
                     if (logger.isDebugEnabled()) {
                         logger.debug("Processing drive item in user {}'s drive - Name: {}, ID: {}, WebUrl: {}", displayName, item.getName(),
                                 item.getId(), item.getWebUrl());
@@ -581,7 +582,7 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                     logger.debug("Retrieved drive for group {} - Drive Name: {}, Drive ID: {}, DriveType: {}, System: {}", displayName,
                             groupDrive.getName(), groupDrive.getId(), groupDrive.getDriveType(), isSystemLibrary(groupDrive));
                 }
-                getDriveItemsInDrive(client, groupDrive.getId(), item -> {
+                getDriveItemsInDrive(dataConfig, client, groupDrive, item -> {
                     if (logger.isDebugEnabled()) {
                         logger.debug("Processing drive item in group {}'s drive - Name: {}, ID: {}, WebUrl: {}", displayName,
                                 item.getName(), item.getId(), item.getWebUrl());
@@ -1186,12 +1187,24 @@ public class OneDriveDataStore extends Microsoft365DataStore {
     /**
      * Gets the drive items in a drive.
      *
+     * <p>A failure of the first listing of the drive is logged at {@code ERROR} and recorded as a
+     * failure URL against the drive, and the crawl goes on with the next drive. A drive that
+     * cannot be listed yields no documents at all, so it must not look like a clean crawl.</p>
+     *
+     * @param dataConfig The data configuration the failure is recorded against.
      * @param client The Microsoft365Client.
-     * @param driveId The drive ID.
+     * @param drive The drive.
      * @param consumer The consumer to process each drive item.
      */
-    protected void getDriveItemsInDrive(final Microsoft365Client client, final String driveId, final Consumer<DriveItem> consumer) {
-        getDriveItemChildren(client, driveId, consumer, null);
+    protected void getDriveItemsInDrive(final DataConfig dataConfig, final Microsoft365Client client, final Drive drive,
+            final Consumer<DriveItem> consumer) {
+        try {
+            getDriveItemChildren(client, drive.getId(), consumer, null);
+        } catch (final ApiException e) {
+            final String failureUrl = StringUtil.isNotBlank(drive.getWebUrl()) ? drive.getWebUrl() : drive.getId();
+            logger.error("Failed to list the root of the drive - Drive: {}, Status: {}", drive.getId(), e.getResponseStatusCode(), e);
+            ComponentUtil.getComponent(FailureUrlService.class).store(dataConfig, e.getClass().getCanonicalName(), failureUrl, e);
+        }
     }
 
     /**
@@ -1200,7 +1213,8 @@ public class OneDriveDataStore extends Microsoft365DataStore {
      * @param client The Microsoft365Client.
      * @param driveId The drive ID.
      * @param consumer The consumer to process each drive item.
-     * @param item The drive item.
+     * @param item The drive item, or {@code null} for the root of the drive.
+     * @throws ApiException if the first listing of the drive fails with anything but a 404
      */
     protected void getDriveItemChildren(final Microsoft365Client client, final String driveId, final Consumer<DriveItem> consumer,
             final DriveItem item) {
@@ -1249,6 +1263,9 @@ public class OneDriveDataStore extends Microsoft365DataStore {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Drive item not found (404) - Drive: {}, Item: {}", driveId, item != null ? item.getName() : "root", e);
                 }
+            } else if (item == null) {
+                // the first listing of the drive: reported by getDriveItemsInDrive
+                throw e;
             } else {
                 logger.warn("Failed to access drive item - Drive: {}, Item: {}, Status: {}", driveId,
                         item != null ? item.getName() : "root", e.getResponseStatusCode(), e);
