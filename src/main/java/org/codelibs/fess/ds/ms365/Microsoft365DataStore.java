@@ -291,6 +291,8 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         private final String storeName;
 
         /**
+         * Creates a pool that runs a task on the calling thread when the queue is full.
+         *
          * @param nThreads the pool size, which is also the queue capacity.
          * @param storeName the name of the data store that owns this pool.
          */
@@ -340,6 +342,8 @@ public abstract class Microsoft365DataStore extends AbstractDataStore {
         }
 
         /**
+         * Returns how many tasks ended by throwing.
+         *
          * @return the number of tasks that ended by throwing.
          */
         public int getFailureCount() {
