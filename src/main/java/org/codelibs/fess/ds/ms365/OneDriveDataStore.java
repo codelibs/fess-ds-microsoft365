@@ -1140,6 +1140,13 @@ public class OneDriveDataStore extends Microsoft365DataStore {
         return StringUtil.EMPTY;
     }
 
+    /**
+     * Builds the text to index from the extracted data, according to the crawler settings for the body and the metadata.
+     *
+     * @param extractData the data the extractor returned
+     * @param fileName the name of the file, for the log
+     * @return the content to index
+     */
     protected String buildExtractedContent(final ExtractData extractData, final String fileName) {
         final FessConfig fessConfig = ComponentUtil.getFessConfig();
 
